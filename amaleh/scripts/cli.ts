@@ -95,10 +95,10 @@ case 'host-exception':return core.hostException(store,input);
  case 'claim':await core.claim(store,input.id,{...input,pid:input.pid??Number(process.env.AMALEH_HOST_PID??process.ppid)});break;
  case 'result':await core.result(store,input.id,input.output);break;
  case 'check':return core.check(store,input.id,input.checkId);
- case 'review-packet':return adapters.reviewPacket(store,input.id,input.lenses);
+ case 'review-packet':return adapters.reviewPacket(store,input.id,input.lenses,undefined,input.references);
  case 'review-check':await core.addReviewCheck(store,input.id,input.check);break;
  case 'review':await core.review(store,input.id,input);break;
- case 'reviewer':return adapters.reviewer(store,input.id,input.model,input.lenses??['Spec','Standards','Correctness','Omissions'],input.routing);
+ case 'reviewer':return adapters.reviewer(store,input.id,input.model,input.lenses??['Spec','Standards','Correctness','Omissions'],input.routing,input.references);
  case 'worker':return adapters.worker(store,input.id,input);
  case 'repair':await core.repair(store,input.id);break;
  case 'accept':await core.accept(store,input.id);break;
@@ -122,7 +122,7 @@ export async function main(args=process.argv.slice(2)){
  const attached=args.includes(attachedFlag),argv=stripFlags(args).filter(a=>a!==attachedFlag);
  const [operation,workspace,runId]=argv;
  if(!workspace||!runId||['status','next','diagnose','artifact','list','doctor','install','uninstall','diagnostic-export','wait'].includes(operation))return executeMain(argv);
- const store=new core.Store(workspace,runId),operationTrace=await trace(store.root,'cli:'+operation,{runId});
+ const store=new core.Store(workspace,runId),operationTrace=await trace(store.root,(attached?'batch:':'cli:')+operation,{runId});
  try{const value=await executeMain(argv,attached);await operationTrace.end('success');return value;}catch(error){await operationTrace.end('failed',{name:(error as Error).name,message:(error as Error).message});throw error;}
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url))main().then(value=>console.log(renderResult(stripFlags(process.argv.slice(2))[0]??'',value,humanRequested(process.argv.slice(2),process.stdout.isTTY)))).catch(e=>{console.error(JSON.stringify({error:e.message}));process.exitCode=1;});

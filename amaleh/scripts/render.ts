@@ -117,7 +117,9 @@ function renderHealth(value: unknown): string {
     ['Worker dispatches', text(metrics.workerDispatches)],
     ['Host takeovers', takeovers.length ? `${text(metrics.hostTakeovers)} (${takeovers.join(', ')})` : text(metrics.hostTakeovers)],
     ['Host action records', `${text(metrics.hostActionRecords)} (${text(metrics.hostActionsPerTask)} per task)`],
-    ['Revisions', `${text(metrics.revisions)} of ${text(metrics.revisionAllowance)} allowed`],
+    ['Coordinator operations', `${text(metrics.coordinatorOperations)} (${text(metrics.coordinatorOperationsPerTask)} per task)`],
+    ['Contract questions', text(metrics.contractQuestions)],
+    ['State revisions', text(metrics.revisions)],
     ['Retries', text(metrics.retries)],
     ['Worker families', families.join(', ')],
   ]);

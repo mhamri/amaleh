@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import * as c from '../scripts/core.ts';
-import { delegate, inScope, scopeCheckId, scopeVerdict } from '../scripts/delegate.ts';
+import { delegate, scopeCheckId, scopeVerdict } from '../scripts/delegate.ts';
+import { inScope } from '../scripts/resources.ts';
 
 const git=(cwd:string,args:string[])=>execFileSync('git',args,{cwd,stdio:['ignore','pipe','pipe']}).toString();
 const jevTargeted=(async()=>Response.json({model:'test/jev',answers:{selection:{type:'choice',choice:'targeted',confidence:.95,probabilities:{targeted:.95,rethink:.03,simplify:.02}}}})) as typeof fetch;

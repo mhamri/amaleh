@@ -1,6 +1,6 @@
 import { realpath } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { Store, taskOf, invariant, hash, family, fingerprint, event, conflict, activeTasks } from './core.ts';
+import { Store, taskOf, invariant, hash, family, fingerprint, event, conflict, activeTasks, unmetDependencies } from './core.ts';
 import type { Run } from './core.ts';
 import { catalog } from './adapters.ts';
 import { loadModelConfig, configPath } from './config.ts';
@@ -43,7 +43,7 @@ export async function selectModel(store:Store,id:string,purpose:Purpose,workspac
  const resolvedWorkspace=await realpath(workspace);
  if(t.activity)return {action:'dispatch-blocked',reason:'Task verification already active',tasks:[id]};
  {
-  const unmet=t.deps.filter(id=>taskOf(s,id).status!=='accepted'||!taskOf(s,id).integrated);
+  const unmet=unmetDependencies(s,t);
   if(unmet.length)return {action:'dispatch-blocked',reason:'Unmet dependencies; integrate prerequisite tasks before routing',tasks:unmet};
   const live=activeTasks(s).filter(other=>other.id!==id);
   if(live.length>=s.config.maxWorkers)return {action:'dispatch-blocked',reason:'Worker capacity reached; wait for a running task',tasks:live.map(t=>t.id)};

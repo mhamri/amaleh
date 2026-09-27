@@ -27,7 +27,7 @@ async function piFixture(t:any,makeSource:(dir:string)=>string){
 }
 
 test('an edit or write outside the workspace kills the worker and fails the run at once',async t=>{
- const {dir,input}=await piFixture(t,dir=>output([
+ const {input}=await piFixture(t,dir=>output([
   tool('edit',{path:join(dir,'src','a.ts')}),
   tool('edit',{path:join(tmpdir(),'elsewhere','leak.ts')}),
   tool('write',{path:join(tmpdir(),'elsewhere','second-leak.md')}),
@@ -60,12 +60,20 @@ test('resolveWrites flags traversal, foreign roots and drops unusable paths',()=
  assert.deepEqual(paths,[join(root,'a.md'),resolve(root,'..','outside.md'),join(root,'sub','x.md'),resolve(tmpdir(),'other','y.md')]);
 });
 
+const promptInput=()=>({workspace:join(tmpdir(),'task-checkout'),briefPath:join(tmpdir(),'run','sessions','task','brief.md'),artifacts:join(tmpdir(),'run','artifacts'),runtime:process.execPath,jev:join(tmpdir(),'amaleh','scripts','jev.ts'),question:join(tmpdir(),'amaleh','scripts','question.ts'),runWorkspace:join(tmpdir(),'main-checkout'),runId:'run-id',taskId:'task-id'});
 test('the worker prompt names the task workspace and the read-only handoff paths',()=>{
- const workspace=join(tmpdir(),'task-checkout'),briefPath=join(tmpdir(),'run','sessions','task','brief.md'),artifacts=join(tmpdir(),'run','artifacts'),jev=join(tmpdir(),'amaleh','scripts','jev.ts'),run=join(tmpdir(),'main-checkout');
- const prompt=workerPrompt(workspace,briefPath,artifacts,jev,process.execPath,run,'run-id','task-id');
- assert.ok(prompt.includes(workspace));
+ const input=promptInput(),prompt=workerPrompt(input);
+ assert.ok(prompt.includes(input.workspace));
  assert.match(prompt,/Every edit and write must stay under/);
- for(const path of [briefPath,artifacts,jev,run]){assert.ok(prompt.includes(path),path+' must be named');assert.match(prompt,/read-only/,path+' must be marked read-only');}
+ for(const path of [input.briefPath,input.artifacts,input.jev,input.question,input.runWorkspace]){assert.ok(prompt.includes(path),path+' must be named');assert.match(prompt,/read-only/,path+' must be marked read-only');}
+});
+test('the worker prompt routes a wrong contract to a question, forbids vendor code from memory and commands that never end',()=>{
+ const input=promptInput(),prompt=workerPrompt(input);
+ assert.ok(prompt.includes(`"${input.runtime}" "${input.question}" "${input.runWorkspace}" run-id task-id`),'the contract question command names the run, not the task checkout');
+ assert.match(prompt,/do not bend the work to fit it/);
+ assert.match(prompt,/Never write vendor code or setup for a third-party service from memory/);
+ assert.match(prompt,/--inspect-brk/);
+ assert.match(prompt,/\/dev\/null; NUL creates a file/);
 });
 
 const task=(id:string,deps:string[]=[])=>({id,title:id,goal:'Correct observable behavior',phase:'checkout',deps,resources:[id],criteria:['correct result'],kind:'code' as const,checks:[{id:'test',command:process.execPath,args:['-e','process.exit(0)'],role:'guard'}],noProbe:'Test fixture; workspace confinement is asserted by the test, not by an executable probe'} as c.Task);
@@ -131,6 +139,6 @@ test('a worker whose writes all stay inside is accepted',async t=>{
 });
 
 test('a registered check may use any id without conflict',async t=>{
- const {dir,store}=await delegateFixture(t);
+ const {store}=await delegateFixture(t);
  await assert.doesNotReject(()=>c.plan(store,{tasks:[task('a'),{...task('b'),checks:[{id:'my-check',command:'x',args:[],role:'guard'}]}],integrationChecks:[]}));
 });

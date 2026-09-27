@@ -33,7 +33,7 @@ const samples: Record<string, unknown> = {
     metrics: {
       tasks: 2, coordinatorDecisions: 1, coordinatorDecisionsPerTask: 0.5, workerJevCalls: 3,
       delegations: 2, workerDispatches: 2, hostTakeovers: 3, hostTakeoversByTask: { seo: 3 }, hostActionRecords: 3, hostActionsPerTask: 1.5,
-      revisions: 12, revisionAllowance: 40, retries: 1, workerFamilies: { deepseek: 1, zai: 1 },
+      revisions: 604, coordinatorOperations: 9, coordinatorOperationsPerTask: 4.5, contractQuestions: 1, retries: 1, workerFamilies: { deepseek: 1, zai: 1 },
     },
     warnings: [],
   },
@@ -80,6 +80,14 @@ test('a person at a terminal gets a headline and aligned rows for every listed o
 
 test('health names how often the host took a task over, per task', () => {
   assert.match(renderHuman('health', samples.health), /Host takeovers +3 \(seo:3\)/);
+});
+
+test('health counts the coordinator\'s own operations and shows state revisions without an allowance', () => {
+  const report = renderHuman('health', samples.health);
+  assert.match(report, /Coordinator operations +9 \(4\.5 per task\)/);
+  assert.match(report, /Contract questions +1/);
+  assert.match(report, /State revisions +604$/m);
+  assert.doesNotMatch(report, /allowed/);
 });
 
 test('an operation without a renderer pretty-prints the same JSON detail', () => {

@@ -146,6 +146,12 @@ export default function DocsReviewAndRecovery() {
               Contract problems spend no repair cycles. When a worker changes files outside its task’s resources, <span class="font-mono text-sm text-base-content">delegate</span> returns a <span class="font-mono text-sm text-base-content">scope-question</span> instead of starting a repair. Widening the resources with <span class="font-mono text-sm text-base-content">amend</span> keeps the worker’s output and verifies it again with no new worker run; delegating again reverts the paths through a repair, which does spend a cycle. An <span class="font-mono text-sm text-base-content">amend</span> spends a cycle only when a check other than scope is failing or a blocking finding is open.
             </p>
             <p>
+              A worker that cannot deliver the contract as written, because a check cannot pass for a reason outside the task, two criteria contradict each other, or the work needs vendor code no source supplies, raises a contract question instead of bending the work to fit. <span class="font-mono text-sm text-base-content">delegate</span> returns <span class="font-mono text-sm text-base-content">contract-question</span> before any check runs, without spending a cycle. Amending the contract spends none either, and a change to checks or resources alone keeps the output for verification; delegating again with a brief that says why the contract stands sends the output to checks and review as it stands.
+            </p>
+            <p>
+              A reopen charges only the task it names. Its dependents carry no defect of their own: an accepted dependent keeps its output and, once its upstream is integrated again and merged into its checkout, is checked and reviewed with no worker run. A dependent whose own last attempt had already failed returns for a repair and spends a cycle.
+            </p>
+            <p>
               Host work is final. What the invoking model writes under <span class="font-mono text-sm text-base-content">host-exception</span> is accepted once its checks and scope pass, with no model review; a failing check sends it back to the host as <span class="font-mono text-sm text-base-content">host-checks-failed</span> without spending a cycle. The host re-reads its own diff against the task criteria and every reopen reason before recording the result.
             </p>
             <p>

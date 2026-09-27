@@ -1,9 +1,10 @@
 import type { EffortState } from './effort.ts';
-import { mkdir, readFile, writeFile, rename, readdir, stat, rm, realpath } from 'node:fs/promises';
-import { resolve, join, relative, isAbsolute, sep } from 'node:path';
+import { mkdir, readFile, writeFile, rename, readdir, rm, realpath } from 'node:fs/promises';
+import { resolve, join, relative, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { hostname } from 'node:os';
+import { resourceSetsOverlap } from './resources.ts';
 
 export type Command = { command:string; args:string[] };
 export type IntegrationCheck = Command & { id:string };
@@ -37,8 +38,9 @@ export function validateTasks(tasks:TaskInput[]) {
  const active=new Set<string>(),done=new Set<string>(); const visit=(id:string)=>{invariant(!active.has(id),'Dependency cycle');if(done.has(id))return;active.add(id);for(const dep of tasks.find(t=>t.id===id)!.deps){invariant(ids.has(dep),'Missing dependency');visit(dep);}active.delete(id);done.add(id);};for(const id of ids)visit(id);
 }
 export const taskOf=(s:Run,id:string)=>{const t=s.tasks.find(t=>t.id===id);invariant(t,'Unknown task');return t;};
+export const unmetDependencies=(s:Run,t:Task)=>t.deps.filter(id=>taskOf(s,id).status!=='accepted'||!taskOf(s,id).integrated);
 export function family(model:string):string { if(/deepseek/i.test(model))return 'deepseek';if(/glm|z-ai/i.test(model))return 'glm';if(/kimi|moonshot/i.test(model))return 'kimi';if(/claude|anthropic|fable/i.test(model))return 'claude';if(/astra|gpt|openai/i.test(model))return 'openai';return model.split('/')[0]; }
-export function conflict(a:Task,b:Task){return !a.workspace||!b.workspace||a.workspace===b.workspace||a.resources.some(r=>b.resources.some(s=>r==='*'||s==='*'||r===s||r.startsWith(s+'/')||s.startsWith(r+'/')));}
+export function conflict(a:Task,b:Task){return !a.workspace||!b.workspace||a.workspace===b.workspace||resourceSetsOverlap(a.resources,b.resources);}
 const ignored=new Set(['.git','.amaleh','node_modules','.DS_Store']);
 export async function fingerprint(workspace:string):Promise<string>{
  const entries:string[]=[]; async function walk(dir:string){for(const ent of (await readdir(dir,{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name))){if(ignored.has(ent.name))continue;const path=join(dir,ent.name),name=relative(workspace,path).split(sep).join('/');if(ent.isSymbolicLink()){const {readlink}=await import('node:fs/promises');entries.push(`${name}:link:${await readlink(path)}`);}else if(ent.isDirectory())await walk(path);else if(ent.isFile())entries.push(`${name}:${hash((await readFile(path)).toString('base64'))}`);}}await walk(workspace);return hash(entries.join('\n'));
@@ -51,7 +53,7 @@ export class Store {
  async readArtifact(id:string){invariant(/^[a-f0-9]{64}$/.test(id),'Invalid artifact ID');return readFile(join(this.root,'artifacts',id+'.json'),'utf8');}
  async lock(){await mkdir(this.root,{recursive:true});const path=join(this.root,'lock');for(let attempt=0;;attempt++){try{await mkdir(path);break;}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;if(attempt>=100)throw new Error('Run is locked. Inspect owner; unlock only after verifying abandonment.');await new Promise(r=>setTimeout(r,50));}}try{await writeFile(join(path,'owner.json'),JSON.stringify({pid:process.pid,host:hostname()}));}catch(e){await rm(path,{recursive:true});throw e;}return ()=>rm(path,{recursive:true});}
  async unlock(){const path=join(this.root,'lock');const owner=JSON.parse(await readFile(join(path,'owner.json'),'utf8'));invariant(owner.host===hostname(),'Cannot verify remote owner');invariant(!processAlive(owner.pid),'Lock owner is alive');await rm(path,{recursive:true});}
- async transaction<T>(change:(s:Run)=>Promise<T>|T):Promise<T>{const release=await this.lock();try{const s=await this.load();invariant(s.status!=='complete','Completed run is immutable; start a new run');const result=await change(s);s.revision++;await this.save(s);return result;}finally{await release();}}
+ async transaction<T>(change:(s:Run)=>Promise<T>|T):Promise<T>{const release=await this.lock();try{const s=await this.load();invariant(s.status!=='complete',`Run ${s.id} is complete and cannot change. Start a new run with "continues":"${s.id}" to build on its criteria and settled decisions`);const result=await change(s);s.revision++;await this.save(s);return result;}finally{await release();}}
  async save(s:Run){const name=`revision-${String(s.revision).padStart(9,'0')}.json`,temp=join(this.root,randomUUID()+'.tmp');await writeFile(temp,JSON.stringify(s,null,2));await rename(temp,join(this.root,name));}
 }
 export function event(s:Run,type:string,detail:unknown){s.events.push({at:new Date().toISOString(),type,detail});}
@@ -197,8 +199,37 @@ export function scopeQuestion(s:Run,t:Task){
  return last?.type==='scope-question'?last.detail as {fingerprint:string;outOfScope:string[]}:undefined;
 }
 export function answerScopeQuestion(s:Run,t:Task,answer:'revert'|'amend'){if(scopeQuestion(s,t))event(s,'scope-answered',{id:t.id,answer});}
-async function reviewAction(s:Run,t:Task){if(t.activity)return {action:'await-verification',task:t.id,activity:t.activity}; const unmet=t.deps.filter(id=>taskOf(s,id).status!=='accepted'||!taskOf(s,id).integrated);if(unmet.length)return {action:'reconcile-dependencies',task:t.id,dependencies:unmet}; let fp:string; try{fp=await fingerprint(t.workspace!);}catch(error){if(!workspaceUnavailable(error))throw error;return {action:'reconcile-workspace',task:t.id,workspace:t.workspace,reason:(error as Error).message,recovery:'Restore workspace access, or resume to block affected work while independent tasks continue'};} const missing=t.checks.filter(c=>!t.receipts.some(r=>r.id===c.id&&r.fingerprint===fp&&r.code===0)); if(t.receipts.some(r=>r.code!==0)){const question=scopeQuestion(s,t);return question?{action:'scope-question',task:t.id,outOfScope:question.outOfScope,answers:'amend resources to keep these paths, or delegate again so a repair reverts them'}:{action:'repair-needed',task:t.id};} if(missing.length)return {action:'check',task:t.id,checks:missing}; if(hostAuthored(t))return {action:'accept',task:t.id,hostFinal:true}; if(!t.review||t.review.fingerprint!==fp)return {action:'review',tasks:[{id:t.id,author:t.family,workspace:t.workspace}]}; if(t.review.findings.some(f=>f.blocking&&f.disposition==='open'))return {action:'triage-repair',task:t.id,findings:t.review.findings}; const coverage=reviewCoverageDebt(s,t); if(coverage.length)return {action:'review-evidence-needed',task:t.id,obligations:coverage.map(o=>({...o,evidence:t.review?.coverage?.find(c=>c.id===o.id)?.evidence})),reviewArtifact:t.review.artifact}; return {action:'accept',task:t.id};}
-async function nextAction(s:Run,reviewActions:Map<string,Awaited<ReturnType<typeof reviewAction>>>){if(s.status==='complete')return {action:'done',run:s.id,acceptance:s.acceptance};if(s.status==='blocked')return {action:'intervention',reason:s.blocked};const untracked=s.tasks.filter(t=>t.status==='running'&&!t.execution);if(untracked.length)return {action:'reconcile-execution',tasks:untracked.map(t=>t.id),reason:'Legacy running claims lack execution authorization; reconcile live ownership and preserve artifacts before requeueing through worker routing'};const orphaned=activeTasks(s).filter(t=>{const owner=t.activity?.owner??t.owner;return !!owner&&!ownerAlive(owner);});if(orphaned.length)return {action:'resume',tasks:orphaned.map(t=>t.id),reason:'The recorded owner of this work is no longer running; resume to reconcile it before trusting its status'};if(s.effort?.request)return {action:s.effort.request.status==='running'?'await-host-effort':'execute-host-effort',model:s.effort.model,base:s.effort.base,modes:s.effort.modes,...s.effort.request};const shapingNow=shaping(s);if(shapingNow?.due)return {action:'shape',request:shapingNow.request,guide:'references/planning.md#shape-every-request'};if(shapingNow?.open)return {action:'ask-user',request:shapingNow.request,questions:shapingNow.shape!.questions,options:shapingNow.shape!.options,recommendation:shapingNow.shape!.recommendation,shapeArtifact:shapingNow.shape!.artifact};const pending=s.decisions.find(d=>!d.choice);if(pending)return {action:'host-decision',decision:pending};if(!s.tasks.length)return {action:'discover-specify-plan',intent:s.intent,criteria:s.criteria};const review=s.tasks.filter(t=>t.status==='review');if(review.length)return reviewActions.get(review[0].id)!;const repair=s.tasks.filter(t=>t.status==='repair');if(repair.length)return {action:'repair',tasks:repair.map(t=>({id:t.id,depth:t.depth,cycles:t.cycles,findings:t.review?.findings.filter(f=>f.blocking&&f.disposition!=='resolved'&&f.disposition!=='refuted')}))};const running=s.tasks.filter(t=>t.status==='running');const ready=s.tasks.filter(t=>t.status==='ready'&&t.deps.every(id=>taskOf(s,id).status==='accepted'&&!!taskOf(s,id).integrated));if(ready.length&&running.length<s.config.maxWorkers)return {action:'route-dispatch',tasks:ready.map(t=>({id:t.id,goal:t.goal,criteria:t.criteria})),available:Math.max(0,s.config.maxWorkers-running.length)};const integrate=s.tasks.filter(t=>t.status==='accepted'&&!t.integrated);if(integrate.length)return {action:'integrate',tasks:integrate.map(t=>t.id)};if(running.length)return {action:'await-workers',tasks:running.map(t=>({id:t.id,owner:t.owner}))};const blocked=s.tasks.filter(t=>t.status==='blocked');if(blocked.length)return {action:'resolve-blockers',tasks:blocked.map(t=>({id:t.id,reason:t.blocked}))};return {action:'verify-feature',criteria:s.criteria,checks:s.integrationChecks};}
+export type ContractQuestion={question:string;check?:string};
+export function contractQuestions(s:Run,t:Task):ContractQuestion[]{
+ const events=s.events.filter(e=>(e.type==='contract-question'||e.type==='contract-answered')&&(e.detail as {id?:string}).id===t.id);
+ const answered=events.findLastIndex(e=>e.type==='contract-answered');
+ return events.slice(answered+1).map(e=>{const d=e.detail as ContractQuestion;return {question:d.question,check:d.check};});
+}
+export function answerContractQuestions(s:Run,t:Task,answer:'stands'|'amend',reason:string){if(contractQuestions(s,t).length)event(s,'contract-answered',{id:t.id,answer,reason});}
+export function keptForUpstream(s:Run,t:Task){
+ for(let i=s.events.length-1;i>=0;i--){const e=s.events[i],d=e.detail as {id?:string;reverified?:string[]};
+  if((e.type==='accepted'||e.type==='result')&&d.id===t.id)return false;
+  if(e.type==='invalidated'&&d.reverified?.includes(t.id))return true;}
+ return false;
+}
+const gitOutput=async(cwd:string,args:string[])=>{try{const r=await execute({command:'git',args},cwd);return r.code===0?r.stdout.trim():undefined;}catch{return undefined;}};
+export async function runCommitMissingFromCheckout(s:Run,t:Task){
+ const runHead=await gitOutput(s.workspace,['rev-parse','HEAD']);
+ if(!runHead||!t.workspace||!await gitOutput(t.workspace,['rev-parse','HEAD']))return undefined;
+ try{return (await execute({command:'git',args:['merge-base','--is-ancestor',runHead,'HEAD']},t.workspace)).code===1?runHead:undefined;}catch{return undefined;}
+}
+export const refreshCheckoutReason=(t:Task,runHead:string)=>`Task ${t.id} kept its output when a task it depends on was reopened, but its checkout ${t.workspace} does not contain the run's integrated commit ${runHead}. Merge the run branch into that checkout, then delegate it again so its checks and review judge it on top of the new upstream`;
+export async function raiseContractQuestion(store:Store,input:{taskId:string;question:string;check?:string}){
+ const question=typeof input.question==='string'?input.question.trim():'';
+ invariant(question&&question.length<=4000,'A contract question needs the problem and its evidence, at most 4000 characters');
+ await store.transaction(s=>{const t=taskOf(s,input.taskId);
+  invariant(t.status==='running','A contract question is raised by the worker while it runs this task');
+  invariant(input.check===undefined||t.checks.some(c=>c.id===input.check),`Task ${t.id} has no check named ${input.check}; name a registered check or omit it`);
+  event(s,'contract-question',{id:t.id,question,check:input.check});
+ });
+}
+async function reviewAction(s:Run,t:Task){if(t.activity)return {action:'await-verification',task:t.id,activity:t.activity}; const unmet=unmetDependencies(s,t);if(unmet.length)return {action:'reconcile-dependencies',task:t.id,dependencies:unmet}; let fp:string; try{fp=await fingerprint(t.workspace!);}catch(error){if(!workspaceUnavailable(error))throw error;return {action:'reconcile-workspace',task:t.id,workspace:t.workspace,reason:(error as Error).message,recovery:'Restore workspace access, or resume to block affected work while independent tasks continue'};} const questions=contractQuestions(s,t); if(questions.length)return {action:'contract-question',task:t.id,questions,answers:'amend the task contract, or delegate again with a brief that answers the question so the checks and review judge the output as it stands'}; if(keptForUpstream(s,t)){const runCommit=await runCommitMissingFromCheckout(s,t);if(runCommit)return {action:'refresh-checkout',task:t.id,workspace:t.workspace,reason:refreshCheckoutReason(t,runCommit)};} const missing=t.checks.filter(c=>!t.receipts.some(r=>r.id===c.id&&r.fingerprint===fp&&r.code===0)); if(t.receipts.some(r=>r.code!==0)){const question=scopeQuestion(s,t);return question?{action:'scope-question',task:t.id,outOfScope:question.outOfScope,answers:'amend resources to keep these paths, or delegate again so a repair reverts them'}:{action:'repair-needed',task:t.id};} if(missing.length)return {action:'check',task:t.id,checks:missing}; if(hostAuthored(t))return {action:'accept',task:t.id,hostFinal:true}; if(!t.review||t.review.fingerprint!==fp)return {action:'review',tasks:[{id:t.id,author:t.family,workspace:t.workspace}]}; if(t.review.findings.some(f=>f.blocking&&f.disposition==='open'))return {action:'triage-repair',task:t.id,findings:t.review.findings}; const coverage=reviewCoverageDebt(s,t); if(coverage.length)return {action:'review-evidence-needed',task:t.id,obligations:coverage.map(o=>({...o,evidence:t.review?.coverage?.find(c=>c.id===o.id)?.evidence})),reviewArtifact:t.review.artifact}; return {action:'accept',task:t.id};}
+async function nextAction(s:Run,reviewActions:Map<string,Awaited<ReturnType<typeof reviewAction>>>){if(s.status==='complete')return {action:'done',run:s.id,acceptance:s.acceptance};if(s.status==='blocked')return {action:'intervention',reason:s.blocked};const untracked=s.tasks.filter(t=>t.status==='running'&&!t.execution);if(untracked.length)return {action:'reconcile-execution',tasks:untracked.map(t=>t.id),reason:'Legacy running claims lack execution authorization; reconcile live ownership and preserve artifacts before requeueing through worker routing'};const orphaned=activeTasks(s).filter(t=>{const owner=t.activity?.owner??t.owner;return !!owner&&!ownerAlive(owner);});if(orphaned.length)return {action:'resume',tasks:orphaned.map(t=>t.id),reason:'The recorded owner of this work is no longer running; resume to reconcile it before trusting its status'};if(s.effort?.request)return {action:s.effort.request.status==='running'?'await-host-effort':'execute-host-effort',model:s.effort.model,base:s.effort.base,modes:s.effort.modes,...s.effort.request};const shapingNow=shaping(s);if(shapingNow?.due)return {action:'shape',request:shapingNow.request,guide:'references/planning.md#shape-every-request'};if(shapingNow?.open)return {action:'ask-user',request:shapingNow.request,questions:shapingNow.shape!.questions,options:shapingNow.shape!.options,recommendation:shapingNow.shape!.recommendation,shapeArtifact:shapingNow.shape!.artifact};const pending=s.decisions.find(d=>!d.choice);if(pending)return {action:'host-decision',decision:pending};if(!s.tasks.length)return {action:'discover-specify-plan',intent:s.intent,criteria:s.criteria};const review=s.tasks.filter(t=>t.status==='review'),verifiable=review.filter(t=>reviewActions.get(t.id)!.action!=='reconcile-dependencies');if(verifiable.length)return reviewActions.get(verifiable[0].id)!;const repair=s.tasks.filter(t=>t.status==='repair');if(repair.length)return {action:'repair',tasks:repair.map(t=>({id:t.id,depth:t.depth,cycles:t.cycles,findings:t.review?.findings.filter(f=>f.blocking&&f.disposition!=='resolved'&&f.disposition!=='refuted')}))};const running=s.tasks.filter(t=>t.status==='running');const ready=s.tasks.filter(t=>t.status==='ready'&&!unmetDependencies(s,t).length);if(ready.length&&running.length<s.config.maxWorkers)return {action:'route-dispatch',tasks:ready.map(t=>({id:t.id,goal:t.goal,criteria:t.criteria})),available:Math.max(0,s.config.maxWorkers-running.length)};const integrate=s.tasks.filter(t=>t.status==='accepted'&&!t.integrated);if(integrate.length)return {action:'integrate',tasks:integrate.map(t=>t.id)};if(running.length)return {action:'await-workers',tasks:running.map(t=>({id:t.id,owner:t.owner}))};const blocked=s.tasks.filter(t=>t.status==='blocked');if(blocked.length)return {action:'resolve-blockers',tasks:blocked.map(t=>({id:t.id,reason:t.blocked}))};if(review.length)return reviewActions.get(review[0].id)!;return {action:'verify-feature',criteria:s.criteria,checks:s.integrationChecks};}
 export const activeTasks=(s:Run)=>s.tasks.filter(t=>t.status==='running'||!!t.activity);
 export async function acquireActivity(store:Store,id:string,kind:'check'|'review',checkId?:string,beforeStart?:(s:Run)=>void|Promise<void>){return store.transaction(async s=>{const t=taskOf(s,id);invariant(t.status==='review'&&t.workspace,'Task not awaiting verification');invariant(!t.activity,'Task verification already active');const live=activeTasks(s);invariant(live.length<s.config.maxWorkers,'Worker capacity reached');invariant(!live.some(other=>conflict(t,other)),'Conflicting live task');await beforeStart?.(s);const operation=randomUUID();t.activity={kind,checkId,owner:{pid:process.pid,coordinatorPid:process.pid,host:hostname(),operation}};event(s,'activity-started',{id,...t.activity});return operation;});}
 export async function activitySpawned(store:Store,id:string,operation:string,pid:number){await store.transaction(s=>{const activity=taskOf(s,id).activity;invariant(activity?.owner.operation===operation,'Verification ownership changed');activity.owner.pid=pid;});}
@@ -224,7 +255,7 @@ export async function hostException(store:Store,input:{id:string;reason:'user-re
 export async function claim(store:Store,id:string,input:{workspace:string;model:string;pid?:number;routeDecisionId?:string;hostAuthorization?:string}){
  await store.transaction(async s=>{const t=taskOf(s,id);
  invariant(['ready','repair'].includes(t.status)&&!t.activity,'Task is not executable');
- invariant(t.deps.every(id=>taskOf(s,id).status==='accepted'&&!!taskOf(s,id).integrated),'Unmet dependencies');
+ invariant(!unmetDependencies(s,t).length,'Unmet dependencies');
  invariant(input.model,'Actual author model required');
  const workspace=await realpath(input.workspace),live=activeTasks(s).filter(other=>other.id!==id);
  invariant(live.length<s.config.maxWorkers,'Worker capacity reached');
@@ -267,9 +298,14 @@ export async function addReviewCheck(store:Store,id:string,check:Check){await st
 export async function review(store:Store,id:string,input:{model:string;findings:Finding[];fingerprint:string;report:string;coverage?:ReviewCoverage[]}){const artifact=await store.artifact(input);await store.transaction(async s=>{const t=taskOf(s,id);invariant(t.status==='review'&&t.workspace,'Task not awaiting review');invariant(input.model&&family(input.model)!==t.family,'Review requires another model family');invariant(input.fingerprint===await fingerprint(t.workspace),'Review evidence is stale');invariant(Array.isArray(input.findings)&&typeof input.report==='string'&&input.report.length>0,'Review report required');for(const f of input.findings)invariant(f.id&&f.lens&&f.location&&f.scenario&&f.evidence&&f.consequence&&typeof f.blocking==='boolean','Finding lacks evidence');if(input.coverage!==undefined)validateReviewCoverage(s,t,input.coverage,input.findings);const findings=input.findings.map(f=>({...f,disposition:'open' as const}));t.review={family:family(input.model),fingerprint:input.fingerprint,findings,artifact,coverage:input.coverage};event(s,'review',{id,artifact});});}
 function chargeCycle(s:Run,t:Task){t.cycles++;t.depth=t.cycles>s.config.flashRepairCycles+s.config.deepRepairCycles?'host':t.cycles>s.config.flashRepairCycles?'deep':'flash';}
 export async function repair(store:Store,id:string){await store.transaction(s=>{const t=taskOf(s,id);invariant(t.status==='review'&&!t.activity,'Task is not in review or verification remains active');invariant(openBlocking(t)||t.receipts.some(r=>r.code!==0),'No blocking review or failing check');t.status='repair';if(hostAuthored(t)){event(s,'host-checks-failed',{id,failing:t.receipts.filter(r=>r.code!==0).map(r=>r.id)});return;}chargeCycle(s,t);event(s,'repair',{id,cycle:t.cycles,depth:t.depth});});}
-export async function accept(store:Store,id:string){await store.transaction(async s=>{const t=taskOf(s,id),hostFinal=hostAuthored(t);invariant(t.status==='review'&&t.workspace&&t.output&&(t.review||hostFinal)&&!t.activity,'Result and independent review required; verification must be idle');invariant(t.deps.every(id=>taskOf(s,id).status==='accepted'&&!!taskOf(s,id).integrated),'Unmet dependencies; reconcile upstream evidence before acceptance');const fp=await fingerprint(t.workspace);if(!hostFinal){invariant(t.review!.fingerprint===fp,'Review stale');invariant(!t.review!.findings.some(f=>f.blocking&&f.disposition==='open'),'Blocking findings remain');}invariant(t.checks.every(c=>t.receipts.some(r=>r.id===c.id&&r.code===0&&r.fingerprint===fp)),'Required checks missing, failed, or stale');if(!hostFinal)invariant(!reviewCoverageDebt(s,t).length,'Review coverage incomplete; obtain missing evidence and a corrected independent report');t.status='accepted';t.fingerprint=fp;event(s,'accepted',{id,fp,hostFinal:hostFinal||undefined});});}
-export async function integrated(store:Store,id:string,evidence:string){await store.transaction(async s=>{const t=taskOf(s,id);invariant(t.status==='accepted'&&evidence,'Accepted task and integration evidence required');invariant(t.workspace&&t.fingerprint===await fingerprint(t.workspace),'Accepted workspace changed');t.integrated=await fingerprint(s.workspace);event(s,'integrated',{id,evidence,fingerprint:t.integrated});s.integrationReceipts=[];});}
-export async function finishRun(s:Run,claims:string[]){invariant(!s.effort?.request,'Host effort pass is unfinished');invariant(s.tasks.length&&s.tasks.every(t=>t.status==='accepted'&&t.integrated),'Incomplete tasks');const fp=await fingerprint(s.workspace);invariant(s.tasks.some(t=>t.integrated===fp),'Integrated content changed after recorded integration');invariant(!s.decisions.some(d=>!d.choice),'Unresolved semantic decision');invariant(s.integrationChecks.every(c=>s.integrationReceipts.some(r=>r.id===c.id&&r.code===0&&r.fingerprint===fp)),'Integration checks missing, failed or stale');invariant(Array.isArray(claims)&&claims.length===s.criteria.length&&claims.every(c=>typeof c==='string'&&c.trim()),'Evidence explanation required for every outcome');s.acceptance={fingerprint:fp,claims};s.status='complete';event(s,'finished',s.acceptance);}
+export async function accept(store:Store,id:string){await store.transaction(async s=>{const t=taskOf(s,id),hostFinal=hostAuthored(t);invariant(t.status==='review'&&t.workspace&&t.output&&(t.review||hostFinal)&&!t.activity,'Result and independent review required; verification must be idle');invariant(!unmetDependencies(s,t).length,'Unmet dependencies; reconcile upstream evidence before acceptance');const fp=await fingerprint(t.workspace);if(!hostFinal){invariant(t.review!.fingerprint===fp,'Review stale');invariant(!t.review!.findings.some(f=>f.blocking&&f.disposition==='open'),'Blocking findings remain');}invariant(t.checks.every(c=>t.receipts.some(r=>r.id===c.id&&r.code===0&&r.fingerprint===fp)),'Required checks missing, failed, or stale');if(!hostFinal)invariant(!reviewCoverageDebt(s,t).length,'Review coverage incomplete; obtain missing evidence and a corrected independent report');t.status='accepted';t.fingerprint=fp;event(s,'accepted',{id,fp,hostFinal:hostFinal||undefined});});}
+async function acceptedWorkspaceFingerprint(t:Task){
+ invariant(t.workspace,'Accepted task has no workspace');
+ try{return await fingerprint(t.workspace);}
+ catch(error){if(!workspaceUnavailable(error))throw error;throw new Error(`Task ${t.id}'s workspace ${t.workspace} is gone (${(error as NodeJS.ErrnoException).code}). integrated compares that checkout with the output that was accepted, so record integrated before removing a task worktree. Restore the worktree at the accepted commit, then run integrated again`);}
+}
+export async function integrated(store:Store,id:string,evidence:string){await store.transaction(async s=>{const t=taskOf(s,id);invariant(t.status==='accepted'&&evidence,'Accepted task and integration evidence required');invariant(t.fingerprint===await acceptedWorkspaceFingerprint(t),'Accepted workspace changed');t.integrated=await fingerprint(s.workspace);event(s,'integrated',{id,evidence,fingerprint:t.integrated});s.integrationReceipts=[];});}
+export async function finishRun(s:Run,claims:string[]){invariant(!s.effort?.request,'Host effort pass is unfinished');invariant(s.tasks.length,'Incomplete tasks: none is planned');const incomplete=s.tasks.filter(t=>t.status!=='accepted'||!t.integrated);invariant(!incomplete.length,`Incomplete tasks: ${incomplete.map(t=>`${t.id} (${t.status==='accepted'?'accepted, integrated not recorded':t.status})`).join(', ')}`);const fp=await fingerprint(s.workspace);invariant(s.tasks.some(t=>t.integrated===fp),'Integrated content changed after recorded integration');invariant(!s.decisions.some(d=>!d.choice),'Unresolved semantic decision');invariant(s.integrationChecks.every(c=>s.integrationReceipts.some(r=>r.id===c.id&&r.code===0&&r.fingerprint===fp)),'Integration checks missing, failed or stale');invariant(Array.isArray(claims)&&claims.length===s.criteria.length&&claims.every(c=>typeof c==='string'&&c.trim()),'Evidence explanation required for every outcome');s.acceptance={fingerprint:fp,claims};s.status='complete';event(s,'finished',s.acceptance);}
 export async function finish(store:Store,claims:string[]){await store.transaction(async s=>await finishRun(s,claims));}
 const workspaceUnavailable=(error:unknown)=>['ENOENT','ENOTDIR','EACCES','EPERM'].includes((error as NodeJS.ErrnoException).code??'');
 function quarantineWorkspace(s:Run,id:string,reason:string){
@@ -317,13 +353,19 @@ export async function summarize(workspace:string,id:string):Promise<RunSummary>{
 export function invalidateTree(s:Run,id:string,reason:string,feedback?:number,isDefect?:boolean){
  invariant(reason,'Invalidation reason required');taskOf(s,id);const affected=new Set([id]);let changed=true;while(changed){changed=false;for(const t of s.tasks)if(!affected.has(t.id)&&t.deps.some(dep=>affected.has(dep))){affected.add(t.id);changed=true;}}
  invariant(!s.tasks.some(t=>affected.has(t.id)&&(t.status==='running'||!!t.activity)),'Affected task is still running; reconcile ownership before invalidation');
+ const reverified:string[]=[];
  for(const t of s.tasks)if(affected.has(t.id)){
-  // A defect reopen charges every affected task that already ran. A contract reopen
-  // charges nothing here: amend alone knows whether the next worker run is a repair.
-  if((t.output||t.review)&&feedback===undefined&&isDefect!==false)chargeCycle(s,t);
-  t.status='ready';t.integrated=undefined;t.receipts=[];t.review=undefined;
+  const own=t.id===id,failed=failedAttempt(t)&&!hostAuthored(t);
+  // The reopened task is charged only for a defect: amend alone knows whether its next
+  // worker run is a repair. A dependent is charged only when its own last attempt failed,
+  // because its next worker run repairs that failure; otherwise it keeps its output.
+  const charged=feedback===undefined&&(own?!!(t.output||t.review)&&isDefect!==false:failed);
+  const keepsOutput=!own&&!!t.output&&(t.status==='accepted'||t.status==='review'&&!failed);
+  if(charged)chargeCycle(s,t);
+  t.status=keepsOutput?'review':'ready';t.integrated=undefined;t.receipts=[];t.review=undefined;
+  if(keepsOutput)reverified.push(t.id);
  }
- s.integrationReceipts=[];event(s,'invalidated',{id,reason,affected:[...affected],feedback,kind:feedback===undefined?isDefect===false?'contract':'defect':'feedback'});
+ s.integrationReceipts=[];event(s,'invalidated',{id,reason,affected:[...affected],reverified,feedback,kind:feedback===undefined?isDefect===false?'contract':'defect':'feedback'});
 }
 
 type ReopenInput={id:string;reason:string;check?:Check;noProbe?:string;feedback?:boolean};
@@ -355,17 +397,18 @@ export async function invalidate(store:Store,input:ReopenInput){
  if(input.check||noProbe)event(s,'reopen-probe',{id:t.id,check:input.check,noProbe:noProbe||undefined});
 });}
 const amendedFields=['title','goal','phase','deps','resources','criteria','checks','kind'] as const;
-const onlyResourcesChange=(t:Task,next:TaskInput)=>amendedFields.every(key=>key==='resources'||JSON.stringify(t[key])===JSON.stringify(next[key]))&&(next.noProbe===undefined||next.noProbe===t.noProbe);
+const changesOnly=(t:Task,next:TaskInput,allowed:readonly (typeof amendedFields[number])[])=>amendedFields.every(key=>allowed.includes(key)||JSON.stringify(t[key])===JSON.stringify(next[key]))&&(next.noProbe===undefined||next.noProbe===t.noProbe);
 const awaitingVerdict=(t:Task)=>!!t.output&&(t.status==='review'||t.status==='repair'&&hostAuthored(t));
 const failedAttempt=(t:Task)=>t.status==='review'&&(t.receipts.some(r=>r.code!==0&&r.id!==scopeCheckId)||openBlocking(t));
 export async function amend(store:Store,input:{id:string;reason:string;task:TaskInput;feedback?:boolean}){await store.transaction(s=>{
  invariant(input.task.id===input.id,'Amend retains task identity');
  const fromFeedback=input.feedback===true?feedbackReopen(s,input.id):undefined;
  if(fromFeedback===undefined)requireShaped(s,'amend');
- const before=taskOf(s,input.id);
- const keepsOutput=fromFeedback===undefined&&awaitingVerdict(before)&&!openBlocking(before)&&onlyResourcesChange(before,input.task);
- const charged=fromFeedback===undefined&&!keepsOutput&&failedAttempt(before);
+ const before=taskOf(s,input.id),answersQuestion=contractQuestions(s,before).length>0;
+ const keepsOutput=fromFeedback===undefined&&awaitingVerdict(before)&&!openBlocking(before)&&changesOnly(before,input.task,answersQuestion?['resources','checks']:['resources']);
+ const charged=fromFeedback===undefined&&!answersQuestion&&!keepsOutput&&failedAttempt(before);
  answerScopeQuestion(s,before,'amend');
+ answerContractQuestions(s,before,'amend',input.reason);
  invalidateTree(s,input.id,input.reason,fromFeedback,false);
  const t=taskOf(s,input.id);
  for(const key of amendedFields)(t as any)[key]=input.task[key];
@@ -373,7 +416,7 @@ export async function amend(store:Store,input:{id:string;reason:string;task:Task
  validateTasks(s.tasks);validateContract(input.task);
  if(keepsOutput)t.status='review';
  if(charged)chargeCycle(s,t);
- event(s,'contract-amended',{id:input.id,reason:input.reason,keepsOutput,charged});
+ event(s,'contract-amended',{id:input.id,reason:input.reason,keepsOutput,charged,answersQuestion});
 });}
 
 export type ParallelAction={task:string;action:string;workspace?:string;resources:string[];checks?:Check[];[key:string]:unknown};
@@ -383,7 +426,7 @@ export async function next(store:Store){
  const reviewActions=new Map(await Promise.all(reviewed.map(async t=>[t.id,await reviewAction(s,t)] as const)));
  const action=await nextAction(s,reviewActions);
  const running=activeTasks(s);
- const ready=s.tasks.filter(t=>t.status==='ready'&&t.deps.every(id=>taskOf(s,id).status==='accepted'&&!!taskOf(s,id).integrated));
+ const ready=s.tasks.filter(t=>t.status==='ready'&&!unmetDependencies(s,t).length);
  const actions=s.tasks.flatMap<ParallelAction>(t=>{
   if(s.status!=='active')return [];
   const scope={task:t.id,workspace:t.workspace,resources:t.resources};
