@@ -7,13 +7,15 @@ them from anywhere else. The figures were read from the run records under `.amal
 
 ## The two runs
 
-| Run | Tasks | Model calls | Independent reviews | Blocking review findings | Check runs | Failed check runs | Local cost estimate |
+| Run | Tasks | Model calls | Independent reviews | Blocking review findings | Check runs | Failed check runs | Worker and reviewer cost estimate |
 |---|---|---|---|---|---|---|---|
 | `website-visuals` | 6 | 32 | 18 | 11 | 61 | 2 | 1.04 US dollars |
 | `website-polish` | 11 | 124 | 56 | 34 | 209 | 9 | 6.78 US dollars |
 | Both runs | 17 | 156 | 74 | 45 | 270 | 11 | 7.82 US dollars |
 
-- Cost is pi's local estimate, not a billed figure. Say "estimated" every time it is shown.
+- Cost is pi's local estimate of the worker and reviewer calls, not a billed figure. The
+  coordinating host model's usage is not in it. Every time the figure is shown, say "estimated"
+  and say that it is worker and reviewer spend.
 - A blocking finding is a defect an independent reviewer from a different model family refused to
   accept. Every one of the 45 was repaired before the chunk merged.
 - Workers asked Jev for an in-task decision 27 times without the coordinator (3 in
