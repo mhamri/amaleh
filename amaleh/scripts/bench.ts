@@ -1,6 +1,6 @@
 import { mkdir, writeFile, rm, readdir, readFile, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
-import { Store, start, plan, taskOf, invariant, hash, type TaskInput } from './core.ts';
+import { start, plan, taskOf, invariant, hash, type TaskInput } from './core.ts';
 import { delegateBatch } from './delegate.ts';
 import { processHealth } from './host-diagnostics.ts';
 import { diagnostics } from './telemetry.ts';
@@ -63,7 +63,7 @@ export function scorecard(health:Extract<Awaited<ReturnType<typeof processHealth
   {name:'worker-side Jev calls',value:String(metric('workerJevCalls')),pass:metric('workerJevCalls')>0},
   {name:'model families used',value:Object.keys(health.metrics.workerFamilies??{}).join(', ')||'none',pass:Object.keys(health.metrics.workerFamilies??{}).length>=2},
   {name:'health warnings',value:String(health.warnings.length),pass:health.warnings.length===0}];
- const notes=[`state revisions: ${metric('revisions')} against an allowance of ${metric('revisionAllowance')}, after ${metric('retries')} recorded retries`,
+ const notes=[`coordinator operations: ${metric('coordinatorOperations')}, state revisions: ${metric('revisions')}, after ${metric('retries')} recorded retries`,
   `worker dispatches: ${metric('workerDispatches')} for ${metric('tasks')} tasks`];
  return {passed:rows.filter(r=>r.pass).length,total:rows.length,rows,notes,warnings:health.warnings,cost:totals,elapsedMs};
 }

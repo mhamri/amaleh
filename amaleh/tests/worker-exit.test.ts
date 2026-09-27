@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { piRun, transientProvider } from '../scripts/adapters.ts';
+import { piRun, transientProvider, debuggerWait } from '../scripts/adapters.ts';
 import { diagnostics } from '../scripts/telemetry.ts';
 
 const modelsConfig=join(import.meta.dirname,'..','models.json');
@@ -32,7 +32,7 @@ process.stdout.write(n===0?${chunk(first)}:${chunk(later)});
 `;
 
 test('a worker that finishes with agent_end but empty final text is recorded, not failed',async t=>{
- const {dir,input}=await piFixture(t,`process.stdout.write(${chunk([emptyText,{type:'agent_end'}])});`);
+ const {input}=await piFixture(t,`process.stdout.write(${chunk([emptyText,{type:'agent_end'}])});`);
  const result=await piRun(input);
  assert.equal(result.text,'','the empty summary is the recorded result');
  assert.equal(result.code,0);
@@ -87,6 +87,38 @@ test('an aborted run stays a provider error and is not continued',async t=>{
  process.env.AMALEH_PI_ENTRY=entry;process.env.AMALEH_NODE=process.execPath;
  await assert.rejects(()=>piRun({workspace:dir,model:'test/model',prompt:'fixture',sessionDir:join(dir,'.sessions'),diagnosticRoot:join(dir,'.diagnostics')}),/aborted/);
  assert.equal(await readFile(counter,'utf8'),'1');
+});
+
+test('a command that waits for a debugger stops the call at once instead of idling until the timeout',{timeout:20000},async t=>{
+ const debuggerWaits={type:'tool_execution_start',toolName:'bash',args:{command:`NODE_OPTIONS='--inspect-brk=9229' node -e "console.log(1)"`}};
+ const {input}=await piFixture(t,`process.stdout.write(${chunk([debuggerWaits])}+'\\n');setInterval(()=>{},1000);`);
+ const started=Date.now();
+ await assert.rejects(()=>piRun({...input,idleTimeoutMs:600000}),/ran a command with --inspect-brk, which waits for a debugger/);
+ assert.ok(Date.now()-started<15000,'the call must not wait for the idle timeout');
+ const report=await diagnostics(input.diagnosticRoot);
+ assert.ok(report.operations[0].events.some((e:any)=>e.stage==='debugger-wait'));
+ assert.equal(report.operations[0].events.filter((e:any)=>e.stage==='attempt').length,1,'a debugger wait is not a transient provider failure');
+});
+
+test('only a JavaScript runtime started with a debugger-wait flag counts as a debugger wait',()=>{
+ for(const command of ['node --inspect-brk scripts/check.mjs','bun test --inspect-wait','npx tsx --inspect-brk=9229 app.ts',
+  `cd site && NODE_OPTIONS="--inspect-brk=0.0.0.0:9229" npm run build`,`NODE_OPTIONS='--max-old-space-size=4096 --inspect-brk' node app.js`,
+  `$env:NODE_OPTIONS='--inspect-brk'; npm test`,`"/usr/bin/node" --inspect-brk app.js`,`& 'C:\\Program Files\\nodejs\\node.exe' --inspect-wait app.js`])
+  assert.ok(debuggerWait(command),command);
+ for(const command of ['node --inspect scripts/check.mjs',`rg -n -- '--inspect-brk' amaleh/scripts`,`rg -n "node --inspect-brk" .`,
+  `echo "node --inspect-brk app.js"`,`grep -r 'NODE_OPTIONS' . && node app.js`,`rg -- '--inspect-brk' && node x.js`])
+  assert.equal(debuggerWait(command),undefined,command);
+ assert.equal(debuggerWait(undefined),undefined);
+});
+
+test('the first reason a call is stopped is the one reported, and the tree is killed once',{timeout:20000},async t=>{
+ const debuggerWaits={type:'tool_execution_start',toolName:'bash',args:{command:'node --inspect-brk app.js'}};
+ const turn={...assistant,message:{...assistant.message,stopReason:'toolUse'}};
+ const {input}=await piFixture(t,`process.stdout.write(${chunk([debuggerWaits,turn])}+'\\n');setInterval(()=>{},1000);`);
+ await assert.rejects(()=>piRun({...input,maxTurns:1,idleTimeoutMs:600000}),/--inspect-brk, which waits for a debugger/);
+ const stages=(await diagnostics(input.diagnosticRoot)).operations[0].events.map((e:any)=>e.stage);
+ assert.ok(stages.includes('debugger-wait'));
+ assert.ok(!stages.includes('turn-limit'),'a later stop reason must not replace the first');
 });
 
 test('an empty provider response is transient and triggers failover',()=>{

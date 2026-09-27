@@ -6,6 +6,17 @@ import {sanitize,diagnostics,modelSpeed,slowModels,recentSpeeds,readSpeedSamples
 import {loadModelConfig} from './config.ts';
 
 export const deepSpendShareLimit=0.3;
+const readOnlyOperations=new Set(['cli:health','cli:fingerprint','cli:html','cli:review-packet','cli:preflight','cli:catalog','cli:save']);
+type TracedOperation={operation:string;outcome:string;started:string;elapsedMs:number};
+const timeSpan=(o:TracedOperation)=>{const start=Date.parse(o.started);return {start,end:start+o.elapsedMs};};
+// Runs traced before the detached batch process was named batch:delegate-batch
+// recorded it as cli:delegate-batch too. It starts while its launcher runs and
+// outlives it; a later launch inside a long batch ends first, so it is kept.
+const detachedBatch=(o:TracedOperation,all:TracedOperation[])=>{
+ if(o.operation!=='cli:delegate-batch')return false;const child=timeSpan(o);
+ return all.some(l=>{if(l===o||l.operation!=='cli:delegate-batch')return false;const launcher=timeSpan(l);return launcher.start<=child.start&&child.start<=launcher.end&&launcher.end<=child.end;});
+};
+export const coordinatorOperationCount=(operations:TracedOperation[])=>operations.filter(o=>o.operation.startsWith('cli:')&&o.outcome==='success'&&!readOnlyOperations.has(o.operation)&&!detachedBatch(o,operations)).length;
 const kinds=['decision','worker','review','edit','check','integration','permission','other'] as const;
 const phases=['planned','permission-granted','permission-denied','started','completed','failed','skipped'] as const;
 type HostAction={actionId:string;sessionId:string;kind:typeof kinds[number];phase:typeof phases[number];summary:string;next?:string;taskId?:string};
@@ -53,9 +64,9 @@ export async function processHealth(store:Store):Promise<{available:false;reason
  for(const e of claims){const model=(e.detail as any)?.model;if(typeof model==='string'){const f=model.split('/')[0];families[f]=(families[f]??0)+1;}}
  const dominant=Object.entries(families).sort((a,b)=>b[1]-a[1])[0];
  const perTask=(n:number)=>Number((n/Math.max(tasks,1)).toFixed(2));
- const revisionBudget=15,retryBudget=5;
  const retries=s.events.filter(e=>e.type==='provider-failover'||e.type==='repair').length;
- const revisionAllowance=revisionBudget*tasks+retryBudget*retries;
+ const coordinatorOperations=coordinatorOperationCount(runtime.operations);
+ const contractQuestions=s.events.filter(e=>e.type==='contract-question').length;
  const loopSteps=['cli:worker','cli:reviewer','cli:repair','cli:accept'];
  const manualSteps=runtime.operations.filter(o=>loopSteps.includes(o.operation)).length;
  const reopened=s.events.filter((e,i)=>e.type==='invalidated'&&reopenKind(e,s.events[i+1])==='defect').length;
@@ -70,13 +81,12 @@ export async function processHealth(store:Store):Promise<{available:false;reason
  if(coordinatorDecisions.length>0&&workerJev.length===0)warnings.push('All semantic decisions were made by the coordinator; none by workers. In-task choices belong to the worker-side Jev helper.');
  if(ledger.records.length>6*Math.max(tasks,1))warnings.push(`${ledger.records.length} host-action records across ${tasks} task(s): recording ceremony is eating coordinator context.`);
  if(claims.length>=3&&dominant&&dominant[1]/claims.length>0.8)warnings.push(`Model usage is fixated on ${dominant[0]} (${dominant[1]}/${claims.length} dispatches): round-robin routing should distribute across eligible families.`);
- if(tasks&&s.revision>revisionAllowance&&(delegations.length<tasks||coordinatorDecisions.length>tasks))warnings.push(`${s.revision} state revisions across ${tasks} task(s) with ${retries} recorded retr${retries===1?'y':'ies'}, above the ${revisionAllowance} a delegated run needs, alongside ${delegations.length} delegation(s) and ${coordinatorDecisions.length} coordinator decision(s). The coordinator is driving the loop turn by turn instead of handing over whole chunks.`);
  if(tasks&&delegations.length&&manualSteps>tasks)warnings.push(`${manualSteps} worker, reviewer, repair and accept call(s) made by hand across ${tasks} task(s): the coordinator is stepping the chunk loop itself between delegations. Re-delegate the chunk instead.`);
  if(tasks&&reopened>=Math.max(2,Math.ceil(tasks/2)))warnings.push(`${reopened} invalidation(s) reopened chunks across ${tasks} task(s): the coordinator is finding defects the chunks' own checks cannot see, and each reopening costs a repair cycle and a full chunk round. Register the probe you judge by as a task check before delegating.`);
  if(tasks===1&&s.criteria.length>=3&&!s.events.some(e=>e.type==='single-chunk'))warnings.push(`One task carries ${s.criteria.length} run outcomes: nothing can run in parallel. Split the work into independent chunks, or record a single-chunk reason.`);
  if(deepShare>deepSpendShareLimit&&estimatedTotal>=1)warnings.push(`${deepSpend.map(r=>r.key).join(', ')} took ${Math.round(deepShare*100)}% of the $${estimatedTotal.toFixed(2)} estimated spend across ${deepSpend.reduce((n,r)=>n+r.calls,0)} call(s). Deep repairs come from repeated reopens and failed repairs: find the check each chunk is missing instead of paying the deep model to guess.`);
  const slowNotes=slow.map(m=>`${m.model} as ${m.role} averages ${m.averageMinutes} min per call over ${m.calls} calls, ${m.times}× the ${m.medianMinutes} min median for that role: ${m.outputTokensPerSecond} output tokens per second and ${m.outputTokensPerCall} output tokens per call.${skipNote(m.role)}`);
- return {available:true,slowModels:slowNotes,metrics:{modelSpeed:speeds,tasks,coordinatorDecisions:coordinatorDecisions.length,hostDecisions:hostDecisions.length,workerJevCalls:workerJev.length,delegations:delegations.length,workerDispatches:claims.length,manualLoopSteps:manualSteps,reopenedChunks:reopened,hostTakeovers:hostTakeovers.length,hostTakeoversByTask,hostActionRecords:ledger.records.length,revisions:s.revision,revisionAllowance,retries,coordinatorDecisionsPerTask:perTask(coordinatorDecisions.length),hostActionsPerTask:perTask(ledger.records.length),revisionsPerTask:perTask(s.revision),workerFamilies:families,cost:runtime.totals,spend:costs},warnings};
+ return {available:true,slowModels:slowNotes,metrics:{modelSpeed:speeds,tasks,coordinatorDecisions:coordinatorDecisions.length,hostDecisions:hostDecisions.length,workerJevCalls:workerJev.length,delegations:delegations.length,workerDispatches:claims.length,manualLoopSteps:manualSteps,reopenedChunks:reopened,hostTakeovers:hostTakeovers.length,hostTakeoversByTask,hostActionRecords:ledger.records.length,contractQuestions,revisions:s.revision,coordinatorOperations,retries,coordinatorDecisionsPerTask:perTask(coordinatorDecisions.length),hostActionsPerTask:perTask(ledger.records.length),coordinatorOperationsPerTask:perTask(coordinatorOperations),workerFamilies:families,cost:runtime.totals,spend:costs},warnings};
 }
 // Shareable by explicit user choice: omit all free text, paths, models, raw
 // identifiers, prompts, artifact bodies and original exception messages.

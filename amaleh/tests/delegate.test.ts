@@ -2,7 +2,7 @@ import {fixtureClaim,clearCut} from './execution-fixture.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
-import { writeFileSync, existsSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as c from '../scripts/core.ts';
@@ -13,7 +13,7 @@ import { loadModelConfig } from '../scripts/config.ts';
 import { main } from '../scripts/cli.ts';
 import { decideBatch } from '../scripts/adapters.ts';
 import { jevAsk } from '../scripts/jev.ts';
-import { processHealth } from '../scripts/host-diagnostics.ts';
+import { processHealth, coordinatorOperationCount } from '../scripts/host-diagnostics.ts';
 
 const task=(id:string,deps:string[]=[])=>({id,title:id,goal:'Correct observable behavior',phase:'checkout',deps,resources:[id],criteria:['correct result'],kind:'code' as const,checks:[{id:'test',command:process.execPath,args:['-e',"try{const c=require('fs').readFileSync(require('path').join(process.cwd(),'app.txt'),'utf8');process.exit(c.includes('original')?1:0)}catch{process.exit(1)}"],role:'probe' as const}]} as c.Task);
 async function fixture(t:any){
@@ -141,6 +141,21 @@ test('a failing id neither aborts the batch nor hides its reason',async t=>{
  assert.equal(out.outcomes[2].task,'c');
  assert.match((out.outcomes[2] as {reason:string}).reason,/not delegable/);
  assert.equal(c.taskOf(await store.load(),'a').status,'accepted');
+});
+test('a batch holds a chunk whose resources overlap a running chunk and starts it when that one finishes',{timeout:15000},async t=>{
+ const ids=['doc','notes','other'];
+ const {store,spaces}=await batchFixture(t,ids,3);
+ await store.transaction(s=>{c.taskOf(s,'doc').resources=['website/**/*.md'];c.taskOf(s,'notes').resources=['website/DESIGN-SYSTEM.md'];c.taskOf(s,'other').resources=['amaleh/scripts/**'];});
+ const live=new Set<string>(),overlapped:string[]=[];let parallel=false;
+ const worker=batchWorker(spaces,{gate:arrivalGate(2)}) as any;
+ const watching=async(s:any,id:string,input:any)=>{
+  live.add(id);if(live.has('doc')&&live.has('notes'))overlapped.push(id);if(live.size>1)parallel=true;
+  try{return await worker(s,id,input);}finally{live.delete(id);}
+ };
+ const out=await delegateBatch(store,{ids},{runWorker:watching as any,runReviewer:batchReviewer() as any,fetcher:jevTargeted});
+ assert.deepEqual(out.outcomes.map(o=>o.outcome),['accepted','accepted','accepted'],JSON.stringify(out.outcomes.map(o=>(o as {reason?:string}).reason)));
+ assert.deepEqual(overlapped,[],'two chunks owning the same file must never run at once');
+ assert.ok(parallel,'a chunk with separate resources still runs alongside');
 });
 test('outcomes come back in input order regardless of completion order',async t=>{
  const ids=['a','b','c'];
@@ -334,6 +349,24 @@ test('process health flags hand-stepped loops and repeated reopening even when c
  if(!health.available)throw new Error(health.reason);
  assert.match(health.warnings.join('\n'),/2 worker, reviewer, repair and accept call\(s\) made by hand/);
  assert.match(health.warnings.join('\n'),/2 invalidation\(s\) reopened chunks/);
+});
+test('process health counts only the coordinator\'s own state-changing operations',async t=>{
+ const {store}=await fixture(t);
+ for(const op of ['cli:plan','cli:delegate-batch','batch:delegate-batch','cli:health','cli:integrated','cli:fingerprint'])await (await trace(store.root,op,{runId:'deleg'})).end('success');
+ const health=await processHealth(store);
+ if(!health.available)throw new Error(health.reason);
+ assert.equal(health.metrics.coordinatorOperations,3,'plan, the batch launch and integrated; not the detached batch process or read-only calls');
+ assert.equal(health.metrics.revisionAllowance,undefined);
+});
+test('the coordinator operation count skips failed calls and the detached batch that older runs traced as a CLI call',()=>{
+ const at=(minute:number,second=0)=>new Date(Date.UTC(2026,8,26,12,minute,second)).toISOString();
+ const op=(operation:string,started:string,elapsedMs:number,outcome='success')=>({operation,started,elapsedMs,outcome});
+ const operations=[
+  op('cli:plan',at(0),50),op('cli:plan',at(1),10,'failed'),
+  op('cli:delegate-batch',at(2),4000),op('cli:delegate-batch',at(2,1),3600000),
+  op('cli:delegate-batch',at(30),3000),op('cli:delegate-batch',at(30,1),600000),
+  op('cli:integrated',at(40),80)];
+ assert.equal(coordinatorOperationCount(operations),4,'one plan, two batch launches inside a long running batch, one integrated');
 });
 test('reopening a delivered chunk hands its probe to the task so every later repair runs it',async t=>{
  const {dir,store}=await fixture(t);

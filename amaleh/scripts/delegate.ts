@@ -4,10 +4,11 @@
 // Workers consult Jev directly through scripts/jev.ts; the loop itself only
 // spends one bounded Jev call per repair cycle for course correction.
 import { hostname } from 'node:os';
-import { Store, taskOf, invariant, check, repair, accept, fingerprint, family, scopeCheckId, event, reviewCoverageDebt, openDelegations, next, requireShaped, execute, hostAuthored, scopeQuestion, askedScopePaths, answerScopeQuestion, type Check, type Task } from './core.ts';
+import { Store, taskOf, invariant, check, repair, accept, fingerprint, family, scopeCheckId, event, reviewCoverageDebt, openDelegations, next, requireShaped, execute, hostAuthored, scopeQuestion, askedScopePaths, answerScopeQuestion, unmetDependencies, contractQuestions, answerContractQuestions, keptForUpstream, runCommitMissingFromCheckout, refreshCheckoutReason, type Check, type Task } from './core.ts';
 import { worker, reviewer, requestJson, choiceAnswer, transientProvider, settledProviderFailure, taskDiff, WorkspaceEscape } from './adapters.ts';
 import type { RoutingRequest } from './routing.ts';
 import { jevModel, loadModelConfig } from './config.ts';
+import { inScope, resourceSetsOverlap } from './resources.ts';
 export { scopeCheckId };
 
 export type DelegateDeps = { runWorker:typeof worker; runReviewer:typeof reviewer; runCheck:typeof check; fetcher?:typeof fetch };
@@ -42,26 +43,9 @@ async function passingProbes(checks:Check[],workspace:string){
  return passing;
 }
 
-const repairBrief=(findings:unknown[],failing:string[],guidance?:{confidence?:number;meaning:string},scope?:string)=>
- `Repair this task: verification failed. ${guidance?`Course guidance (Jev, confidence ${guidance.confidence}): ${guidance.meaning}`:'Apply the smallest correct fixes.'}\nBlocking review findings: ${JSON.stringify(findings)}\nFailing checks: ${JSON.stringify(failing)}${scope?`\nOut-of-scope changed paths (scope check):\n${scope}\nRevert every path outside the task's resources, or redo the work inside them`:''}\nResolve every listed defect, keep the task contract and scope, and do not run checks yourself; verification follows automatically. Consult the Jev helper for uncertain choices as instructed.`;
+const repairBrief=(findings:unknown[],failing:string[],guidance?:{confidence?:number;meaning:string},scope?:string,coordinator?:string)=>
+ `Repair this task: verification failed. ${guidance?`Course guidance (Jev, confidence ${guidance.confidence}): ${guidance.meaning}`:'Apply the smallest correct fixes.'}${coordinator?`\nCoordinator guidance for this chunk: ${coordinator}`:''}\nBlocking review findings: ${JSON.stringify(findings)}\nFailing checks: ${JSON.stringify(failing)}${scope?`\nOut-of-scope changed paths (scope check):\n${scope}\nRevert every path outside the task's resources, or redo the work inside them`:''}\nResolve every listed defect, keep the task contract and scope, and do not run checks yourself; verification follows automatically. Consult the Jev helper for uncertain choices as instructed.`;
 
-const globToRegExp=(glob:string)=>{
- let pattern='';
- for(let i=0;i<glob.length;i++){
-  if(glob[i]==='*'){
-   if(glob[i+1]==='*'){pattern+='(?:.*/)?';i++;if(glob[i+1]==='/')i++;else pattern+='.*';}
-   else pattern+='[^/]*';
-  }
-  else if(glob[i]==='?')pattern+='[^/]';
-  else pattern+=/[.+^${}()|[\]\\]/.test(glob[i])?'\\'+glob[i]:glob[i];
- }
- return new RegExp('^'+pattern+'$');
-};
-export function inScope(resource:string,path:string){
- if(resource==='*')return true;
- if(!resource.includes('*'))return path===resource||path.startsWith(resource+'/');
- return globToRegExp(resource).test(path);
-}
 export type ScopeVerdict={ran:boolean;code:number;outOfScope:string[];changedPaths:string[];resources:string[];fingerprint:string;reason?:string};
 export async function scopeVerdict(store:Store,id:string,fingerprint:string,mainWorkspace?:string):Promise<ScopeVerdict>{
  const s=await store.load(),t=taskOf(s,id),workspace=t.workspace!;
@@ -132,11 +116,14 @@ async function reviewFailover<T>(store:Store,id:string,trail:Trail,routing:Routi
 export async function delegate(store:Store,id:string,input:{workspace?:string;brief?:string;routing?:RoutingRequest;lenses?:string[];skills?:string[];references?:string[]}={},deps:Partial<DelegateDeps>={}):Promise<DelegateOutcome>{
  const d:DelegateDeps={...real,...deps};
  const trail:Trail=[];
- await store.transaction(s=>{requireShaped(s,'delegate');const t=taskOf(s,id);invariant(['ready','repair'].includes(t.status)||resumableReview(t),'Task is not delegable; reconcile or requeue it first');invariant(t.workspace||input.workspace,'Task workspace required');answerScopeQuestion(s,t,'revert');event(s,'delegate-started',{id,pid:process.pid,host:hostname()});});
+ await store.transaction(s=>{requireShaped(s,'delegate');const t=taskOf(s,id);invariant(['ready','repair'].includes(t.status)||resumableReview(t),'Task is not delegable; reconcile or requeue it first');invariant(t.workspace||input.workspace,'Task workspace required');const brief=input.brief?.trim();invariant(!contractQuestions(s,t).length||brief,`Task ${id} has an open contract question from its worker. Amend the contract, or delegate again with a brief that says why the contract stands`);answerScopeQuestion(s,t,'revert');answerContractQuestions(s,t,'stands',brief!);event(s,'delegate-started',{id,pid:process.pid,host:hostname()});});
  const resumeAtVerification=resumableReview(taskOf(await store.load(),id));
  const finish=async(outcome:Record<string,unknown>):Promise<DelegateOutcome>=>{await store.transaction(s=>event(s,'delegate-finished',{id,outcome:outcome.outcome})).catch(()=>{});return {task:id,trail,outcome:String(outcome.outcome),...outcome};};
  const acceptChunk=async(detail:Record<string,unknown>)=>{await accept(store,id);const done=taskOf(await store.load(),id);return finish({outcome:'accepted',cycles:done.cycles,author:done.author,fingerprint:done.fingerprint,...detail});};
- const s0=await store.load(),t0=taskOf(s0,id);
+ const s0=await store.load(),t0=taskOf(s0,id),unmet=unmetDependencies(s0,t0);
+ if(resumeAtVerification&&unmet.length)return finish({outcome:'route-pending',route:{action:'dispatch-blocked',reason:'Unmet dependencies; integrate prerequisite tasks before verifying this chunk again',tasks:unmet}});
+ const runCommit=resumeAtVerification&&keptForUpstream(s0,t0)?await runCommitMissingFromCheckout(s0,t0):undefined;
+ if(runCommit)return finish({outcome:'escalated',stage:'refresh-checkout',workspace:t0.workspace,runCommit,reason:refreshCheckoutReason(t0,runCommit)});
  if(!resumeAtVerification&&t0.depth==='host')return finish(hostTakeover(s0.host.model));
  if(t0.status==='ready'&&!t0.output){
   const passing=await passingProbes(t0.checks,input.workspace??t0.workspace!);
@@ -153,6 +140,9 @@ export async function delegate(store:Store,id:string,input:{workspace?:string;br
   }
   for(;;){
    let s=await store.load(),t=taskOf(s,id);
+   const questions=contractQuestions(s,t);
+   if(questions.length)return finish({outcome:'escalated',stage:'contract-question',questions,workerOutput:t.output,
+    reason:'The worker says the task contract is wrong and stopped instead of working around it, so no check runs until you answer. Amend the contract: that spends no repair cycle, and an amendment that changes only checks or resources keeps this output for verification. Or delegate again with a brief that says why the contract stands: the checks and review then judge the output as it stands, and a repair they need spends a cycle'});
    let mutating:string[]=[],settled=false,scopeNoted=false,recordedScope=t.receipts.find(r=>r.id===scopeCheckId)?.fingerprint;
    for(let pass=1;pass<=checkSettlePasses&&!settled;pass++){
     s=await store.load();t=taskOf(s,id);
@@ -187,13 +177,12 @@ export async function delegate(store:Store,id:string,input:{workspace?:string;br
    }
    const question=scopeQuestion(s,t);
    if(question)return finish({outcome:'escalated',stage:'scope-question',outOfScope:question.outOfScope,failingChecks:failing,workerOutput:t.output,
-    reason:`The worker changed ${question.outOfScope.length} path(s) outside the task's resources. Amend resources to keep them, and the next delegate verifies this same output with no new worker run; or delegate again, and a repair reverts them`});
-   let blocking:unknown[]=[];
+    reason:`The worker changed ${question.outOfScope.length} path(s) outside the task's resources. Amend resources to keep them, and the next delegate verifies this same output with no new worker run; or delegate again, and a repair reverts them`});   let blocking:unknown[]=[];
    if(!failing.length){
     const lenses=input.lenses??['Spec','Standards','Correctness','Omissions'];
     const obtainReview=async(excludeFamilies:string[]=[])=>{
      const routing=excludeFamilies.length?{...input.routing,excludeFamilies:[...(input.routing?.excludeFamilies??[]),...excludeFamilies]}:input.routing;
-     const rev=await reviewFailover(store,id,trail,routing,next=>d.runReviewer(store,id,undefined,lenses,next));
+     const rev=await reviewFailover(store,id,trail,routing,next=>d.runReviewer(store,id,undefined,lenses,next,input.references));
      const pending=routePending(rev);
      if(pending)return pending;
      trail.push({stage:'review',detail:{findings:(rev as {findings?:unknown[]}).findings?.length??0}});
@@ -223,7 +212,7 @@ export async function delegate(store:Store,id:string,input:{workspace?:string;br
    if(guidance)trail.push({stage:'jev-strategy',detail:guidance});
    const scopeOut=failing.includes(scopeCheckId)?await (async()=>{const r=t.receipts.find(r=>r.id===scopeCheckId)!;try{return (JSON.parse(await store.readArtifact(r.artifact)) as {stdout:string}).stdout;}catch{return undefined;}})():undefined;
    await repair(store,id);
-   try{out=await failover(store,id,'worker',trail,async()=>d.runWorker(store,id,{workspace:t.workspace!,brief:repairBrief(blocking,failing,guidance,scopeOut),skills:input.skills,references:input.references}));}
+   try{out=await failover(store,id,'worker',trail,async()=>d.runWorker(store,id,{workspace:t.workspace!,brief:repairBrief(blocking,failing,guidance,scopeOut,input.brief),skills:input.skills,references:input.references}));}
    catch(error){const escaped=escapedPaths(error);if(!escaped)throw error;trail.push({stage:'repair-worker',detail:{workspaceEscape:escaped}});return finish({outcome:'escalated',stage:'workspace-escape',escaped,reason:(error as Error).message});}
    pending=routePending(out);
    if(pending)return finish(pendingOutcome(pending));
@@ -255,9 +244,20 @@ export async function delegateBatch(store:Store,input:BatchInput,deps:Partial<De
  invariant(!collided.length,collided.map(([workspace,members])=>`${members.join(' and ')} share workspace ${workspace}`).join('; ')+'. Batched tasks run concurrently and a shared workspace serializes them into conflicts; give each task its own checkout, and omit the batch workspace so each task uses its own.');
  const concurrency=Math.max(1,s.config.maxWorkers);
  const outcomes=new Array<BatchOutcome>(ids.length);
- let cursor=0;
+ const waiting=[...ids],running=new Set<string>();
+ let wake=()=>{},changed=new Promise<void>(r=>{wake=r;});
+ const finished=()=>{const done=wake;changed=new Promise<void>(r=>{wake=r;});done();};
  const refused=async(id:string,reason:string)=>{await store.transaction(s=>event(s,'delegate-finished',{id,outcome:'failed',reason})).catch(()=>{});return {task:id,outcome:'failed' as const,reason};};
- const pump=async()=>{for(let index=cursor++;index<ids.length;index=cursor++){const id=ids[index];try{outcomes[index]=await delegate(store,id,{workspace:input.workspace,brief:input.briefs?.[id],lenses:input.lenses,skills:input.skills,references:input.references},deps);}catch(error){outcomes[index]=await refused(id,(error as Error).message);}}};
+ const run=async(id:string)=>{const index=ids.indexOf(id);try{outcomes[index]=await delegate(store,id,{workspace:input.workspace,brief:input.briefs?.[id],lenses:input.lenses,skills:input.skills,references:input.references},deps);}catch(error){outcomes[index]=await refused(id,(error as Error).message);}};
+ const pump=async()=>{
+  while(waiting.length){
+   const turn=changed,state=await store.load();
+   const at=waiting.findIndex(id=>![...running].some(other=>resourceSetsOverlap(taskOf(state,id).resources,taskOf(state,other).resources)));
+   if(at<0){await turn;continue;}
+   const [id]=waiting.splice(at,1);running.add(id);
+   try{await run(id);}finally{running.delete(id);finished();}
+  }
+ };
  await Promise.all(Array.from({length:Math.min(concurrency,ids.length)},pump));
  return {delegated:ids.length,concurrency,outcomes};
 }
