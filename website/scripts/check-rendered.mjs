@@ -6,17 +6,16 @@
 // have each shipped at least once in this project and were only ever caught by
 // pointing a browser at the built output.
 //
-// It needs a browser it does not own. Puppeteer is resolved from wherever the
-// machine already has it; when nothing is installed the check reports that it
-// skipped and exits 0, so a machine without a browser is not blocked and CI
-// does not gain a Chromium download it never asked for.
-import { createServer } from 'node:http';
-import { readFile, stat } from 'node:fs/promises';
-import { resolve, extname, sep } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { createRequire } from 'node:module';
+import { startSite, openPage, sleep, trackingHosts } from './browser-harness.mjs';
+import { isTracking } from './browser-harness.mjs';
 
-const publicDir = fileURL('../.output/public/');
+for (const host of ['googletagmanager.com', 'ads-twitter.com']) {
+  if (!trackingHosts.includes(host)) {
+    console.error(`The shared harness does not block ${host}, so a test run would reach an ad platform.`);
+    process.exit(1);
+  }
+}
+
 const widths = [320, 390, 768, 1024, 1440];
 const routes = [
   '/',
@@ -27,62 +26,6 @@ const routes = [
   '/docs/commands/',
   '/case-study/',
 ];
-
-function fileURL(relative) {
-  return resolve(new URL(relative, import.meta.url).pathname.replace(/^\/(\w:)/, '$1'));
-}
-
-async function loadPuppeteer() {
-  const require = createRequire(import.meta.url);
-  const candidates = [
-    'puppeteer',
-    'puppeteer-core',
-    `${process.env.USERPROFILE ?? process.env.HOME ?? ''}/.bun/install/global/node_modules/puppeteer/lib/esm/puppeteer/puppeteer.js`,
-  ];
-  for (const candidate of candidates) {
-    try {
-      const specifier = candidate.includes('/')
-        ? pathToFileURL(candidate).href
-        : pathToFileURL(require.resolve(candidate)).href;
-      const loaded = await import(specifier);
-      return loaded.default ?? loaded;
-    } catch {
-      // Try the next location.
-    }
-  }
-  return null;
-}
-
-const contentTypes = {
-  '.html': 'text/html',
-  '.css': 'text/css',
-  '.js': 'text/javascript',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.md': 'text/plain',
-  '.json': 'application/json',
-  '.woff': 'font/woff',
-  '.woff2': 'font/woff2',
-};
-
-function serve(root) {
-  return createServer(async (request, response) => {
-    try {
-      const path = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
-      let file = resolve(root, path.replace(/^\//, ''));
-      if (file !== root && !file.startsWith(root + sep)) {
-        response.writeHead(404).end();
-        return;
-      }
-      if ((await stat(file)).isDirectory()) file = resolve(file, 'index.html');
-      const type = contentTypes[extname(file)] ?? 'application/octet-stream';
-      response.writeHead(200, { 'Content-Type': `${type}; charset=utf-8` });
-      response.end(await readFile(file));
-    } catch {
-      response.writeHead(404).end();
-    }
-  });
-}
 
 const inspectLayout = () => ({
   horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
@@ -136,15 +79,8 @@ const inspectLabels = () => {
   return problems;
 };
 
-const puppeteer = await loadPuppeteer();
-if (!puppeteer) {
-  console.log(
-    'Rendered inspection skipped: no puppeteer installation was found. ' +
-      'Install puppeteer to run the 320/390/768/1024/1440 layout sweep, the label geometry sweep, ' +
-      'the JavaScript-disabled pass and the reduced-motion pass.',
-  );
-  process.exit(0);
-}
+const site = await startSite();
+const origin = site.origin;
 
 const stepTimeoutMs = 30000;
 const runTimeoutMs = 300000;
@@ -162,35 +98,26 @@ function withinStep(promise, what) {
   return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
 }
 
-async function openPage(browser) {
-  const page = await browser.newPage();
-  page.setDefaultTimeout(stepTimeoutMs);
-  page.setDefaultNavigationTimeout(stepTimeoutMs);
-  return page;
-}
-
-const server = serve(publicDir);
-await new Promise((ready) => server.listen(0, '127.0.0.1', ready));
-const origin = `http://127.0.0.1:${server.address().port}`;
 const failures = [];
 let checkedPages = 0;
-let browser;
 
 try {
-  browser = await puppeteer.launch({ headless: true, args: ['--enable-unsafe-swiftshader'] });
-
   for (const route of routes) {
     for (const width of widths) {
-      const page = await openPage(browser);
+      const tab = await openPage(site, { width });
+      const page = tab.page;
       try {
         const errors = [];
         page.on('pageerror', (error) => errors.push(error.message));
         page.on('console', (message) => {
-          if (message.type() === 'error') errors.push(message.text());
+          if (message.type() !== 'error') return;
+          const url = message.location().url;
+          if (url && isTracking(url)) return;
+          errors.push(message.text());
         });
         await page.setViewport({ width, height: 900 });
         await page.goto(origin + route, { waitUntil: 'networkidle0' });
-        await new Promise((settled) => setTimeout(settled, 250));
+        await sleep(250);
 
         const layout = await withinStep(page.evaluate(inspectLayout), `${route} at ${width}px layout inspection`);
         if (layout.horizontalOverflow) {
@@ -212,23 +139,27 @@ try {
       } catch (error) {
         failures.push(`${route} at ${width}px could not be inspected: ${error.message}`);
       } finally {
-        await page.close().catch(() => {});
+        await tab.close().catch(() => {});
       }
     }
   }
 
   for (const route of routes) {
-    const page = await openPage(browser);
+    const tab = await openPage(site, { width: 320 });
+    const page = tab.page;
     try {
       const errors = [];
       page.on('pageerror', (error) => errors.push(error.message));
       page.on('console', (message) => {
-        if (message.type() === 'error') errors.push(message.text());
+        if (message.type() !== 'error') return;
+        const url = message.location().url;
+        if (url && isTracking(url)) return;
+        errors.push(message.text());
       });
       await page.emulateTimezone('Europe/Berlin');
       await page.setViewport({ width: 320, height: 900 });
       await page.goto(origin + route, { waitUntil: 'networkidle0' });
-      await new Promise((settled) => setTimeout(settled, 250));
+      await sleep(250);
 
       const banner = await withinStep(
         page.evaluate(() => {
@@ -265,12 +196,13 @@ try {
     } catch (error) {
       failures.push(`${route} at 320px with timezone Europe/Berlin could not be inspected: ${error.message}`);
     } finally {
-      await page.close().catch(() => {});
+      await tab.close().catch(() => {});
     }
   }
 
   for (const route of routes) {
-    const page = await openPage(browser);
+    const tab = await openPage(site, { width: 1440 });
+    const page = tab.page;
     try {
       await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
       await page.setViewport({ width: 1440, height: 900 });
@@ -286,7 +218,7 @@ try {
         }),
         `${route} reduced-motion setup`,
       );
-      await new Promise((settled) => setTimeout(settled, 900));
+      await sleep(900);
       const moving = await withinStep(
         page.evaluate(() => ({
           scheduled: window.__scheduled,
@@ -302,12 +234,13 @@ try {
     } catch (error) {
       failures.push(`${route} under prefers-reduced-motion could not be inspected: ${error.message}`);
     } finally {
-      await page.close().catch(() => {});
+      await tab.close().catch(() => {});
     }
   }
 
   for (const route of routes) {
-    const page = await openPage(browser);
+    const tab = await openPage(site, { width: 1440 });
+    const page = tab.page;
     try {
       await page.setJavaScriptEnabled(false);
       await page.setViewport({ width: 1440, height: 900 });
@@ -322,14 +255,13 @@ try {
     } catch (error) {
       failures.push(`${route} with JavaScript disabled could not be inspected: ${error.message}`);
     } finally {
-      await page.close().catch(() => {});
+      await tab.close().catch(() => {});
     }
   }
 } catch (error) {
   failures.push(`Rendered inspection could not run: ${error.message}`);
 } finally {
-  await browser?.close().catch(() => {});
-  server.close();
+  await site.close().catch(() => {});
   clearTimeout(watchdog);
 }
 

@@ -1,14 +1,20 @@
 import { Router } from '@solidjs/router';
 import { FileRoutes } from '@solidjs/start/router';
 import { MetaProvider } from '@solidjs/meta';
-import { Suspense } from 'solid-js';
+import { onMount, Suspense } from 'solid-js';
 import Header from './components/Header';
 import Footer from './components/Footer';
 import ConsentBanner from './components/ConsentBanner';
+import StarCheck from './components/StarCheck';
 import { Drifter, Glow, GridDots, LightRays, Reveal, Rings } from './components/decor';
+import { startEngagedVisitTracking } from './lib/engaged-visit';
 import './style.css';
 
 export default function App() {
+  onMount(() => {
+    startEngagedVisitTracking();
+  });
+
   return (
     <Router
       base={import.meta.env.BASE_URL}
@@ -30,6 +36,7 @@ export default function App() {
           <Suspense>{props.children}</Suspense>
           <Footer />
           <ConsentBanner />
+          <StarCheck />
           <Reveal />
         </MetaProvider>
       )}

@@ -1,8 +1,10 @@
 import { For } from 'solid-js';
 import PageMeta from '../../components/PageMeta';
+import CommandFigure from '../../components/CommandFigure';
 import DocsLayout, { type DocsSection } from '../../components/docs/DocsLayout';
 import InstallSequence from '../../components/diagrams/InstallSequence';
 import { asset } from '../../lib/paths';
+import { INSTALL_COMMANDS } from '../../lib/install';
 import { articleGraph } from '../../lib/seo';
 
 const sections: DocsSection[] = [
@@ -80,12 +82,12 @@ export default function DocsGettingStarted() {
           <p class="mt-4 text-base leading-relaxed">
             Clone the repository and run both operations from the checkout root, with Bun or with Node 24 or newer.
           </p>
-          <figure class="mt-6 overflow-hidden rounded-box border border-line bg-base-200 shadow-rest">
-            <div class="flex items-center justify-between border-b border-line px-4 py-2.5 font-mono text-xs text-dim">
-              <span>sh</span>
-            </div>
-            <pre class="overflow-x-auto p-4 font-mono text-sm leading-relaxed"><code>{`git clone https://github.com/mhamri/amaleh\ncd amaleh\nbun amaleh/scripts/run.ts doctor\nbun amaleh/scripts/run.ts install`}</code></pre>
-          </figure>
+          <CommandFigure
+            class="mt-6"
+            label="sh"
+            command={INSTALL_COMMANDS}
+            location="getting-started"
+          />
           <p class="mt-6 text-base leading-relaxed">
             <span class="font-mono text-sm text-base-content">doctor</span> takes no run and changes nothing. <span class="font-mono text-sm text-base-content">install</span> writes the skill links and refuses conflicting destinations; it never touches repository files or credentials.
           </p>

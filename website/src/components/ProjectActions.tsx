@@ -1,10 +1,13 @@
+import { recordWin } from '../lib/wins';
 import { REPOSITORY_URL, SPONSOR_URL } from '../lib/links';
+import { openStarCheck } from '../lib/star-check';
 
 // See website/DESIGN-SYSTEM.md — the Sponsor and Star button patterns.
 const secondaryButton = 'btn btn-outline border-line text-base-content hover:bg-base-200';
 
 interface ProjectActionProps {
   class?: string;
+  location?: string;
 }
 
 function buttonClass(props: ProjectActionProps) {
@@ -13,7 +16,13 @@ function buttonClass(props: ProjectActionProps) {
 
 export function SponsorButton(props: ProjectActionProps) {
   return (
-    <a class={buttonClass(props)} href={SPONSOR_URL} target="_blank" rel="noopener noreferrer">
+    <a
+      class={buttonClass(props)}
+      href={SPONSOR_URL}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={() => recordWin('sponsor_click', props.location)}
+    >
       <svg viewBox="0 0 24 24" class="size-4 shrink-0" aria-hidden="true">
         <path
           fill="#db61a2"
@@ -27,7 +36,16 @@ export function SponsorButton(props: ProjectActionProps) {
 
 export function StarButton(props: ProjectActionProps) {
   return (
-    <a class={buttonClass(props)} href={REPOSITORY_URL} target="_blank" rel="noopener noreferrer">
+    <a
+      class={buttonClass(props)}
+      href={REPOSITORY_URL}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={() => {
+        recordWin('star_click', props.location);
+        openStarCheck();
+      }}
+    >
       <svg viewBox="0 0 24 24" class="size-4 shrink-0" fill="currentColor" aria-hidden="true">
         <path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
       </svg>

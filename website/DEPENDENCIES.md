@@ -36,17 +36,3 @@ The workflow derives `SITE_BASE` as `/repository-name/`, or `/` for an `owner.gi
 ## Verification gates
 
 Run `npm ci`, `npm run check`, `npm run build`, and `npm run test:static` from `website`. This document records version selection and the required gates; it does not claim a successful remote CI run or deployment.
-
-## Third-party tracking tags
-
-Two third-party tracking tags load on every page of the Amaleh website. Google Tag Manager container `GTM-T8QCHM2H` injects from the shared HTML shell in `website/src/entry-server.tsx`. The X (Twitter) conversion tracking base code for pixel `rfusf` runs only from a Custom HTML tag inside the GTM container — it never loads directly from the page shell, because loading it in both places would send two page-view events per visit.
-
-**Google Tag Manager.** `website/src/lib/tracking.ts` owns the GTM loader and noscript markup. The HTML shell in `entry-server.tsx` places the Consent Mode defaults script first in `<head>` and the GTM head script second, both before any stylesheet or module preload. The GTM head script loads container `GTM-T8QCHM2H`. A GTM noscript iframe appears as the first element after the opening `<body>` tag. `website/scripts/prepare.mjs` injects the same scripts and noscript into the standalone `workflow.html`, which has no consent banner; a stored choice still applies there. `npm run test:static` asserts the placement on every `.html` file in the build.
-
-**X (Twitter) conversion tracking.** The X base code for pixel `rfusf` loads the `uwt.js` loader, sets `twq.integration='gtm-ad-manager'`, and calls `twq('config','rfusf')`. This code runs only from GTM container Custom HTML tag 4, never from the page shell. The operator must set tag 4 to require `ad_storage` consent (Advanced Settings → Consent Settings → Require additional consent) so the X pixel fires only after the visitor grants consent. GTM never retries a tag that consent blocked, so clicking Accept also pushes the dataLayer event `amaleh_consent_granted`; tag 4 needs a second trigger, a Custom Event trigger on that event name, so an EU/UK visitor who accepts is counted on the same page.
-
-**Google Consent Mode v2.** The Consent Mode defaults script (in `website/src/entry-server.tsx`, before the GTM head script) sets `ad_storage`, `ad_user_data`, `ad_personalization`, and `analytics_storage` to `denied` for visitors whose IP address indicates the EU/EEA, the UK, or Switzerland, and to `granted` for visitors elsewhere. The exact region list lives in `website/src/lib/consent.ts` as `consentRegions`. Google applies these region-based defaults using the visitor's IP; the page sets them before GTM fires.
-
-**Consent banner and storage.** Visitors whose browser time zone falls within the same region set see a consent banner with equal Accept and Reject buttons. A footer "Cookie settings" control reopens the banner. The visitor's choice is stored in `localStorage` under the key `amaleh-consent` and re-applied before the GTM script runs on subsequent visits. Visitors outside these regions see neither the banner nor the footer link.
-
-**Time-zone vs. IP disagreement.** The banner decides from the browser time zone because the static site cannot read the visitor's country. When the time zone and the IP disagree, the result fails safe: an EU/EEA/UK/Swiss IP with a non-European time zone stays `denied` with no banner, and a non-European IP with a European time zone sees the banner while Google's default for that IP is already `granted`.

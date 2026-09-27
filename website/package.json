@@ -12,6 +12,7 @@
     "test:static": "node scripts/check-static.mjs",
     "test:seo": "node scripts/check-seo.mjs",
     "test:rendered": "node scripts/check-rendered.mjs",
+    "test:wins": "node scripts/check-wins.mjs",
     "preview": "node scripts/preview.mjs"
   },
   "engines": {
