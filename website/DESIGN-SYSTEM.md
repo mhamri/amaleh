@@ -721,6 +721,75 @@ site at 390, 768, 1024 and 1440 CSS pixels, the only `dim` element in the band
 is the lead, and it stays above 4.7:1 while the `base-content` title stays above
 7.9:1.
 
+**Star check panel** — `StarCheck` in `src/components/StarCheck.tsx`, mounted
+once by the shell in `app.tsx` beside `ConsentBanner`. Only a Star click shows
+it: `StarButton` and the header mobile menu link open it from their own click
+handler, so no route carries the panel on
+load. Its root carries `data-star-check` and `data-star-check-state` — one of
+`ask`, `checking`, `verified`, `already`, `not-found`, `no-user`, `busy`,
+`invalid`, `error` — so the flow is inspectable from the attribute instead of
+read out of the copy. The pattern, copy the class strings:
+
+```html
+<div data-star-check data-star-check-state={state()}
+     class="fixed inset-x-4 top-20 z-40 mx-auto max-w-md rounded-box border border-line bg-base-200 p-5 shadow-floating">
+  <h2 class="font-display text-title font-semibold tracking-tight">…</h2>
+  <p role="status" aria-live="polite" class="mt-2 text-sm leading-relaxed text-dim">…</p>
+  <form class="mt-4">
+    <label class="block font-mono text-sm text-dim" for="star-check-username">GitHub username</label>
+    <input class="input mt-2 w-full rounded-field text-sm" … />
+    <div class="mt-4 flex flex-wrap items-center gap-3">
+      <button type="submit" class="btn btn-outline border-line text-base-content hover:bg-base-200">Check star</button>
+      <button type="button" class="btn btn-ghost text-dim hover:text-base-content">Not now</button>
+    </div>
+  </form>
+</div>
+```
+
+**It is anchored to the top on purpose.** The consent banner owns the bottom
+band (`fixed inset-x-0 bottom-0`, height dependent on its own copy), so a panel
+pinned under the sticky header can never cover it at any width, however tall
+the banner turns out; a bottom-anchored panel would have to guess the banner's
+height and could leave the viewport on a short screen. `inset-x-4` holds a 1rem
+gutter at every width, the panel takes the width left between the two gutters
+— 288 pixels at 320 CSS pixels — and `mx-auto max-w-md` centres it in whatever
+is left over: it stays inside the viewport and never makes the page scroll
+sideways. `w-full` would over-constrain a box that already has both `inset-x-4`
+edges pinned, so the panel states no width of its own. It is one card —
+`rounded-box`, `border-line`, `bg-base-200` — carrying the `shadow-floating`
+tier, because it is a panel over everything, and no separate backdrop, so the
+page behind it stays readable.
+
+**One field, one live region, one action.** The input keeps an explicit
+`<label for>` rather than a placeholder, and every state writes one plain
+sentence into a single polite live region (`role="status"` with
+`aria-live="polite"`), so the outcome is announced and never carried by colour
+alone. The panel's own action is the secondary button; its dismissal is a ghost
+button beside it, and Escape closes the panel too. The verified state is the
+only state that adds a second action, and it renders the existing
+`SponsorButton` rather than a hand-written link, so the panel adds no second
+primary button to the view.
+
+### Copy button
+
+`CopyButton` in `src/components/CopyButton.tsx`, rendered
+inside the header bar of a code figure (`CommandFigure` in
+`src/components/CommandFigure.tsx`) between the figure label and the `<pre>`.
+It calls `navigator.clipboard.writeText` with the figure's command string. The
+pattern, copy the class strings:
+
+```html
+<button type="button"
+        class="btn btn-sm btn-ghost rounded-field font-sans text-dim hover:text-base-content"
+        onClick={() => void copy()}>
+  Copy
+</button>
+```
+
+Its label is one of three strings, chosen by the copy state: **`Copy`**,
+**`Copied`** (after a successful copy), and **`Copy failed`** (when the
+clipboard API rejects). It returns to **`Copy`** after about two seconds.
+
 ## Visualization layer
 
 The site shows delegation instead of only describing it. Three component

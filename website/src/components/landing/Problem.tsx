@@ -20,7 +20,7 @@ export default function Problem() {
             >
               Get started
             </a>
-            <SponsorButton />
+            <SponsorButton location="hero" />
           </div>
         </div>
       </div>

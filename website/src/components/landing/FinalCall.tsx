@@ -1,5 +1,6 @@
 import { asset } from '../../lib/paths';
-import { REPOSITORY_URL } from '../../lib/links';
+import CommandFigure from '../CommandFigure';
+import { CLONE_COMMAND } from '../../lib/install';
 import { Drifter, Glow, LightRays } from '../decor';
 import { SponsorButton, StarButton } from '../ProjectActions';
 
@@ -27,17 +28,10 @@ export default function FinalCall() {
           <a class="btn btn-primary font-semibold rounded-field" href={asset('docs/getting-started/')}>
             Get started
           </a>
-          <SponsorButton />
-          <StarButton />
+          <SponsorButton location="final-call" />
+          <StarButton location="final-call" />
         </div>
-        <figure class="mt-8 overflow-hidden rounded-box border border-line bg-base-200 shadow-rest">
-          <div class="flex items-center justify-between border-b border-line px-4 py-2.5 font-mono text-xs text-dim">
-            <span>First run</span>
-          </div>
-          <pre class="overflow-x-auto p-4 font-mono text-sm leading-relaxed">
-            <code>{`git clone ${REPOSITORY_URL}`}</code>
-          </pre>
-        </figure>
+        <CommandFigure class="mt-8" label="First run" command={CLONE_COMMAND} location="final-call" />
       </div>
     </section>
   );

@@ -1,9 +1,6 @@
+import CommandFigure from '../CommandFigure';
 import { Glow, GridDots, Rings } from '../decor';
-
-const installCommands = `git clone https://github.com/mhamri/amaleh
-cd amaleh
-bun amaleh/scripts/run.ts doctor
-bun amaleh/scripts/run.ts install`;
+import { INSTALL_COMMANDS } from '../../lib/install';
 
 const installFacts = [
   {
@@ -45,14 +42,12 @@ export default function Install() {
             <span class="font-mono text-base-content">/amaleh</span> with your task afterwards; the
             skill handles the workflow and resume steps.
           </p>
-          <figure class="mt-6 overflow-hidden rounded-box border border-line bg-base-200 shadow-rest">
-            <div class="flex items-center justify-between border-b border-line px-4 py-2.5 font-mono text-xs text-dim">
-              <span>shell</span>
-            </div>
-            <pre class="overflow-x-auto p-4 font-mono text-sm leading-relaxed">
-              <code>{installCommands}</code>
-            </pre>
-          </figure>
+          <CommandFigure
+            class="mt-6"
+            label="shell"
+            command={INSTALL_COMMANDS}
+            location="install"
+          />
         </div>
         <div class="min-w-0 space-y-6" data-reveal>
           <article class="card rounded-box border border-line bg-base-200 shadow-raised-glow-secondary">
