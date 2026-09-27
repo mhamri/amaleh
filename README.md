@@ -128,3 +128,7 @@ Set `SITE_BASE=/amaleh/` when building and previewing this repository as a GitHu
 [The Pages workflow](.github/workflows/pages.yml) installs the lockfile, type-checks, builds, and validates the rendered output on pull requests. Pushes or manual runs on the default branch also upload `website/.output/public` and deploy it to GitHub Pages. In repository **Settings → Pages → Build and deployment**, select **GitHub Actions** once, then merge these changes to the default branch. CI derives `/repository-name/` automatically (or `/` for an `owner.github.io` repository); set the repository Actions variable `SITE_BASE` to `/` for a custom domain. Deployment requires the repository's Pages environment to allow the default branch.
 
 Only the explicit public build is uploaded, never the repository root or `.amaleh` state. See [website dependency sources](website/DEPENDENCIES.md) for versions, verification dates, and update guidance.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
