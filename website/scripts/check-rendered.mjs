@@ -79,6 +79,69 @@ const inspectLabels = () => {
   return problems;
 };
 
+const inspectLabelOverlaps = () => {
+  const toViewportPixels = (label) => {
+    const box = label.getBBox();
+    const matrix = label.getCTM();
+    if (!matrix) return null;
+    const corners = [
+      [box.x, box.y],
+      [box.x + box.width, box.y],
+      [box.x, box.y + box.height],
+      [box.x + box.width, box.y + box.height],
+    ].map(([x, y]) => ({ x: matrix.a * x + matrix.c * y + matrix.e, y: matrix.b * x + matrix.d * y + matrix.f }));
+    return {
+      x0: Math.min(...corners.map((corner) => corner.x)),
+      x1: Math.max(...corners.map((corner) => corner.x)),
+      y0: Math.min(...corners.map((corner) => corner.y)),
+      y1: Math.max(...corners.map((corner) => corner.y)),
+    };
+  };
+  const problems = [];
+  const hero = [...document.querySelectorAll('svg')].filter((svg) => svg.querySelector('[data-model]'));
+  const targets = [
+    ...hero.map((svg) => ({ svg, which: 'the hero SVG' })),
+    ...[...document.querySelectorAll('svg[data-topo-svg]')].map((svg) => ({
+      svg,
+      which: `the topology SVG (${svg.dataset.topoVariant ?? 'variant'})`,
+    })),
+  ];
+  const tolerance = 0.5;
+  for (const { svg, which } of targets) {
+    const view = svg.viewBox.baseVal;
+    if (!view || view.width === 0) continue;
+    const declaredDisplay = svg.style.display;
+    if (svg.getBoundingClientRect().width === 0) svg.style.display = 'block';
+    const drawn = svg.getBoundingClientRect();
+    if (drawn.width === 0) {
+      svg.style.display = declaredDisplay;
+      problems.push({ which, text: 'the SVG has no drawn width even when shown, so its labels could not be measured' });
+      continue;
+    }
+    const labels = [...svg.querySelectorAll('text')]
+      .map((label) => ({ label, box: toViewportPixels(label) }))
+      .filter((entry) => entry.box && entry.box.x1 > entry.box.x0 && entry.box.y1 > entry.box.y0);
+    for (let i = 0; i < labels.length; i += 1) {
+      for (let j = i + 1; j < labels.length; j += 1) {
+        const a = labels[i];
+        const b = labels[j];
+        const overlapX = Math.min(a.box.x1, b.box.x1) - Math.max(a.box.x0, b.box.x0);
+        const overlapY = Math.min(a.box.y1, b.box.y1) - Math.max(a.box.y0, b.box.y0);
+        if (overlapX > tolerance && overlapY > tolerance) {
+          problems.push({
+            which,
+            text:
+              `"${a.label.textContent.trim().slice(0, 40)}" and "${b.label.textContent.trim().slice(0, 40)}" ` +
+              `overlap by ${Math.round(Math.min(overlapX, overlapY) * 10) / 10} CSS pixels`,
+          });
+        }
+      }
+    }
+    svg.style.display = declaredDisplay;
+  }
+  return problems;
+};
+
 const site = await startSite();
 const origin = site.origin;
 
@@ -133,6 +196,9 @@ try {
         if (width === 320 || width === 768 || width === 1440) {
           for (const problem of await withinStep(page.evaluate(inspectLabels), `${route} at ${width}px label inspection`)) {
             failures.push(`${route} at ${width}px: label "${problem.text}" ${problem.kind}`);
+          }
+          for (const problem of await withinStep(page.evaluate(inspectLabelOverlaps), `${route} at ${width}px label overlap inspection`)) {
+            failures.push(`${route} at ${width}px: two labels cross inside ${problem.which}: ${problem.text}`);
           }
         }
         checkedPages += 1;
@@ -274,7 +340,7 @@ if (failures.length > 0) {
 console.log(
   `Rendered inspection passed: ${routes.length} routes at ${widths.join('/')} CSS pixels ` +
     `(${checkedPages} page loads); no horizontal overflow, exactly one h1 per route, no console or page errors, ` +
-    'no SVG label escaping its viewBox or straddling a card edge, no animation under prefers-reduced-motion, ' +
+    'no SVG label escaping its viewBox or straddling a card edge, no two labels crossing inside the hero or a topology SVG, no animation under prefers-reduced-motion, ' +
     'every route still readable with JavaScript disabled, and the consent banner visible at 320 CSS pixels ' +
     'with timezone Europe/Berlin on every route without overflow or errors.',
 );
