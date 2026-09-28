@@ -82,7 +82,7 @@ builders live in `website/src/lib/seo.ts`:
 - `homeGraph(description)` returns one `@graph` with a `WebSite` named Amaleh
   at `SITE_URL`, a free `SoftwareSourceCode` whose `codeRepository` is the
   repository and whose description is the home page's own (no licence claim,
-  because the repository has no `LICENSE` file), and a `Person` for Mohammad
+  because no page states the licence), and a `Person` for Mohammad
   Hossein Amri whose `sameAs` lists his GitHub, LinkedIn and X profiles.
 - `articleGraph({ crumb, headline, description })` returns a `TechArticle` and
   a `BreadcrumbList` whose last item is `canonicalUrl(crumb.path)`.
