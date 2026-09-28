@@ -16,6 +16,8 @@ async function staleClone(t:any){
  const seed=join(root,'seed');
  await writeFile(join(seed,'app.txt'),'first');git(seed,'add','app.txt');git(seed,'commit','-m','first');git(seed,'push','origin','main');
  git(root,'clone','origin.git','work');
+ const work=join(root,'work');
+ git(work,'switch','-q','-c','run-branch');
  await writeFile(join(seed,'app.txt'),'second');git(seed,'commit','-am','second');git(seed,'push','origin','main');
  return {root,work:join(root,'work')};
 }
@@ -25,13 +27,13 @@ async function startInput(root:string,name:string,extra:Record<string,unknown>={
  return path;
 }
 
-test('start refuses a checkout that does not contain the freshly fetched origin default branch',async t=>{
+test('start refuses a checkout that does not contain the freshly fetched origin default branch',{timeout:60000},async t=>{
  const {root,work}=await staleClone(t);
  const input=await startInput(root,'stale');
  await assert.rejects(()=>main(['start',work,'stale',input]),/origin\/main/);
 });
 
-test('start accepts the stale checkout when the user asked for a different base',async t=>{
+test('start accepts the stale checkout when the user asked for a different base',{timeout:60000},async t=>{
  const {root,work}=await staleClone(t);
  const instruction='Build on my current branch; it needs unmerged work';
  await main(['start',work,'stacked',await startInput(root,'stacked',{base:{userInstruction:instruction}})]);
@@ -41,9 +43,9 @@ test('start accepts the stale checkout when the user asked for a different base'
  assert.equal((overrides[0].detail as any).userInstruction,instruction,'The override event quotes the user instruction');
 });
 
-test('start accepts a checkout that contains the fetched origin default branch',async t=>{
+test('start accepts a checkout that contains the fetched origin default branch',{timeout:60000},async t=>{
  const {root,work}=await staleClone(t);
- git(work,'pull','--ff-only');
+ git(work,'pull','--ff-only','origin','main');
  await main(['start',work,'fresh',await startInput(root,'fresh')]);
 });
 
@@ -64,7 +66,7 @@ async function deliverOnly(store:c.Store,dir:string){
 
 test('finishGate refuses a checkout that conflicts with the freshly fetched origin default branch',{timeout:60000},async t=>{
  const {root,work}=await staleClone(t);
- git(work,'pull','--ff-only');
+ git(work,'pull','--ff-only','origin','main');
  await main(['start',work,'conflict',await startInput(root,'conflict')]);
  const rival=join(root,'rival');git(root,'clone','origin.git','rival');
  await writeFile(join(rival,'app.txt'),'rival');git(rival,'commit','-am','rival');git(rival,'push','origin','main');
@@ -80,10 +82,10 @@ test('finishGate refuses a checkout that conflicts with the freshly fetched orig
 
 test('finishGate accepts a checkout that merges cleanly with the fetched origin default branch',{timeout:60000},async t=>{
  const {root,work}=await staleClone(t);
- git(work,'pull','--ff-only');
+ git(work,'pull','--ff-only','origin','main');
  await main(['start',work,'clean',await startInput(root,'clean')]);
  const store=new c.Store(work,'clean');
- await writeFile(join(work,'app.txt'),'local');git(work,'commit','-am','local');git(work,'push','origin','main');
+ await writeFile(join(work,'app.txt'),'local');git(work,'commit','-am','local');git(work,'push','origin','HEAD:main');
  await deliverOnly(store,work);
  await finishGate(store,{claims:['done']});
  const s=await store.load();

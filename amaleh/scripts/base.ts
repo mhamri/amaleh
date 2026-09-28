@@ -19,7 +19,7 @@ const run=(cwd:string,args:string[]):Promise<GitRun>=>new Promise((resolve,rejec
 const linesOf=(text:string)=>text.split('\n').map(l=>l.endsWith('\r')?l.slice(0,-1):l);
 
 type Resolved={dir:string}&({skip:string}|{fail:string}|{remote:string;branch:string;tip:string});
-async function resolvedDefault(workspace:string):Promise<Resolved>{
+export async function resolvedDefault(workspace:string):Promise<Resolved>{
  const dir=await realpath(workspace);
  const inside=await run(dir,['rev-parse','--is-inside-work-tree']);
  if(inside.code!==0||inside.stdout.trim()==='false')return {dir,skip:'Not a Git checkout; there is no base branch to verify'};
