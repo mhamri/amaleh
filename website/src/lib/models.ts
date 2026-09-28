@@ -18,12 +18,13 @@
 export type ModelId =
   | 'deepseek'
   | 'glm'
-  | 'mimo'
-  | 'solar'
+  | 'xiaomi'
+  | 'stealth'
   | 'kimi'
   | 'jev'
-  | 'anthropic'
-  | 'openai';
+  | 'claude'
+  | 'openai'
+  | 'upstage';
 
 export type ModelIdentity = {
   /** Name as the site's copy uses it. */
@@ -62,7 +63,7 @@ export const MODELS: Record<ModelId, ModelIdentity> = {
     logo: 'models/GLM.svg',
     vendor: 'Zhipu (Z.ai)',
   },
-  mimo: {
+  xiaomi: {
     name: 'MiMo',
     monogram: 'M',
     hue: 'var(--color-success)',
@@ -70,7 +71,14 @@ export const MODELS: Record<ModelId, ModelIdentity> = {
     vendor: 'Xiaomi',
     tileFill: 'var(--color-base-content)',
   },
-  solar: {
+  stealth: {
+    name: 'Stealth',
+    monogram: 'S',
+    hue: 'var(--color-primary)',
+    logo: null,
+    vendor: null,
+  },
+  upstage: {
     name: 'Solar',
     monogram: 'S',
     hue: 'var(--color-primary)',
@@ -91,9 +99,9 @@ export const MODELS: Record<ModelId, ModelIdentity> = {
     logo: 'models/TypeSafe.png',
     vendor: 'TypeSafe',
   },
-  anthropic: {
-    name: 'Anthropic',
-    monogram: 'A',
+  claude: {
+    name: 'Claude',
+    monogram: 'C',
     hue: 'var(--color-error)',
     logo: 'models/Anthropic.svg',
     vendor: 'Anthropic',

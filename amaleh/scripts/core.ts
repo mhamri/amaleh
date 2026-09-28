@@ -5,6 +5,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { hostname } from 'node:os';
 import { resourceSetsOverlap } from './resources.ts';
+import { family } from './family.ts';
+export { family } from './family.ts';
 
 export type Command = { command:string; args:string[] };
 export type IntegrationCheck = Command & { id:string };
@@ -39,7 +41,6 @@ export function validateTasks(tasks:TaskInput[]) {
 }
 export const taskOf=(s:Run,id:string)=>{const t=s.tasks.find(t=>t.id===id);invariant(t,'Unknown task');return t;};
 export const unmetDependencies=(s:Run,t:Task)=>t.deps.filter(id=>taskOf(s,id).status!=='accepted'||!taskOf(s,id).integrated);
-export function family(model:string):string { if(/deepseek/i.test(model))return 'deepseek';if(/glm|z-ai/i.test(model))return 'glm';if(/kimi|moonshot/i.test(model))return 'kimi';if(/claude|anthropic|fable/i.test(model))return 'claude';if(/astra|gpt|openai/i.test(model))return 'openai';return model.split('/')[0]; }
 export function conflict(a:Task,b:Task){return !a.workspace||!b.workspace||a.workspace===b.workspace||resourceSetsOverlap(a.resources,b.resources);}
 const ignored=new Set(['.git','.amaleh','node_modules','.DS_Store']);
 export async function fingerprint(workspace:string):Promise<string>{

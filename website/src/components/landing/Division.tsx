@@ -1,5 +1,6 @@
 import ModelTopology from '../diagrams/ModelTopology';
 import { Drifter, Glow, LightRays } from '../decor';
+import { DECISION, REPAIR, WORKER_LIST } from '../../lib/pool';
 
 const roles = [
   {
@@ -12,7 +13,7 @@ const roles = [
     name: 'Workers',
     chip: 'routed Flash pool',
     chipClass: 'badge badge-soft badge-accent shrink-0 text-xs',
-    body: 'The routed Flash families (DeepSeek, GLM, MiMo and Solar) each own a chunk end to end: implementation, checks and repair cycles. Uncertain inside the chunk, they consult Jev directly instead of escalating.',
+    body: `The routed Flash families (${WORKER_LIST}) each own a chunk end to end: implementation, checks and repair cycles. Uncertain inside the chunk, they consult ${DECISION.name} directly instead of escalating.`,
   },
   {
     name: 'Reviewer',
@@ -21,10 +22,10 @@ const roles = [
     body: 'Always the other model family, reading only. It verifies each chunk with structured coverage and routes findings back into the worker\'s repair loop rather than to the coordinator.',
   },
   {
-    name: 'Jev',
+    name: DECISION.name,
     chip: 'bounded decisions',
     chipClass: 'badge badge-soft badge-accent shrink-0 text-xs',
-    body: 'A cheap decision model answering bounded either/or questions for workers and the coordinator. TypeScript code, not any model, enforces dependencies, ownership, checks and review coverage.',
+    body: `A cheap decision model answering bounded either/or questions for workers and the coordinator. TypeScript code, not any model, enforces dependencies, ownership, checks and review coverage.`,
   },
 ];
 
@@ -35,7 +36,7 @@ const mechanics = [
   },
   {
     lead: 'Only genuine boundaries escalate.',
-    body: 'Exhausted repair allowances (Flash to Kimi to host), missing evidence and ambiguous intent reach the expensive model; ordinary uncertainty goes to Jev.',
+    body: `Exhausted repair allowances (Flash to ${REPAIR.name} to host), missing evidence and ambiguous intent reach the expensive model; ordinary uncertainty goes to ${DECISION.name}.`,
   },
   {
     lead: 'Progress lives on disk.',
@@ -63,7 +64,7 @@ export default function Division() {
           </p>
           <p class="mt-4 leading-relaxed text-dim">
             Brass marks the coordinator sending chunks out to the routed worker models. Violet marks
-            the bounded questions workers put to Jev. Teal marks a chunk reviewed by another family
+            the bounded questions workers put to {DECISION.name}. Teal marks a chunk reviewed by another family
             and accepted back.
           </p>
           <h3 class="mt-10 font-display text-title font-semibold tracking-tight">
