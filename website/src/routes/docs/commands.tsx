@@ -61,7 +61,7 @@ node <skill>/scripts/run.ts <operation> <workspace> <run-id> [input.json]`}</cod
               Paths are arguments, not interpolated shell commands. There are no npm runtime dependencies.
             </p>
             <p>
-              The <span class="font-mono text-sm text-base-content">doctor</span> operation takes no run id. The <span class="font-mono text-sm text-base-content">list</span> operation takes only a workspace. All other operations require a workspace and a run id.
+              The <span class="font-mono text-sm text-base-content">doctor</span> operation takes no run id. The <span class="font-mono text-sm text-base-content">list</span> and <span class="font-mono text-sm text-base-content">worktrees</span> operations take only a workspace; <span class="font-mono text-sm text-base-content">clean-worktrees</span> takes a workspace and an input, and <span class="font-mono text-sm text-base-content">worktree</span> takes a workspace, a run id and an input. All other operations require a workspace and a run id.
             </p>
           </div>
         </section>
@@ -99,6 +99,120 @@ node <skill>/scripts/run.ts <operation> <workspace> <run-id> [input.json]`}</cod
   "unrelated": "<optional reason when word overlap is coincidental>",
   "base": { "userInstruction": "<optional quote from the user naming another base>" },
   "shape": { "understanding": "what is asked and what it is for", "clearCut": "why there is only one sensible reading" }
+}`}</code></pre>
+          </figure>
+
+          <p class="mt-3 text-sm leading-relaxed text-dim">
+            In a Git checkout that does not already ignore the worktree folder, <span class="font-mono text-xs text-base-content">start</span> appends <span class="font-mono text-xs text-base-content">/.amaleh/</span> to the workspace's <span class="font-mono text-xs text-base-content">.gitignore</span> and commits only that file as the run's first commit, with the message <span class="font-mono text-xs text-base-content">Ignore Amaleh run state and task worktrees</span>; a workspace that already ignores it commits nothing. It refuses on the remote default branch and on a detached HEAD, naming <span class="font-mono text-xs text-base-content">git switch -c &lt;branch&gt; &lt;remote&gt;/&lt;default branch&gt;</span>, and refuses while <span class="font-mono text-xs text-base-content">.gitignore</span> has uncommitted changes. The setup is recorded as a <span class="font-mono text-xs text-base-content">worktree-folder</span> event with status <span class="font-mono text-xs text-base-content">committed</span>, <span class="font-mono text-xs text-base-content">ignored</span> or <span class="font-mono text-xs text-base-content">unverified</span>.
+          </p>
+
+          <h3 id="worktree" class="mt-8 scroll-mt-24 font-display text-title font-semibold tracking-tight">
+            worktree
+          </h3>
+          <p class="mt-3 text-sm leading-relaxed text-dim">
+            Creates one task's checkout at <span class="font-mono text-xs text-base-content">.amaleh/worktrees/&lt;run-id&gt;/&lt;task-id&gt;</span> on branch <span class="font-mono text-xs text-base-content">amaleh/&lt;run-id&gt;/&lt;task-id&gt;</span>, from the run workspace's HEAD or the task's <span class="font-mono text-xs text-base-content">base</span>, and records it as the task's workspace. It installs no dependencies, so install the project's dependencies in the new checkout when the task's checks need them.
+          </p>
+          <figure class="mt-4 overflow-hidden rounded-box border border-line bg-base-200 shadow-rest">
+            <div class="flex items-center justify-between border-b border-line px-4 py-2.5 font-mono text-xs text-dim">
+              <span>sh</span>
+            </div>
+            <pre class="overflow-x-auto p-4 font-mono text-sm leading-relaxed"><code>{`bun <skill>/scripts/cli.ts worktree <workspace> <run-id> <input.json>`}</code></pre>
+          </figure>
+          <figure class="mt-4 overflow-hidden rounded-box border border-line bg-base-200 shadow-rest">
+            <div class="flex items-center justify-between border-b border-line px-4 py-2.5 font-mono text-xs text-dim">
+              <span>input.json</span>
+            </div>
+            <pre class="overflow-x-auto p-4 font-mono text-sm leading-relaxed"><code>{`{
+  "id": "charge",
+  "base": "<optional commit-ish; defaults to the run workspace HEAD>"
+}`}</code></pre>
+          </figure>
+          <figure class="mt-4 overflow-hidden rounded-box border border-line bg-base-200 shadow-rest">
+            <div class="flex items-center justify-between border-b border-line px-4 py-2.5 font-mono text-xs text-dim">
+              <span>output.json</span>
+            </div>
+            <pre class="overflow-x-auto p-4 font-mono text-sm leading-relaxed"><code>{`{ "id": "charge", "workspace": "C:/code/my-project/.amaleh/worktrees/<run-id>/charge", "branch": "amaleh/<run-id>/charge", "base": "...", "created": true }`}</code></pre>
+          </figure>
+
+          <h3 id="worktrees" class="mt-8 scroll-mt-24 font-display text-title font-semibold tracking-tight">
+            worktrees
+          </h3>
+          <p class="mt-3 text-sm leading-relaxed text-dim">
+            Lists every worktree of the project with its absolute path, branch, head, whether it is the main working tree, whether it has uncommitted changes, whether its branch still adds anything to the freshly fetched default branch, whether its path is missing, and the run and task using it. A squash-merged branch reads <span class="font-mono text-xs text-base-content">adds: false</span>. <span class="font-mono text-xs text-base-content">branch</span> is <span class="font-mono text-xs text-base-content">null</span> on a detached HEAD, <span class="font-mono text-xs text-base-content">adds</span> is <span class="font-mono text-xs text-base-content">null</span> when the default branch cannot be fetched or compared, and <span class="font-mono text-xs text-base-content">task</span> is <span class="font-mono text-xs text-base-content">null</span> when no run task uses the worktree; a <span class="font-mono text-xs text-base-content">reason</span> says why a check did not run.
+          </p>
+          <figure class="mt-4 overflow-hidden rounded-box border border-line bg-base-200 shadow-rest">
+            <div class="flex items-center justify-between border-b border-line px-4 py-2.5 font-mono text-xs text-dim">
+              <span>sh</span>
+            </div>
+            <pre class="overflow-x-auto p-4 font-mono text-sm leading-relaxed"><code>{`bun <skill>/scripts/cli.ts worktrees <workspace>`}</code></pre>
+          </figure>
+          <figure class="mt-4 overflow-hidden rounded-box border border-line bg-base-200 shadow-rest">
+            <div class="flex items-center justify-between border-b border-line px-4 py-2.5 font-mono text-xs text-dim">
+              <span>output.json</span>
+            </div>
+            <pre class="overflow-x-auto p-4 font-mono text-sm leading-relaxed"><code>{`{
+  "defaultBranch": "origin/main",
+  "worktrees": [
+    {
+      "path": "C:/code/my-project/.amaleh/worktrees/<run-id>/charge",
+      "branch": "amaleh/<run-id>/charge",
+      "head": "<commit>",
+      "main": false,
+      "dirty": false,
+      "adds": true,
+      "missing": false,
+      "task": {
+        "run": "<run-id>",
+        "id": "charge",
+        "status": "running",
+        "integrated": false
+      }
+    },
+    {
+      "path": "C:/code/my-project/.amaleh/worktrees/<run-id>/docs",
+      "branch": "amaleh/<run-id>/docs",
+      "head": "<commit>",
+      "main": false,
+      "dirty": false,
+      "adds": false,
+      "missing": false,
+      "task": null
+    }
+  ]
+}`}</code></pre>
+          </figure>
+
+          <h3 id="clean-worktrees" class="mt-8 scroll-mt-24 font-display text-title font-semibold tracking-tight">
+            clean-worktrees
+          </h3>
+          <p class="mt-3 text-sm leading-relaxed text-dim">
+            Takes the absolute paths of the worktrees to remove and removes only those, with <span class="font-mono text-xs text-base-content">git worktree remove</span> and never <span class="font-mono text-xs text-base-content">--force</span>. It refuses, removing nothing, without <span class="font-mono text-xs text-base-content">userInstruction</span>, for a dirty worktree, for the main working tree, and for the workspace of a task an open run has not integrated. With <span class="font-mono text-xs text-base-content">deleteBranches</span> it deletes a branch only when it adds nothing.
+          </p>
+          <p class="mt-3 text-sm leading-relaxed text-dim">
+            Before starting new work, run <span class="font-mono text-xs text-base-content">worktrees</span>, offer the user to remove the worktrees whose branch adds nothing while naming the ones that still add work, and call <span class="font-mono text-xs text-base-content">clean-worktrees</span> only with the user's quoted answer.
+          </p>
+          <figure class="mt-4 overflow-hidden rounded-box border border-line bg-base-200 shadow-rest">
+            <div class="flex items-center justify-between border-b border-line px-4 py-2.5 font-mono text-xs text-dim">
+              <span>input.json</span>
+            </div>
+            <pre class="overflow-x-auto p-4 font-mono text-sm leading-relaxed"><code>{`{
+  "paths": ["C:/code/my-project/.amaleh/worktrees/<run-id>/charge"],
+  "userInstruction": "the user's actual words",
+  "deleteBranches": true
+}`}</code></pre>
+          </figure>
+          <figure class="mt-4 overflow-hidden rounded-box border border-line bg-base-200 shadow-rest">
+            <div class="flex items-center justify-between border-b border-line px-4 py-2.5 font-mono text-xs text-dim">
+              <span>output.json</span>
+            </div>
+            <pre class="overflow-x-auto p-4 font-mono text-sm leading-relaxed"><code>{`{
+  "removed": [
+    {
+      "path": "C:/code/my-project/.amaleh/worktrees/<run-id>/charge",
+      "branch": "amaleh/<run-id>/charge",
+      "branchDeleted": true
+    }
+  ]
 }`}</code></pre>
           </figure>
 
@@ -426,7 +540,7 @@ node <skill>/scripts/run.ts <operation> <workspace> <run-id> [input.json]`}</cod
             <div class="flex items-center justify-between border-b border-line px-4 py-2.5 font-mono text-xs text-dim">
               <span>input.json</span>
             </div>
-            <pre class="overflow-x-auto p-4 font-mono text-sm leading-relaxed"><code>{`{ "id": "charge", "workspace": "...", "brief": "...", "routing": { ... } }`}</code></pre>
+            <pre class="overflow-x-auto p-4 font-mono text-sm leading-relaxed"><code>{`{ "id": "charge", "workspace": "C:/code/my-project/.amaleh/worktrees/<run-id>/charge", "brief": "...", "routing": { ... } }`}</code></pre>
           </figure>
           <p class="mt-3 text-sm leading-relaxed text-dim">
             Result: <span class="font-mono text-xs text-base-content">{'{ "id": "charge", "output": { "changes": ["..."], "remaining": [] } }'}</span>.
