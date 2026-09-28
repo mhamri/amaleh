@@ -1,4 +1,5 @@
 import { onCleanup, onMount, type JSX } from 'solid-js';
+import { WORKERS } from '../../lib/pool';
 
 /**
  * Run lifecycle — the subject of the workflow page: discovery through
@@ -264,8 +265,8 @@ export default function RunLifecycle() {
 
           <Box x={186} y={224} w={200} h={144} step={4} tone="primary">
             <T x={200} y={270} s={12.5} f="fill-base-content" b>parallel execution</T>
-            <T x={200} y={294} s={10} mono>worker · GLM family</T>
-            <T x={200} y={314} s={10} mono>worker · DeepSeek family</T>
+            <T x={200} y={294} s={10} mono>{`worker · ${WORKERS[1].name} family`}</T>
+            <T x={200} y={314} s={10} mono>{`worker · ${WORKERS[0].name} family`}</T>
             <T x={200} y={334} s={10} mono>worker · routed family</T>
             <T x={200} y={354} s={9.5}>isolated workspace per chunk</T>
           </Box>

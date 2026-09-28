@@ -3,6 +3,7 @@ import PageMeta from '../../components/PageMeta';
 import DocsLayout, { type DocsSection } from '../../components/docs/DocsLayout';
 import ReviewLoop from '../../components/diagrams/ReviewLoop';
 import { asset } from '../../lib/paths';
+import { DECISION, REPAIR, WORKERS } from '../../lib/pool';
 import { articleGraph } from '../../lib/seo';
 
 const sections: DocsSection[] = [
@@ -18,7 +19,7 @@ const source = 'badge badge-soft badge-info font-mono text-xs font-normal';
 
 const repairStages = [
   ['Flash repair', 'Two ordinary repair cycles by routed Flash workers.'],
-  ['Kimi repair', 'One deeper diagnosis-and-repair cycle once the Flash allowance is exhausted.'],
+  [`${REPAIR.name} repair`, 'One deeper diagnosis-and-repair cycle once the Flash allowance is exhausted.'],
   ['Host takeover', 'The actual invoking model diagnoses and repairs. This is the last step: no model reviews host work, and delegate accepts it once its checks pass.'],
 ];
 
@@ -33,7 +34,7 @@ export default function DocsReviewAndRecovery() {
   const crumb = { name: 'Review and recovery', path: 'docs/review-and-recovery/' };
   const title = 'Review and recovery — Amaleh documentation';
   const description =
-    'Cross-family independent review with structured coverage, the Flash to Kimi to host repair escalation, durable resume, and the diagnose, host-action and diagnostic-export operations.';
+    `Cross-family independent review with structured coverage, the Flash to ${REPAIR.name} to host repair escalation, durable resume, and the diagnose, host-action and diagnostic-export operations.`;
   return (
     <>
       <PageMeta
@@ -57,13 +58,13 @@ export default function DocsReviewAndRecovery() {
           </div>
           <div class="mt-4 space-y-4 text-base leading-relaxed">
             <p>
-              Review is fresh and cross-family by construction: DeepSeek writes and GLM reviews, GLM writes and DeepSeek reviews. A different provider hosting the same model family is not independence, and review candidates always exclude the author’s family; Kimi work gets a capable different family. Host work gets no model review, because a reviewer that rejects it can only send it back to the host.
+              Review is fresh and cross-family by construction: {WORKERS[0].name} writes and {WORKERS[1].name} reviews, {WORKERS[1].name} writes and {WORKERS[0].name} reviews. A different provider hosting the same model family is not independence, and review candidates always exclude the author’s family; {REPAIR.name} work gets a capable different family. Host work gets no model review, because a reviewer that rejects it can only send it back to the host.
             </p>
             <p>
               The reviewer receives fresh read-only context — intent, criteria, standards, the actual changed files, relevant callers and check receipts — and never the author’s reasoning or proposed verdict. It may trace affected consumers beyond the diff.
             </p>
             <p>
-              One reviewer groups the baseline lenses: Spec/requirements, Standards/simplicity, correctness and omissions, with Spec and Standards coverage kept separate in the report. Jev selects additional lenses grounded in real changed behavior — money/error paths, contracts, security/authorization, migrations, visual/accessibility, resources, dependencies, test quality or observed performance. Sensitive behavior can get additional focused review in parallel.
+              One reviewer groups the baseline lenses: Spec/requirements, Standards/simplicity, correctness and omissions, with Spec and Standards coverage kept separate in the report. {DECISION.name} selects additional lenses grounded in real changed behavior — money/error paths, contracts, security/authorization, migrations, visual/accessibility, resources, dependencies, test quality or observed performance. Sensitive behavior can get additional focused review in parallel.
             </p>
             <p>
               Every finding needs a reachable scenario and evidence. Observations are distinguished from inference, and new defects from unrelated inherited problems. A taste preference is not a defect, and a concurrency claim needs an actual overlap, retry or shared-state path. Duplicate claims are archived and grouped without suppressing valid evidence.
@@ -119,7 +120,7 @@ export default function DocsReviewAndRecovery() {
             <span class={source}>references/review.md</span>
           </div>
           <p class="mt-4 text-base leading-relaxed">
-            <span class="font-mono text-sm text-base-content">repair</span> increments a persistent counter and chooses Flash, then Kimi, then host takeover. There is no reset through rename, a new commit or a restart, and replanning retains ancestry. The initial review is not counted as a repair cycle.
+            <span class="font-mono text-sm text-base-content">repair</span> increments a persistent counter and chooses Flash, then {REPAIR.name}, then host takeover. There is no reset through rename, a new commit or a restart, and replanning retains ancestry. The initial review is not counted as a repair cycle.
           </p>
           <div class="mt-6 overflow-x-auto rounded-box border border-line bg-base-200">
             <table class="table table-sm">
@@ -202,7 +203,7 @@ export default function DocsReviewAndRecovery() {
             Use <span class="font-mono text-sm text-base-content">diagnose</span> before retrying unexplained failures. It returns current state, pending work, operation timelines, failures, unfinished operations and usage totals, and works even when initialization failed before a valid snapshot existed.
           </p>
           <p class="mt-4 text-base leading-relaxed">
-            Its <span class="font-mono text-sm text-base-content">health</span> section measures delegation quality — coordinator-authored decisions per task, worker-side Jev calls, delegate versus manual dispatches, host takeovers per task, host-action ceremony and model-family distribution — and emits warnings naming anti-patterns such as coordinator micro-decisions, manual stepping through the worker→review→repair loop, or one task carrying the whole feature. <span class="font-mono text-sm text-base-content">finish</span> reads the same warnings and refuses on them.
+            Its <span class="font-mono text-sm text-base-content">health</span> section measures delegation quality — coordinator-authored decisions per task, worker-side {DECISION.name} calls, delegate versus manual dispatches, host takeovers per task, host-action ceremony and model-family distribution — and emits warnings naming anti-patterns such as coordinator micro-decisions, manual stepping through the worker→review→repair loop, or one task carrying the whole feature. <span class="font-mono text-sm text-base-content">finish</span> reads the same warnings and refuses on them.
           </p>
           <p class="mt-4 text-base leading-relaxed">
             <span class="font-mono text-sm text-base-content">host-action</span> records an immutable, local host observation even before run initialization or after an API failure. Kinds are decision, worker, review, edit, check, integration, permission and other; phases are planned, permission-granted, permission-denied, started, completed, failed and skipped. A retry uses a fresh action id, and summaries must never contain credentials. <span class="font-mono text-sm text-base-content">diagnose</span> includes this ledger — the records are host attestations, not proof of tool execution.

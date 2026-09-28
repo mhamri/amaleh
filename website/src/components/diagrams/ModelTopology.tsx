@@ -1,4 +1,6 @@
-import { onCleanup, onMount } from 'solid-js';
+import { For, onCleanup, onMount } from 'solid-js';
+import { DECISION, REPAIR, WORKER_ALTERNATIVES, WORKER_NAMES } from '../../lib/pool';
+import { topologyPoolBox, type PoolText, type TopologyVariant } from '../../lib/topology-layout';
 
 /**
  * Model topology — how an Amaleh run's models work together.
@@ -18,14 +20,20 @@ import { onCleanup, onMount } from 'solid-js';
 
 const ARIA_LABEL =
   'Model topology of an Amaleh run: the coordinator host (Claude Code or Codex) ' +
-  'hands a chunk to a routed Flash worker family — DeepSeek, GLM, MiMo or Solar — ' +
-  'the worker asks Jev a bounded question, the other model family reviews ' +
-  'read-only, a repair escalates to Kimi, and the accepted chunk returns to the coordinator.';
+  `hands a chunk to a routed Flash worker family — ${WORKER_ALTERNATIVES} — ` +
+  `the worker asks ${DECISION.name} a bounded question, the other model family reviews ` +
+  `read-only, a repair escalates to ${REPAIR.name}, and the accepted chunk returns to the coordinator.`;
 
 const CAPTION =
   'One chunk, end to end: Claude Code or Codex hands a chunk to a routed Flash family — ' +
-  'DeepSeek, GLM, MiMo or Solar — Jev answers bounded choices, the other family reviews ' +
-  'read-only, exhausted repairs escalate to Kimi, and the accepted chunk returns.';
+  `${WORKER_ALTERNATIVES} — ${DECISION.name} answers bounded choices, the other family reviews ` +
+  `read-only, exhausted repairs escalate to ${REPAIR.name}, and the accepted chunk returns.`;
+
+const poolTextClass = (text: PoolText): string => {
+  if (text.kind === 'title') return 'fill-base-content font-semibold';
+  if (text.kind === 'name') return 'fill-base-content font-mono';
+  return 'fill-dim';
+};
 
 type Pt = readonly [number, number];
 
@@ -82,6 +90,36 @@ const MOVE_MS = 1600;
 const HOLD_MS = 600;
 const STAGE_MS = MOVE_MS + HOLD_MS;
 const TOTAL_MS = STAGE_MS * STAGE_COLORS.length;
+
+function PoolBox(props: { variant: TopologyVariant }) {
+  const { box, texts } = topologyPoolBox(WORKER_NAMES, props.variant);
+  return (
+    <g>
+      <rect
+        x={box.x}
+        y={box.y}
+        width={box.width}
+        height={box.height}
+        rx={props.variant === 'narrow' ? 8 : 9}
+        class="fill-base-100 stroke-line"
+        stroke-width="1.5"
+      />
+      <For each={texts}>
+        {(text) => (
+          <text
+            x={text.x}
+            y={text.y}
+            text-anchor={text.anchor}
+            font-size={String(text.fontSize)}
+            class={poolTextClass(text)}
+          >
+            {text.text}
+          </text>
+        )}
+      </For>
+    </g>
+  );
+}
 
 export default function ModelTopology(props: { caption?: string; class?: string }) {
   let figure!: HTMLElement;
@@ -228,27 +266,21 @@ export default function ModelTopology(props: { caption?: string; class?: string 
           <text x="160" y="39" text-anchor="middle" font-size="9" class="fill-dim font-mono">Claude Code · Codex</text>
 
           {/* Flash worker pool: the routed families. */}
-          <rect x="16" y="80" width="144" height="84" rx="8" class="fill-base-100 stroke-line" stroke-width="1.5" />
-          <text x="24" y="97" font-size="11" class="fill-base-content font-semibold">Flash pool</text>
-          <text x="24" y="116" font-size="11" class="fill-base-content font-mono">DeepSeek</text>
-          <text x="116" y="116" font-size="11" class="fill-base-content font-mono">GLM</text>
-          <text x="24" y="132" font-size="11" class="fill-base-content font-mono">MiMo</text>
-          <text x="116" y="132" font-size="11" class="fill-base-content font-mono">Solar</text>
-          <text x="24" y="152" font-size="9" class="fill-dim">routed per chunk</text>
+          <PoolBox variant="narrow" />
 
           {/* Reviewer family. */}
           <rect x="180" y="80" width="124" height="44" rx="8" class="fill-base-100 stroke-secondary" stroke-width="1.5" />
           <text x="188" y="97" font-size="11" class="fill-base-content font-semibold">Reviewer</text>
           <text x="188" y="113" font-size="9" class="fill-secondary font-mono">read-only</text>
 
-          {/* Jev, the decision model. */}
+          {/* Decision model, named from the pool. See website/src/lib/pool.ts */}
           <rect x="180" y="140" width="124" height="44" rx="8" class="fill-base-100 stroke-accent" stroke-width="1.5" />
-          <text x="242" y="159" text-anchor="middle" font-size="11" class="fill-base-content font-semibold">Jev</text>
+          <text x="242" y="159" text-anchor="middle" font-size="11" class="fill-base-content font-semibold">{DECISION.name}</text>
           <text x="242" y="175" text-anchor="middle" font-size="9" class="fill-dim">bounded decisions</text>
 
-          {/* Kimi, the deeper specialist. */}
+          {/* Repair model, named from the pool. See website/src/lib/pool.ts */}
           <rect x="16" y="184" width="144" height="44" rx="8" class="fill-base-100 stroke-accent" stroke-width="1.5" />
-          <text x="88" y="203" text-anchor="middle" font-size="11" class="fill-base-content font-semibold">Kimi</text>
+          <text x="88" y="203" text-anchor="middle" font-size="11" class="fill-base-content font-semibold">{REPAIR.name}</text>
           <text x="88" y="219" text-anchor="middle" font-size="9" class="fill-dim">deeper specialist</text>
 
           {/* Script timeline, one lit step at a time. Sits in the empty band
@@ -327,14 +359,7 @@ export default function ModelTopology(props: { caption?: string; class?: string 
           <text x="270" y="48" text-anchor="middle" font-size="9" class="fill-dim font-mono">Claude Code · Codex</text>
 
           {/* Flash worker pool: the routed families. */}
-          <rect x="50" y="110" width="180" height="90" rx="9" class="fill-base-100 stroke-line" stroke-width="1.5" />
-          <text x="60" y="128" font-size="10" class="fill-base-content font-semibold">Flash worker pool</text>
-          <text x="60" y="148" font-size="11" class="fill-base-content font-mono">DeepSeek</text>
-          <text x="150" y="148" font-size="11" class="fill-base-content font-mono">GLM</text>
-          <text x="60" y="164" font-size="11" class="fill-base-content font-mono">MiMo</text>
-          <text x="150" y="164" font-size="11" class="fill-base-content font-mono">Solar</text>
-          <text x="60" y="182" font-size="9" class="fill-dim">round-robin across families</text>
-          <text x="60" y="194" font-size="9" class="fill-dim">checks and repair in the chunk</text>
+          <PoolBox variant="wide" />
 
           {/* Reviewer family: always the other model family. */}
           <rect x="290" y="110" width="180" height="90" rx="9" class="fill-base-100 stroke-secondary" stroke-width="1.5" />
@@ -344,21 +369,21 @@ export default function ModelTopology(props: { caption?: string; class?: string 
           <text x="300" y="176" font-size="9" class="fill-dim">each chunk, verifies coverage</text>
           <text x="300" y="192" font-size="9" class="fill-dim">findings feed the repair loop</text>
 
-          {/* Jev, the decision model. */}
+          {/* Decision model, named from the pool. See website/src/lib/pool.ts */}
           <rect x="50" y="240" width="120" height="44" rx="9" class="fill-base-100 stroke-accent" stroke-width="1.5" />
-          <text x="110" y="259" text-anchor="middle" font-size="11" class="fill-base-content font-semibold">Jev</text>
+          <text x="110" y="259" text-anchor="middle" font-size="11" class="fill-base-content font-semibold">{DECISION.name}</text>
           <text x="110" y="275" text-anchor="middle" font-size="9" class="fill-dim">bounded decisions</text>
 
-          {/* Kimi, the deeper specialist. */}
+          {/* Repair model, named from the pool. See website/src/lib/pool.ts */}
           <rect x="210" y="240" width="120" height="44" rx="9" class="fill-base-100 stroke-accent" stroke-width="1.5" />
-          <text x="270" y="259" text-anchor="middle" font-size="11" class="fill-base-content font-semibold">Kimi</text>
+          <text x="270" y="259" text-anchor="middle" font-size="11" class="fill-base-content font-semibold">{REPAIR.name}</text>
           <text x="270" y="275" text-anchor="middle" font-size="9" class="fill-dim">deeper specialist</text>
 
           {/* Escalation boundary note. */}
-          <text x="360" y="250" font-size="9" class="fill-dim">only genuine boundaries</text>
-          <text x="360" y="262" font-size="9" class="fill-dim">reach the coordinator:</text>
-          <text x="360" y="274" font-size="9" class="fill-dim">exhausted repairs, missing</text>
-          <text x="360" y="286" font-size="9" class="fill-dim">evidence, unclear intent</text>
+          <text x="360" y="242" font-size="9" class="fill-dim">only genuine boundaries</text>
+          <text x="360" y="256" font-size="9" class="fill-dim">reach the coordinator:</text>
+          <text x="360" y="270" font-size="9" class="fill-dim">exhausted repairs, missing</text>
+          <text x="360" y="284" font-size="9" class="fill-dim">evidence, unclear intent</text>
 
           {/* Script timeline, one lit step at a time. */}
           <g font-size="9" class="font-mono">

@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { basename, dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { BRAND_IMAGES, BRAND_MASTER_SOURCE_PATH } from '../src/lib/brand.ts';
 import { consentRegions } from '../src/lib/consent.ts';
 import { REPOSITORY_URL, SPONSOR_URL } from '../src/lib/links.ts';
 import { gtmNoscriptIframe, trackingHeadScripts } from '../src/lib/tracking.ts';
 
 const publicDir = fileURLToPath(new URL('../.output/public/', import.meta.url));
+const poolChecksDir = fileURLToPath(new URL('./pool-checks/', import.meta.url));
 const stylePath = fileURLToPath(new URL('../src/style.css', import.meta.url));
 const designPath = fileURLToPath(new URL('../DESIGN-SYSTEM.md', import.meta.url));
 
@@ -1061,6 +1062,23 @@ const pages = await Promise.all(routes.map(async route => ({
 })));
 
 await Promise.all(routes.map(route => attempt(() => checkPage(route))));
+async function checkPool() {
+  const entries = (await readdir(poolChecksDir))
+    .filter((name) => name.endsWith('.mjs'))
+    .sort();
+  assert.ok(entries.length > 0, 'website/scripts/pool-checks/ must hold at least one check');
+  const problems = [];
+  for (const name of entries) {
+    const module = await import(pathToFileURL(resolve(poolChecksDir, name)).href);
+    assert.equal(typeof module.default, 'function',
+      `website/scripts/pool-checks/${name} must default-export an async function taking { publicDir }`);
+    for (const message of await module.default({ publicDir })) problems.push(`${name}: ${message}`);
+  }
+  assert.equal(problems.length, 0,
+    `Pool verification failed with ${problems.length} problem(s):\n  - ${problems.join('\n  - ')}`);
+  return entries;
+}
+
 await attempt(checkOutputSanity);
 await attempt(checkBrandAssets);
 await attempt(checkButtons);
@@ -1070,6 +1088,7 @@ for (const file of await htmlFilesUnder(publicDir)) {
 }
 await attempt(checkDesignTokens);
 const softRatios = (await attempt(checkSoftBadges)) ?? [];
+const poolChecks = (await attempt(checkPool)) ?? [];
 await attempt(checkContrast);
 
 for (const route of pages) {
@@ -1086,4 +1105,4 @@ for (const route of pages) {
 assert.equal(failures.length, 0,
   `Static verification failed with ${failures.length} problem(s):\n  - ${failures.join('\n  - ')}`);
 
-console.log(`Static verification passed: ${routes.length} fully rendered routes (${routes.map(r => r.label).join(', ')}); headings, titles, brand, metadata, unique ids, contained links and assets, resolvable targets and anchors, .nojekyll, no private/build files, no mark.svg or master logo in the build and every brand image inside its size limit, Sponsor hearts and Star on GitHub buttons per DESIGN-SYSTEM.md, WCAG AA text contrast at Pages base ${base}, night-ledger tokens declared, soft badges ${softRatios.join(', ')}, a hue-coded hairline edge on every soft chip, no colourless chip on a card surface, no monospace chip naming something a reader cannot type, no unpinned heading-and-chip row, no prose card grid past two columns, every container at max-w-7xl and a diagram figure on every documentation route.`);
+console.log(`Static verification passed: ${routes.length} fully rendered routes (${routes.map(r => r.label).join(', ')}); headings, titles, brand, metadata, unique ids, contained links and assets, resolvable targets and anchors, .nojekyll, no private/build files, no mark.svg or master logo in the build and every brand image inside its size limit, Sponsor hearts and Star on GitHub buttons per DESIGN-SYSTEM.md, WCAG AA text contrast at Pages base ${base}, night-ledger tokens declared, soft badges ${softRatios.join(', ')}, a hue-coded hairline edge on every soft chip, no colourless chip on a card surface, no monospace chip naming something a reader cannot type, no unpinned heading-and-chip row, no prose card grid past two columns, every container at max-w-7xl and a diagram figure on every documentation route, pool checks ${poolChecks.join(', ')}.`);

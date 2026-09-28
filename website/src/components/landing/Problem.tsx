@@ -1,6 +1,7 @@
 import HeroCanvas from "./HeroCanvas";
 import { asset } from "../../lib/paths";
 import { SponsorButton } from "../ProjectActions";
+import { HERO_FOCUS } from "../../lib/hero-scene";
 
 export default function Problem() {
   return (
@@ -24,12 +25,14 @@ export default function Problem() {
           </div>
         </div>
       </div>
-      {/* Below lg the scene is its own band under the copy, zoomed onto the
-          model tiles: the 16 by 9 scene box is wider than the band and
-          translated so the tile cluster's centre (x 13, y 4.7 of the design
-          box) sits at the band's centre, i.e. -13/16 and -4.7/9 of its size. */}
       <div class="relative mt-8 aspect-[8/9] overflow-hidden sm:aspect-[16/10] lg:absolute lg:inset-0 lg:-z-10 lg:mt-0 lg:aspect-auto">
-        <div class="absolute left-1/2 top-1/2 aspect-[16/9] w-[250%] -translate-x-[81.25%] -translate-y-[52.2%] sm:w-[150%] lg:inset-0 lg:aspect-auto lg:w-auto lg:translate-x-0 lg:translate-y-0">
+        <div
+          class="absolute left-1/2 top-1/2 aspect-[16/9] w-[250%] [transform:translate(calc(-1*var(--hero-focus-x)),calc(-1*var(--hero-focus-y)))] sm:w-[150%] lg:inset-0 lg:aspect-auto lg:w-auto lg:[transform:none]"
+          style={{
+            '--hero-focus-x': `${(HERO_FOCUS.x / 16) * 100}%`,
+            '--hero-focus-y': `${(HERO_FOCUS.y / 9) * 100}%`,
+          }}
+        >
           <HeroCanvas />
         </div>
       </div>

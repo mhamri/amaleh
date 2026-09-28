@@ -1,118 +1,83 @@
 import { onCleanup, onMount } from 'solid-js';
-import { MODELS, type ModelId } from '../../lib/models';
+import { MODELS, type ModelId, type ModelIdentity } from '../../lib/models';
 import { asset } from '../../lib/paths';
+import { WORKERS, WORKER_NAMES, REPAIR, DECISION, joinNames } from '../../lib/pool';
+import {
+  heroScene,
+  TILE,
+  LABEL,
+  type SceneLink,
+  type SceneLinkKind,
+  type SceneNode,
+} from '../../lib/hero-scene';
 
-type Role = 'coordinator' | 'worker' | 'jev' | 'review';
+const FAMILY_BY_IDENTITY = new Map<ModelIdentity, ModelId>(
+  Object.entries(MODELS).map(([key, value]) => [value, key as ModelId]),
+);
 
-type SceneNode = {
-  x: number;
-  y: number;
-  r: number;
-  role: Role;
-  label?: string;
-  model?: ModelId;
-};
+function familyOf(identity: ModelIdentity): ModelId {
+  const key = FAMILY_BY_IDENTITY.get(identity);
+  if (!key) {
+    throw new Error(
+      `website/src/components/landing/HeroCanvas.tsx cannot find the family of '${identity.name}' in website/src/lib/models.ts. ` +
+      `Add that identity to MODELS in website/src/lib/models.ts before building.`,
+    );
+  }
+  return key;
+}
 
-type SceneLink = {
-  from: number;
-  to: number;
-  role: Role;
-  phase: number;
-  weight: number;
-  exit?: [number, number];
-  entry?: [number, number];
-};
+const SCENE = heroScene({
+  workers: WORKERS.map((identity) => ({ family: familyOf(identity), name: identity.name })),
+  deep: [{ family: familyOf(REPAIR), name: REPAIR.name }],
+  decision: { family: familyOf(DECISION), name: DECISION.name },
+});
+
+const NODES = SCENE.nodes;
+const LINKS = SCENE.links;
 
 const DESIGN_WIDTH = 16;
 const DESIGN_HEIGHT = 9;
 
-const TILE = { side: 0.72, half: 0.36, radius: 0.18 };
-const LABEL = { size: 0.15, gap: 0.42 };
-
 const LINK_STROKE = { near: 0.032, far: 0.018 };
-const FULL_WEIGHT = 1;
-const THIN_WEIGHT = 0.7;
 
-const NODES: SceneNode[] = [
-  { x: 7.5, y: 4.6, r: 0.9, role: 'coordinator' },
-  { x: 11.9, y: 2.2, r: 0.42, role: 'coordinator', label: 'Claude Code', model: 'anthropic' },
-  { x: 13.9, y: 2.2, r: 0.42, role: 'coordinator', label: 'Codex', model: 'openai' },
-  { x: 10.9, y: 4.6, r: 0.42, role: 'worker', label: 'DeepSeek', model: 'deepseek' },
-  { x: 12.9, y: 4.6, r: 0.42, role: 'worker', label: 'GLM', model: 'glm' },
-  { x: 14.9, y: 4.6, r: 0.42, role: 'worker', label: 'MiMo', model: 'mimo' },
-  { x: 10.9, y: 7.0, r: 0.42, role: 'worker', label: 'Solar', model: 'solar' },
-  { x: 12.9, y: 7.0, r: 0.42, role: 'jev', label: 'Jev', model: 'jev' },
-  { x: 14.9, y: 7.0, r: 0.42, role: 'worker', label: 'Kimi', model: 'kimi' },
-];
-
-const belowLabel = (node: number): [number, number] => [
-  NODES[node].x,
-  NODES[node].y + TILE.half + LABEL.gap + LABEL.size,
-];
-
-const LINKS: SceneLink[] = [
-  { from: 1, to: 0, role: 'coordinator', phase: 0, weight: FULL_WEIGHT },
-  { from: 2, to: 0, role: 'coordinator', phase: 0.5, exit: [13.9, 2.56], weight: FULL_WEIGHT },
-  { from: 0, to: 3, role: 'coordinator', phase: 0.12, weight: THIN_WEIGHT },
-  { from: 0, to: 6, role: 'coordinator', phase: 0.62, weight: THIN_WEIGHT },
-  { from: 1, to: 4, role: 'coordinator', phase: 0.37, exit: [12.26, 2.2], entry: [12.9, 4.24], weight: THIN_WEIGHT },
-  { from: 2, to: 5, role: 'coordinator', phase: 0.87, weight: THIN_WEIGHT },
-  { from: 4, to: 7, role: 'jev', phase: 0.24, exit: belowLabel(4), weight: FULL_WEIGHT },
-  { from: 6, to: 7, role: 'jev', phase: 0.74, weight: FULL_WEIGHT },
-  { from: 3, to: 4, role: 'review', phase: 0.44, weight: FULL_WEIGHT },
-  { from: 4, to: 5, role: 'review', phase: 0.94, weight: FULL_WEIGHT },
-  { from: 5, to: 8, role: 'worker', phase: 0.3, exit: belowLabel(5), weight: FULL_WEIGHT },
-  { from: 3, to: 0, role: 'review', phase: 0.58, weight: THIN_WEIGHT },
-  { from: 6, to: 0, role: 'review', phase: 0.08, weight: THIN_WEIGHT },
-  { from: 3, to: 7, role: 'jev', phase: 0.52, weight: FULL_WEIGHT },
-  { from: 5, to: 7, role: 'jev', phase: 0.62, weight: FULL_WEIGHT },
-];
-
-const linkSegment = (link: SceneLink): [number, number, number, number] => [
-  link.exit?.[0] ?? NODES[link.from].x,
-  link.exit?.[1] ?? NODES[link.from].y,
-  link.entry?.[0] ?? NODES[link.to].x,
-  link.entry?.[1] ?? NODES[link.to].y,
-];
-
-const isNearLink = (link: SceneLink) => link.role === 'review' || link.role === 'worker';
-
-const NODE_COUNT = NODES.length;
-const LINK_COUNT = LINKS.length;
-
-const ARIA_LABEL =
-  'Claude Code or Codex runs the coordinator, which hands chunks of work to four cheap Flash models: DeepSeek, GLM, MiMo and Solar. ' +
-  'Workers put bounded questions to Jev. A model from another Flash family reviews each finished chunk, ' +
-  'a chunk that keeps failing its repairs escalates to Kimi, and accepted chunks travel back to the coordinator.';
-
-const edgeHue = (link: SceneLink): string => {
-  const target = NODES[link.to];
-  if (!target) return '--color-secondary';
-  if (link.role === 'review') return '--color-secondary';
-  if (link.role === 'worker' && target.model) return bareVar(MODELS[target.model].hue);
-  if (target.model) return bareVar(MODELS[target.model].hue);
-  return bareVar(ROLE_VARIABLE[target.role as Role]);
-};
-
-const bareVar = (v: string) => v.replace(/^var\(/, '').replace(/\)$/, '');
-
-const ROLE_VARIABLE: Record<Role, string> = {
+const ROLE_VARIABLE: Record<SceneLinkKind, string> = {
   coordinator: '--color-primary',
   worker: '--color-secondary',
-  jev: '--color-accent',
   review: '--color-secondary',
+  decision: '--color-accent',
 };
+
+const bareVar = (value: string) => value.replace(/^var\(/, '').replace(/\)$/, '');
+
+const edgeHue = (link: SceneLink): string => {
+  if (link.kind === 'review') return '--color-secondary';
+  if (link.hueFamily) {
+    const identity = MODELS[link.hueFamily as ModelId];
+    if (identity) return bareVar(identity.hue);
+  }
+  return ROLE_VARIABLE[link.kind];
+};
+
+const nodeHue = (node: SceneNode): string =>
+  node.family ? bareVar(MODELS[node.family as ModelId].hue) : '--color-primary';
 
 const HUE_VARIABLES = [
   ...new Set([
-    ...Object.values(ROLE_VARIABLE),
-    ...Object.values(MODELS).map((m) => bareVar(m.hue)),
+    '--color-primary',
+    '--color-secondary',
+    '--color-accent',
+    ...Object.values(MODELS).map((identity) => bareVar(identity.hue)),
   ]),
 ];
 const SCENE_VARIABLES = ['--color-base-100', '--color-line', ...HUE_VARIABLES];
 
-const nodeHue = (node: SceneNode) =>
-  bareVar(node.model ? MODELS[node.model].hue : ROLE_VARIABLE[node.role]);
+const ARIA_LABEL =
+  `Claude Code or Codex runs the coordinator, which hands chunks of work to the Flash worker families ${joinNames(WORKER_NAMES)}. ` +
+  `Workers put bounded questions to ${DECISION.name}. A model from another Flash family reviews each finished chunk, ` +
+  `a chunk that keeps failing its repairs escalates to ${REPAIR.name}, and accepted chunks travel back to the coordinator.`;
+
+const NODE_COUNT = NODES.length;
+const LINK_COUNT = LINKS.length;
 
 const VERTEX_SOURCE = `
 attribute vec2 aPos;
@@ -326,14 +291,13 @@ export default function HeroCanvas() {
       nodeColors.set(palette[nodeHue(node)], i * 3);
     });
     LINKS.forEach((link, i) => {
-      const [x1, y1, x2, y2] = linkSegment(link);
-      linkEnds[i * 4] = x1;
-      linkEnds[i * 4 + 1] = y1;
-      linkEnds[i * 4 + 2] = x2;
-      linkEnds[i * 4 + 3] = y2;
+      linkEnds[i * 4] = link.x1;
+      linkEnds[i * 4 + 1] = link.y1;
+      linkEnds[i * 4 + 2] = link.x2;
+      linkEnds[i * 4 + 3] = link.y2;
       linkColors.set(palette[edgeHue(link)], i * 3);
       linkPhases[i] = link.phase;
-      linkNear[i] = isNearLink(link) ? 1.0 : 0.6;
+      linkNear[i] = link.near ? 1.0 : 0.6;
       linkWeight[i] = link.weight;
       const higher = Math.max(NODES[link.from].y, NODES[link.to].y);
       linkClamp[i] = higher + TILE.half + LABEL.gap * 0.5;
@@ -440,38 +404,35 @@ export default function HeroCanvas() {
           class="transition-opacity duration-500 ease-out-soft"
           opacity="0.25"
         >
-          {LINKS.map((link) => {
-            const near = isNearLink(link);
-            const [x1, y1, x2, y2] = linkSegment(link);
-            return (
-              <line
-                x1={x1}
-                y1={y1}
-                x2={x2}
-                y2={y2}
-                stroke={`var(${edgeHue(link)})`}
-                stroke-width={(near ? LINK_STROKE.near : LINK_STROKE.far) * link.weight}
-                opacity={near ? 0.7 : 0.3}
-              />
-            );
-          })}
-          {NODES.map((node) => (
-            <circle
-              cx={node.x}
-              cy={node.y}
-              r={node.r}
-              fill="var(--color-base-100)"
-              stroke={`var(${nodeHue(node)})`}
-              stroke-width="0.05"
+          {LINKS.map((link) => (
+            <line
+              x1={link.x1}
+              y1={link.y1}
+              x2={link.x2}
+              y2={link.y2}
+              stroke={`var(${edgeHue(link)})`}
+              stroke-width={(link.near ? LINK_STROKE.near : LINK_STROKE.far) * link.weight}
+              opacity={link.near ? 0.7 : 0.3}
             />
           ))}
+          {NODES.map((node) =>
+            node.family ? null : (
+              <circle
+                cx={node.x}
+                cy={node.y}
+                r={node.r}
+                fill="var(--color-base-100)"
+                stroke={`var(${nodeHue(node)})`}
+                stroke-width="0.05"
+              />
+            ),
+          )}
         </g>
-        <g>
         {NODES.map((node) => {
-          if (!node.model) return null;
-          const identity = MODELS[node.model];
+          if (!node.family) return null;
+          const identity = MODELS[node.family as ModelId];
           return (
-            <g transform={`translate(${node.x} ${node.y})`} data-model={node.model}>
+            <g transform={`translate(${node.x} ${node.y})`} data-model={node.family} data-role={node.role}>
               <rect
                 x={-TILE.half}
                 y={-TILE.half}
@@ -527,7 +488,6 @@ export default function HeroCanvas() {
             </g>
           );
         })}
-        </g>
       </svg>
     </div>
   );
