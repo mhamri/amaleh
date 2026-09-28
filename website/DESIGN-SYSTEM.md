@@ -999,6 +999,31 @@ when decorative.
 - Colour is never the only carrier of meaning; status callouts pair icon or
   label with the colour.
 
+## Model pool
+
+The site shows the model pool the runtime routes to, and it reads that pool
+from `amaleh/models.json` at build time. In the page graph,
+`website/src/lib/pool.ts` is the only place the pool is read: it imports the
+JSON, maps every id through `family()` from `amaleh/scripts/family.ts` — the
+one mapping from model id to family that the runtime and the site share — and
+resolves each family to an identity in `website/src/lib/models.ts`. It exports
+the worker identities (the distinct flash families, in `models.json` order),
+the repair identity (deep) and the decision identity (Jev), and the text
+surfaces name models from those exports: the Workers cards on `/` and
+`/docs/`, the cross-family example on review and recovery, and the two worker
+labels in the run lifecycle diagram. The pool checks under
+`website/scripts/pool-checks/` read the same file directly, because they run
+under Node against the built output instead of through the page graph.
+
+A surface built from these exports never writes a worker model name by hand,
+so a model that joins the pool appears on it and a model that leaves the pool
+disappears from it. A family in `models.json` with no identity in
+`website/src/lib/models.ts` fails the build with an error naming that family,
+so a model cannot join the pool unnamed. An identity whose
+vendor publishes no mark — a model the industry calls stealth, whose vendor is
+hidden — renders its monogram in its routed hue; no vendor mark is drawn,
+redrawn or recoloured.
+
 ## Build rules for page authors
 
 - Import nothing into `style.css`; no `<style>` blocks, no global CSS files.
@@ -1036,3 +1061,8 @@ when decorative.
 - Every visual in the visualization layer is inspected with JavaScript
   disabled (the server-rendered fallback must be meaningful), with WebGL
   unavailable, and with `prefers-reduced-motion: reduce` forced.
+- The pool checks in `website/scripts/pool-checks/` run inside
+  `npm run test:static`: every built Workers card names exactly the worker
+  families in `amaleh/models.json` and no model the pool no longer routes, and
+  a family in the pool with no identity in `website/src/lib/models.ts` fails
+  the build.

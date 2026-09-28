@@ -3,6 +3,7 @@ import PageMeta from '../../components/PageMeta';
 import DocsLayout, { type DocsSection } from '../../components/docs/DocsLayout';
 import ModelTopology from '../../components/diagrams/ModelTopology';
 import { asset } from '../../lib/paths';
+import { DECISION, REPAIR, WORKER_LIST } from '../../lib/pool';
 import { DOCS_CRUMB, articleGraph } from '../../lib/seo';
 
 const sections: DocsSection[] = [
@@ -23,7 +24,7 @@ const roles = [
     name: 'Workers',
     badge: 'pi / OpenRouter',
     badgeClass: 'badge badge-soft badge-info shrink-0 text-xs',
-    body: 'The routed Flash families — DeepSeek, GLM, MiMo and Solar — each own a chunk end to end: implementation, checks and repair cycles. When a choice inside the chunk is uncertain they consult Jev directly through the bundled helper instead of escalating to the coordinator.',
+    body: `The routed Flash families — ${WORKER_LIST} — each own a chunk end to end: implementation, checks and repair cycles. When a choice inside the chunk is uncertain they consult ${DECISION.name} directly through the bundled helper instead of escalating to the coordinator.`,
   },
   {
     name: 'Reviewer',
@@ -32,7 +33,7 @@ const roles = [
     body: 'The other Flash family independently verifies each chunk with structured coverage. Findings route back into the worker’s repair loop, not to the coordinator.',
   },
   {
-    name: 'Jev',
+    name: DECISION.name,
     badge: 'bounded decisions',
     badgeClass: 'badge badge-soft badge-accent shrink-0 text-xs',
     body: 'Answers bounded either/or questions for the workers and the coordinator. Dependencies, ownership, checks and review coverage are enforced by TypeScript code, not by a model.',
@@ -41,14 +42,14 @@ const roles = [
 
 const escalation = [
   ['Flash repair', 'The routed worker', 'Default repair of review findings, inside the chunk’s own loop.'],
-  ['Kimi repair', 'A deeper specialist model', 'Justified deeper work once the Flash repair allowance is exhausted.'],
+  [`${REPAIR.name} repair`, 'A deeper specialist model', 'Justified deeper work once the Flash repair allowance is exhausted.'],
   ['Host', 'The coordinator', 'Justified escalated diagnosis, missing evidence and genuine external blockers. The last step: host work is accepted on its checks, with no model review.'],
 ];
 
 export default function DocsOverview() {
   const title = 'Overview — Amaleh documentation';
   const description =
-    'Why Amaleh exists, and how the coordinator, workers, reviewer and Jev divide the work of a delegated run.';
+    `Why Amaleh exists, and how the coordinator, workers, reviewer and ${DECISION.name} divide the work of a delegated run.`;
   return (
     <>
       <PageMeta
@@ -121,7 +122,7 @@ export default function DocsOverview() {
             Routing and escalation
           </h2>
           <p class="mt-4 text-base leading-relaxed">
-            Worker and reviewer models are chosen by deterministic round-robin across eligible stable Flash families, seeded by the run’s session hash, so work spreads across vendors instead of fixating on one. No Jev call is spent on mechanical selection. A provider that fails its retry budget is skipped for five minutes, which costs capacity rather than the whole run. A model measured at least twice as slow as the median for its role is skipped for that role only, until its slow calls are a week old.
+            Worker and reviewer models are chosen by deterministic round-robin across eligible stable Flash families, seeded by the run’s session hash, so work spreads across vendors instead of fixating on one. No {DECISION.name} call is spent on mechanical selection. A provider that fails its retry budget is skipped for five minutes, which costs capacity rather than the whole run. A model measured at least twice as slow as the median for its role is skipped for that role only, until its slow calls are a week old.
           </p>
           <p class="mt-4 text-base leading-relaxed">
             Only genuine boundaries reach the expensive model: an exhausted repair allowance, missing evidence, or ambiguous intent. Repair escalation is enforced by persistent counters inside the chunk loop, so the coordinator only sees the final escalation.

@@ -35,12 +35,12 @@ const THIN_WEIGHT = 0.7;
 
 const NODES: SceneNode[] = [
   { x: 7.5, y: 4.6, r: 0.9, role: 'coordinator' },
-  { x: 11.9, y: 2.2, r: 0.42, role: 'coordinator', label: 'Claude Code', model: 'anthropic' },
+  { x: 11.9, y: 2.2, r: 0.42, role: 'coordinator', label: 'Claude Code', model: 'claude' },
   { x: 13.9, y: 2.2, r: 0.42, role: 'coordinator', label: 'Codex', model: 'openai' },
   { x: 10.9, y: 4.6, r: 0.42, role: 'worker', label: 'DeepSeek', model: 'deepseek' },
   { x: 12.9, y: 4.6, r: 0.42, role: 'worker', label: 'GLM', model: 'glm' },
-  { x: 14.9, y: 4.6, r: 0.42, role: 'worker', label: 'MiMo', model: 'mimo' },
-  { x: 10.9, y: 7.0, r: 0.42, role: 'worker', label: 'Solar', model: 'solar' },
+  { x: 14.9, y: 4.6, r: 0.42, role: 'worker', label: 'MiMo', model: 'xiaomi' },
+  { x: 10.9, y: 7.0, r: 0.42, role: 'worker', label: 'Solar', model: 'upstage' },
   { x: 12.9, y: 7.0, r: 0.42, role: 'jev', label: 'Jev', model: 'jev' },
   { x: 14.9, y: 7.0, r: 0.42, role: 'worker', label: 'Kimi', model: 'kimi' },
 ];

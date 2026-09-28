@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import { solidStart } from '@solidjs/start/config';
 import tailwindcss from '@tailwindcss/vite';
 import { nitro } from 'nitro/vite';
+import './src/lib/pool.ts';
 
 const base = process.env.SITE_BASE || '/';
 if (!base.startsWith('/') || !base.endsWith('/') || base.includes('..')) {
@@ -16,5 +17,3 @@ export default defineConfig({
     prerender: { crawlLinks: true, failOnError: true, routes: ['/evidence/'] },
   },
 });
-
-

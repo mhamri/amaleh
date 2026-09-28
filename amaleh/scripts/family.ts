@@ -1,0 +1,1 @@
+export function family(model:string):string { const id=model.replace(/^~/,''); if(/deepseek/i.test(id))return 'deepseek';if(/glm|z-ai/i.test(id))return 'glm';if(/kimi|moonshot/i.test(id))return 'kimi';if(/jev/i.test(id))return 'jev';if(/claude|anthropic|fable/i.test(id))return 'claude';if(/astra|gpt|openai/i.test(id))return 'openai';return id.split('/')[0]; }

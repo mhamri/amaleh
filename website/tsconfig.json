@@ -9,6 +9,7 @@
     "noEmit": true,
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
     "noUnusedLocals": true,
     "types": ["@solidjs/start/env", "vite/client", "node"]
   },
