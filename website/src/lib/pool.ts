@@ -44,9 +44,18 @@ export const WORKER_NAMES: string[] = WORKERS.map((worker) => worker.name);
 export const REPAIR: ModelIdentity = identity(required(models.deep?.[0], 'deep'));
 export const DECISION: ModelIdentity = identity(required(models.jev, 'jev'));
 
-export function joinNames(names: string[]): string {
+function joinWith(names: string[], conjunction: string): string {
   if (names.length < 2) return names.join('');
-  return `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+  return `${names.slice(0, -1).join(', ')} ${conjunction} ${names.at(-1)}`;
+}
+
+export function joinNames(names: string[]): string {
+  return joinWith(names, 'and');
+}
+
+export function joinAlternatives(names: string[]): string {
+  return joinWith(names, 'or');
 }
 
 export const WORKER_LIST: string = joinNames(WORKER_NAMES);
+export const WORKER_ALTERNATIVES: string = joinAlternatives(WORKER_NAMES);

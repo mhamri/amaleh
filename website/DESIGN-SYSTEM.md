@@ -941,7 +941,14 @@ Required of every visual in this layer, without exception:
   the SVG never overflows, and neither the type check nor the static check can
   see it. Labels that belong to a connector rather than a box sit clear of
   every box. Measured with `getBBox` against each `rect` at 320, 768 and 1440
-  CSS pixels, the count of labels straddling a card edge must be zero.
+  CSS pixels, the count of labels straddling a card edge must be zero. Two
+  labels must never cross either: measured with `getBBox` mapped through the
+  element's own transform into the viewport's CSS pixels, the count of label
+  pairs crossing inside the hero scene or either topology variant must be zero
+  at 320, 768 and 1440 CSS pixels, counting a pair only when it overlaps by
+  more than 0.5 CSS pixels on both axes. A variant that CSS hides at the width
+  being measured is shown for the measurement and hidden again, so both
+  topology variants are measured at every one of those widths.
 - **Accessible.** A decorative canvas is `aria-hidden="true"` and the meaning
   is carried by adjacent text. A diagram that carries meaning is
   `role="img"` with an `aria-label` naming what it shows, or it exposes the
@@ -1010,8 +1017,19 @@ resolves each family to an identity in `website/src/lib/models.ts`. It exports
 the worker identities (the distinct flash families, in `models.json` order),
 the repair identity (deep) and the decision identity (Jev), and the text
 surfaces name models from those exports: the Workers cards on `/` and
-`/docs/`, the cross-family example on review and recovery, and the two worker
-labels in the run lifecycle diagram. The pool checks under
+`/docs/`, the cross-family example on review and recovery, the two worker
+labels in the run lifecycle diagram, and the Flash pool box, the decision box,
+the repair box, the aria-label and the caption of the model topology diagram.
+One family is picked per chunk, so the topology caption and its `aria-label`
+name the worker families as alternatives joined with `or`
+(`joinAlternatives`), while the Workers cards, which name the whole pool,
+join them with `and` (`joinNames`).
+The Flash pool box itself is laid out by `topologyPoolBox` in
+`website/src/lib/topology-layout.ts`, which Node imports directly, so the
+diagram holds for a flash pool of 2 to 6 names: the names sit in two columns
+that fill their rows left to right at one fixed font size, the box keeps one
+size per variant, and every text stays inside it and clear of every other.
+The pool checks under
 `website/scripts/pool-checks/` read the same file directly, because they run
 under Node against the built output instead of through the page graph.
 
@@ -1063,6 +1081,6 @@ redrawn or recoloured.
   unavailable, and with `prefers-reduced-motion: reduce` forced.
 - The pool checks in `website/scripts/pool-checks/` run inside
   `npm run test:static`: every built Workers card names exactly the worker
-  families in `amaleh/models.json` and no model the pool no longer routes, and
-  a family in the pool with no identity in `website/src/lib/models.ts` fails
-  the build.
+  families in `amaleh/models.json` and no model the pool no longer routes,
+  every built topology variant names exactly those families, and a family in
+  the pool with no identity in `website/src/lib/models.ts` fails the build.
