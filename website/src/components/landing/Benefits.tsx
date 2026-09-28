@@ -24,7 +24,7 @@ const items: Benefit[] = [
     line: 'A top-tier model sets the plan and integrates; Flash workers carry each chunk, so implementation runs at worker rates.',
     figure: '7.82 US dollars',
     figureNote:
-      'estimated total spend for both runs, 156 model calls. A local estimate, not a billed figure.',
+      'estimated worker and reviewer spend for both runs, 156 model calls. A local estimate, not a billed figure; the coordinating model is not in it.',
   },
   {
     key: 'problems',
@@ -93,11 +93,12 @@ export default function Benefits() {
           <div class="flex min-w-0 flex-col justify-center gap-4 border-b border-line p-6 sm:p-8 md:border-b-0 md:border-r">
             <p class="text-base leading-relaxed text-base-content">
               This site was rebuilt through Amaleh's own runs: 156 model calls, 45 blocking defects
-              caught by review before merge, an estimated 7.82 US dollars.
+              caught by review before merge, an estimated 7.82 US dollars of worker and reviewer
+              spend.
             </p>
             <p class="text-sm leading-relaxed text-dim">
               The figures were read from the run records on 2026-09-23. The cost is pi's local
-              estimate, not a billed figure.
+              estimate of the worker and reviewer calls, not a billed figure.
             </p>
             <p>
               <a class="link link-hover text-primary" href={asset('case-study/')}>

@@ -38,7 +38,7 @@ const claims = [
   },
   {
     claim: 'It costs little.',
-    proof: 'Estimated total spend: 7.82 US dollars for two full runs that built, reviewed and shipped a seven-route website. Cost is pi\'s local estimate, not a billed figure.',
+    proof: 'Estimated worker and reviewer spend: 7.82 US dollars for two full runs that built, reviewed and shipped a seven-route website. Cost is pi\'s local estimate, not a billed figure, and the coordinating host model is not in it.',
     chip: '~7.82 USD',
     chipHue: 'badge-warning',
   },
@@ -200,7 +200,8 @@ export default function CaseStudyPage() {
             </table>
           </div>
           <p class="mt-3 text-sm text-dim max-w-prose">
-            Cost is pi's local estimate, not a billed figure. A blocking finding is a defect an
+            Cost is pi's local estimate of the worker and reviewer calls, not a billed figure; the
+            coordinating host model is not in it. A blocking finding is a defect an
             independent reviewer from a different model family refused to accept.
           </p>
         </section>
