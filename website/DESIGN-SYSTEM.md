@@ -797,14 +797,32 @@ kinds carry that, and all are subject to the rules here.
 
 **Hero canvas** — one per site, on the landing page only. A WebGL scene whose
 subject is the workflow itself: Claude Code or Codex running the coordinator,
-the coordinator handing chunks to the four Flash workers (DeepSeek, GLM, MiMo,
-Solar), workers asking Jev bounded questions, another Flash family reviewing
-each chunk, a chunk that keeps failing repair escalating to Kimi, and accepted
+the coordinator handing chunks to the Flash workers, workers asking the
+decision model bounded questions, another Flash family reviewing each chunk, a
+chunk that keeps failing repair escalating to the repair model, and accepted
 chunks travelling back. The scene must match what the skill does: Anthropic
 and OpenAI are the coordinator hosts, never the reviewers. It reads as an instrument on the night-ledger console, drawn
 in palette hues (brass for the coordinator and action, teal for accepted or
 verified, violet for orchestration and routing) on the `base-100` background.
 No photographic texture, no lens flare, no particle confetti.
+
+**The scene is the pool.** `HeroCanvas.tsx` writes no model name of its own: it
+calls `heroScene` in `website/src/lib/hero-scene.ts` with the worker, repair
+and decision identities that `website/src/lib/pool.ts` resolves from
+`amaleh/models.json` at build time through `family()` in
+`amaleh/scripts/family.ts` and the identity table in
+`website/src/lib/models.ts`, so the tiles, the links and the `aria-label`
+follow the pool by themselves. `hero-scene.ts` holds the whole layout rule:
+the workers fill one row above the decision node and spill into a second row
+below it when the pool no longer fits in one, each row centred on the decision
+node's column and running left to right in pool order; the repair node sits in
+the decision node's row to its right, and the host tiles sit above the top
+worker row. Every worker keeps its own line to the decision node, review lines
+join neighbours in the same row, the hosts reach the coordinator hub, and the
+escalation runs from a worker to the repair node. `heroScene` takes every name
+from its argument and never looks one up, so the scene is placed for whatever
+the pool holds, and the geometry is proved on synthetic pools by
+`website/scripts/pool-checks/hero.mjs`.
 
 The hero canvas is a **full-bleed background**, not a panel beside the copy.
 It spans the whole hero band edge to edge, sits behind the headline at low
@@ -815,10 +833,11 @@ thing it explains.
 
 **Depth is built into the scene, not applied to the whole canvas.** Both the
 canvas and every model tile render at full opacity; the layering inside the
-scene supplies the depth. Far edges — the coordinator distribution and the Jev
-consultation — are thinner, dimmer and softer, a whisper of the workflow, while
-near edges — the cross-family review, the escalation to Kimi and the
-accepted-chunk returns — are brighter, thicker and sharper. On top of that
+scene supplies the depth. Far edges — the coordinator distribution and the
+decision model's consultation — are thinner, dimmer and softer, a whisper of
+the workflow, while near edges — the cross-family review, the escalation to
+the repair model and the accepted-chunk returns — are brighter, thicker and
+sharper. On top of that
 banding each link carries its own fixed weight, described below, which thins
 the coordinator's dispatches and the returns one step. Node glows are additive
 and soft and breathe slowly, so a
@@ -829,36 +848,29 @@ luminance that would cost the copy its contrast ratios: a packet, its rail and
 a node ring together stay under half the AA threshold for `dim` body copy.
 
 A straight line between two node centres would run through the model-name label
-under Claude Code, GLM and MiMo. Those links carry an explicit exit point
-instead — on the tile edge where the link leaves sideways, and below the tile's
-label where it leaves downwards — and edge glow is clamped below the higher of
-the two tiles, so no glowing line and no glow reaches a label box — the same
-"no label is crossed" rule the diagrams obey. The two links that run down a column — GLM
-to Jev and MiMo to Kimi — sit on the vertical centre line of both tiles
-(x = 12.9 and x = 14.9 of the 16 × 9 design box) and each starts below the
-upper tile's own label, so the centre line is the connection's axis and the
-name it passes is never in its way. Jev answers all four Flash workers:
-DeepSeek, GLM, MiMo and Solar each hold a violet query link to it.
+under a tile, so `hero-scene.ts` gives every link an explicit exit and entry
+point instead — on the tile edge where the link leaves sideways, and below the
+tile's own label where it leaves downwards — and the canvas clamps edge glow
+below the higher of the two tiles, so no glowing line and no glow reaches a
+label box — the same "no label is crossed" rule the diagrams obey. A link that
+runs down a column starts below the upper tile's own label, so the name it
+passes is never in its way, and every worker holds its own query link to the
+decision node, whichever row it sits in.
 
-**One fixed weight per link.** Every entry in the `LINKS` table of
-`HeroCanvas.tsx` carries a `weight`, and the split is the workflow's own: the
-ordinary dispatch and return traffic between the coordinator and a worker tile
-runs at `THIN_WEIGHT` 0.7 — the four dispatch links to DeepSeek, Solar, GLM and
-MiMo, and the two accepted-chunk returns into the hub — while Jev's four
-queries, the cross-family review loop and the escalation to Kimi keep
-`FULL_WEIGHT` 1. The number is data written on the link itself, never a runtime
-random, and one number drives both renderers, so the canvas and the no-WebGL
-SVG thin exactly the same connections: the fragment shader reads it as
+**One fixed weight per link.** Every link `heroScene` returns carries a
+`weight`, and the split is the workflow's own: the ordinary dispatch and return
+traffic between the coordinator hub and a worker tile runs at `THIN_WEIGHT`
+0.7, while the queries to the decision node, the cross-family review loop and
+the escalation to the repair node keep `FULL_WEIGHT` 1. The number is data
+written on the link itself, never a runtime random, and one number drives both
+renderers, so the canvas and the no-WebGL SVG thin exactly the same
+connections: the fragment shader reads it as
 `uniform float uLinkWeight[...]` and multiplies it into the rail's glow width
 and brightness, and the fallback `<line>` sets `stroke-width` from it on top of
 the near/far stroke (0.032 of a design unit for the near band, 0.018 for the
 far one). A thinned near link stays thicker than an untouched far one, so the
 two dimensions never invert, and the travelling packet keeps its size because
-it marks the event rather than the rail. Measured with the vividness probe,
-thinning these six links holds the vivid-pixel share the unthinned scene
-carried — about 1.4% at 1024 and 1.5% at 1440 CSS pixels against a 1.20% floor
-— which is why 0.7, the top of the allowed range, is the weight these links
-use.
+it marks the event rather than the rail.
 
 **One design box, one source of colour.** The scene is drawn in a 16 × 9 box
 fitted inside the canvas the way SVG `preserveAspectRatio` `xMidYMid meet`
@@ -868,21 +880,23 @@ and label in the same place at every aspect ratio. No hex value is ever
 written into the component: the canvas resolves each palette custom property
 once after mount through `getComputedStyle`, which keeps the daisyUI theme in
 `style.css` the single source of truth for both renderers. A model node glows
-in its own routed hue from `models.ts`; the coordinator and the reviewer keep
-their role hues. Labels under the tiles are supporting label copy at 0.15 of a
-design unit — at most 13.5 CSS pixels in the widest fit — set in the sans
-stack, because a model name is a topic rather than a string a reader could type
-or search. Every labelled tile sits at x ≥ 10.5 of the 16 design units, clear
-of the hero copy at `lg` and wider; `Problem.tsx` crops the band onto that
-region below `lg`. The fallback group ships at `opacity="0.25"`, the quiet
-background weight of the live frame, and the identity tiles sit outside it, so
-they never fade.
+in its own routed hue from `models.ts`; the coordinator hub and the review
+links keep their role hues. Labels under the tiles are supporting label copy at
+0.15 of a design unit — at most 13.5 CSS pixels in the widest fit — set in the
+sans stack, because a model name is a topic rather than a string a reader could
+type or search. Every labelled tile sits at x ≥ 10.5 of the 16 design units,
+clear of the hero copy at `lg` and wider; `Problem.tsx` crops the band onto
+that region below `lg`, centring it on `HERO_FOCUS`, the focus point
+`hero-scene.ts` exports, rather than on hand-written fractions. The fallback
+group ships at `opacity="0.25"`, the quiet background weight of the live
+frame, and the identity tiles sit outside it, so they never fade.
 
 Each model node wears a **logo tile**: one rounded square, 0.72 of a design unit
 with a 0.18 corner radius, carrying the vendor's real mark when
 `website/public/models/` holds one, and otherwise a monogram in that model's
-routed hue. The tile is the same size and shape either way, so a missing logo
-reads as a deliberate mark rather than a hole. The shipped
+routed hue — the rule for a model whose vendor publishes no mark. The tile is
+the same size and shape either way, so a missing logo reads as a deliberate
+mark rather than a hole. The shipped
 mechanism reads the model's `logo` field in `website/src/lib/models.ts`, not
 the directory listing: a mark appears only when the file is in that folder
 **and** the field points at it, so adding a file alone upgrades nothing. A
@@ -897,6 +911,16 @@ one has a single subject named in its own caption: the model topology on the
 landing page and the documentation overview, and one diagram per remaining
 documentation page showing that page's subject (the run lifecycle, the review
 and repair loop, the install and first-run sequence, the operation map).
+
+The model topology is the diagram the pool drives: `ModelTopology.tsx` names
+its Flash pool box, its decision box, its repair box, its `aria-label` and its
+caption from `website/src/lib/pool.ts`, and the content of the Flash pool box is
+laid out by `topologyPoolBox` in `website/src/lib/topology-layout.ts` — the
+pool names sit in two columns that fill their rows left to right at one fixed
+font size, the box keeps one size per variant, and every text stays inside it
+and clear of every other, whatever the pool holds. Where one model is picked,
+the caption and the `aria-label` name the worker families as alternatives
+joined with `or`; a surface that names the whole pool joins them with `and`.
 
 **The TypeSafe Jev mark in ASCII** — `case-study/JevAsciiMark.tsx`, beside
 the In-task decisions section on the case-study page. Its geometry is the real
@@ -1082,5 +1106,8 @@ redrawn or recoloured.
 - The pool checks in `website/scripts/pool-checks/` run inside
   `npm run test:static`: every built Workers card names exactly the worker
   families in `amaleh/models.json` and no model the pool no longer routes,
-  every built topology variant names exactly those families, and a family in
-  the pool with no identity in `website/src/lib/models.ts` fails the build.
+  every built topology variant names exactly those families, the hero scene's
+  geometry holds for synthetic pools and its built worker tiles are exactly
+  the pool, no built page outside the case study names a model identity the
+  pool no longer routes, and a family in the pool with no identity in
+  `website/src/lib/models.ts` fails the build.
