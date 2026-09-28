@@ -66,8 +66,8 @@ export default function Continue() {
               </div>
               <p class="text-sm leading-relaxed text-dim">
                 Each claim this page makes, paired with a figure from the run records: 156 model
-                calls, 45 blocking defects caught by review, an estimated 7.82 US dollars, and the
-                honest limits beside them.
+                calls, 45 blocking defects caught by review, an estimated 7.82 US dollars of worker
+                and reviewer spend, and the honest limits beside them.
               </p>
               <a class="link link-hover text-primary" href={asset('case-study/')}>
                 See the case study
