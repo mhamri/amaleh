@@ -466,14 +466,14 @@ const TYPABLE_PATTERNS = [
  * such as '1' still fail.
  */
 const CLI_OPERATIONS = new Set([
-  'accept', 'amend', 'artifact', 'bench', 'block', 'catalog', 'check', 'claim', 'configure',
+  'accept', 'amend', 'artifact', 'bench', 'block', 'catalog', 'check', 'claim', 'clean-worktrees', 'configure',
   'decide', 'decide-batch', 'delegate', 'delegate-batch', 'diagnose', 'diagnostic-export',
   'doctor', 'effort-configure', 'effort-finish', 'effort-reconcile', 'effort-request',
   'effort-start', 'fingerprint', 'finish', 'health', 'host-action', 'host-decision',
   'host-exception', 'html', 'install', 'integrated', 'invalidate', 'list', 'next', 'plan',
   'pools', 'preflight', 'reconcile-execution', 'record-decision', 'repair', 'requeue',
   'result', 'resume', 'review', 'review-check', 'review-packet', 'reviewer', 'route', 'save',
-  'start', 'status', 'unlock', 'wait', 'worker',
+  'start', 'status', 'unlock', 'wait', 'worker', 'worktree', 'worktrees',
 ]);
 
 function isTypableString(text) {

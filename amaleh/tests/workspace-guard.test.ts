@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { piRun, resolveWrites, workerPrompt, WorkspaceEscape } from '../scripts/adapters.ts';
+import { piRun, resolveWrites, workerPrompt, nestedRunCheckout, WorkspaceEscape } from '../scripts/adapters.ts';
 import * as c from '../scripts/core.ts';
 import { delegate } from '../scripts/delegate.ts';
 import { fixtureClaim, clearCut } from './execution-fixture.ts';
@@ -74,6 +74,20 @@ test('the worker prompt routes a wrong contract to a question, forbids vendor co
  assert.match(prompt,/Never write vendor code or setup for a third-party service from memory/);
  assert.match(prompt,/--inspect-brk/);
  assert.match(prompt,/\/dev\/null; NUL creates a file/);
+});
+
+test('the worker prompt stays true when the task workspace sits inside the run checkout',()=>{
+ const base=promptInput(),workspace=join(base.runWorkspace,'.amaleh','worktrees','run-id','task-id');
+ assert.equal(nestedRunCheckout(base.runWorkspace,workspace),true);
+ assert.equal(nestedRunCheckout(base.runWorkspace,join(tmpdir(),'elsewhere')),false);
+ assert.equal(nestedRunCheckout(base.runWorkspace,base.runWorkspace),false,'the run checkout itself is not a nested workspace');
+ const nested=workerPrompt({...base,workspace,nested:true});
+ assert.match(nested,/Every edit and write must stay under/);
+ assert.match(nested,/contains this task workspace/);
+ assert.match(nested,/sit outside this workspace as read-only run records/);
+ assert.ok(nested.includes(base.briefPath)&&nested.includes(base.runWorkspace),'the brief and the main checkout are still named');
+ assert.doesNotMatch(nested,/and the run's main checkout at .* sit outside it and are read-only/,'a checkout containing the task workspace is never declared read-only as a whole');
+ assert.match(workerPrompt({...base,workspace,nested:false}),/and the run's main checkout at .* sit outside it and are read-only/);
 });
 
 const task=(id:string,deps:string[]=[])=>({id,title:id,goal:'Correct observable behavior',phase:'checkout',deps,resources:[id],criteria:['correct result'],kind:'code' as const,checks:[{id:'test',command:process.execPath,args:['-e','process.exit(0)'],role:'guard'}],noProbe:'Test fixture; workspace confinement is asserted by the test, not by an executable probe'} as c.Task);
