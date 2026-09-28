@@ -14,6 +14,7 @@ import * as effort from './effort.ts';
 import { trace, diagnostics } from './telemetry.ts';
 import { humanRequested, renderResult, stripFlags } from './render.ts';
 import { verifyStartBase, verifyFinishBase, recordBase } from './base.ts';
+import { ensureWorktreeFolder, recordWorktreeFolder, taskWorktree, listWorktrees, cleanWorktrees } from './worktrees.ts';
 
 const esc=(s:unknown)=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 export async function statusHtml(store:core.Store){const s=await store.load();const content=`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Amaleh ${esc(s.id)}</title><style>body{max-width:1050px;margin:40px auto;padding:20px;font:16px/1.6 system-ui;background:#f7f6ef;color:#243832}article{padding:18px;border:1px solid #bdcbbb;margin:12px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere}.muted{color:#52665f}</style><h1>${esc(s.intent)}</h1><p>${esc(s.status)} · revision ${s.revision} · ${esc(s.host.model)}</p><h2>Next action</h2><pre>${esc(JSON.stringify(await core.next(store),null,2))}</pre><h2>Acceptance criteria</h2><ul>${s.criteria.map(c=>`<li>${esc(c)}</li>`).join('')}</ul><h2>Work graph</h2>${s.tasks.map(t=>`<article><h3>${esc(t.id)} · ${esc(t.title)}</h3><p>${esc(t.phase)} / ${esc(t.status)} / ${esc(t.depth)} / repair cycle ${t.cycles}</p><p>Depends on: ${esc(t.deps.join(', ')||'entry')}</p><p>${esc(t.goal)}</p><p class="muted">${esc(t.blocked??'')}</p></article>`).join('')}<h2>Decisions</h2>${s.decisions.map(d=>`<p>${esc(d.question)} → ${esc(d.choice??'host decision pending')} (${esc(d.source??'pending')})</p>`).join('')}<p>Evidence and full history remain in this run’s durable records.</p></html>`;const path=join(store.root,'status.html');await writeFile(path,content);return {path};}
@@ -53,13 +54,17 @@ async function launchBatch(store:core.Store,args:{workspace:string;runId:string;
 }
 const attachedFlag='--attached';
 async function executeMain(args=process.argv.slice(2),attached=false){
- const [operation,workspace=process.cwd(),runId,inputPath]=args;
+ const [operation,workspace=process.cwd(),runIdArg,inputPathArg]=args;
+ const runless=operation==='worktrees'||operation==='clean-worktrees';
+ const runId=runless?undefined:runIdArg,inputPath=runless?runIdArg:inputPathArg;
  if(operation==='install')return install(args[1]);
  if(operation==='uninstall')return uninstall(args[1]);
  if(operation==='doctor'){const pi=await adapters.piCommand();let auth=false;try{auth=!!await adapters.credential();}catch{}return {runtime:{engine:process.versions.bun?'bun':'node',version:process.versions.bun??process.versions.node,nodeCompatibility:process.versions.node,executable:process.execPath},platform:process.platform,pi,openrouterConfigured:auth,dependencies:'No npm runtime dependencies',jevEndpoint:'https://openrouter.ai/api/alpha/decisions'};}
  if(operation==='list'){let ids:string[];try{ids=(await readdir(join(resolve(workspace),'.amaleh','runs'))).filter(id=>/^[a-zA-Z0-9_-]+$/.test(id));}catch(e){if((e as NodeJS.ErrnoException).code==='ENOENT')return [];throw e;}const summaries=await Promise.all(ids.map(async id=>{try{return await core.summarize(workspace,id);}catch(e){return {id,status:'blocked',intent:'<unreadable: '+(e as Error).message+'>',criteria:[],tasks:0,revision:-1} satisfies core.RunSummary;}}));return summaries.sort((a:core.RunSummary,b:core.RunSummary)=>b.revision-a.revision||a.id.localeCompare(b.id));}
  const input=inputPath?JSON.parse(await readFile(resolve(inputPath),'utf8')):{};
- if(operation==='start'){const {base,...rest}=input;const check=await verifyStartBase(workspace,base);const store=await core.start(workspace,{...rest,id:runId});await recordBase(store,'start',check);return core.packet(store);}
+ if(operation==='start'){const {base,...rest}=input;const check=await verifyStartBase(workspace,base),folder=await ensureWorktreeFolder(workspace,check);const store=await core.start(workspace,{...rest,id:runId});await recordBase(store,'start',check);await recordWorktreeFolder(store,folder);return core.packet(store);}
+ if(operation==='worktrees')return listWorktrees(workspace);
+ if(operation==='clean-worktrees')return cleanWorktrees(workspace,input);
  if(operation==='bench'){core.invariant(runId,'Bench needs a run id; use a new one per measurement');const result=await bench(workspace,runId,input.host);console.error(renderScorecard(result));return result;}
  core.invariant(runId,'Usage: bun scripts/cli.ts <operation> <workspace> <run-id> [input.json]');
  const store=new core.Store(workspace,runId);
@@ -91,6 +96,7 @@ async function executeMain(args=process.argv.slice(2),attached=false){
  case 'route':return selectModel(store,input.id,input.purpose??'worker',input.workspace,input.routing);
  case 'catalog':return adapters.catalog(store);
  case 'reconcile-execution':return core.reconcileExecution(store,input);
+case 'worktree':return taskWorktree(store,input);
 case 'host-exception':return core.hostException(store,input);
  case 'claim':await core.claim(store,input.id,{...input,pid:input.pid??Number(process.env.AMALEH_HOST_PID??process.ppid)});break;
  case 'result':await core.result(store,input.id,input.output);break;
@@ -121,7 +127,7 @@ case 'host-exception':return core.hostException(store,input);
 export async function main(args=process.argv.slice(2)){
  const attached=args.includes(attachedFlag),argv=stripFlags(args).filter(a=>a!==attachedFlag);
  const [operation,workspace,runId]=argv;
- if(!workspace||!runId||['status','next','diagnose','artifact','list','doctor','install','uninstall','diagnostic-export','wait'].includes(operation))return executeMain(argv);
+ if(!workspace||!runId||['status','next','diagnose','artifact','list','doctor','install','uninstall','diagnostic-export','wait','worktrees','clean-worktrees'].includes(operation))return executeMain(argv);
  const store=new core.Store(workspace,runId),operationTrace=await trace(store.root,(attached?'batch:':'cli:')+operation,{runId});
  try{const value=await executeMain(argv,attached);await operationTrace.end('success');return value;}catch(error){await operationTrace.end('failed',{name:(error as Error).name,message:(error as Error).message});throw error;}
 }
