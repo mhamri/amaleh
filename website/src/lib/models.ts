@@ -23,8 +23,7 @@ export type ModelId =
   | 'kimi'
   | 'jev'
   | 'claude'
-  | 'openai'
-  | 'upstage';
+  | 'openai';
 
 export type ModelIdentity = {
   /** Name as the site's copy uses it. */
@@ -77,13 +76,6 @@ export const MODELS: Record<ModelId, ModelIdentity> = {
     hue: 'var(--color-primary)',
     logo: null,
     vendor: null,
-  },
-  upstage: {
-    name: 'Solar',
-    monogram: 'S',
-    hue: 'var(--color-primary)',
-    logo: 'models/Solar.svg',
-    vendor: 'Upstage',
   },
   kimi: {
     name: 'Kimi',
