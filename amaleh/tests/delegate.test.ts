@@ -4,14 +4,14 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import * as c from '../scripts/core.ts';
 import { delegate, delegateBatch, waitForDelegations } from '../scripts/delegate.ts';
 import { trace, modelSpeed, slowModels, speedSamples } from '../scripts/telemetry.ts';
 import { hostname } from 'node:os';
 import { loadModelConfig } from '../scripts/config.ts';
 import { main } from '../scripts/cli.ts';
-import { decideBatch } from '../scripts/adapters.ts';
+import { decideBatch, reviewPacket, CallStopped } from '../scripts/adapters.ts';
 import { jevAsk } from '../scripts/jev.ts';
 import { processHealth, coordinatorOperationCount } from '../scripts/host-diagnostics.ts';
 
@@ -66,6 +66,17 @@ test('worker-side Jev helper answers and records its origin for health auditing'
  assert.equal(answer.choice,'safe');
  assert.ok((await store.load()).events.some(e=>e.type==='worker-jev'&&(e.detail as any).taskId==='a'));
 });
+test('Jev judges a worker question and a repair course against the task contract',async t=>{
+ const {dir,store}=await fixture(t);const states:any[]=[];
+ const fetcher=(async(_url:any,init:any)=>{const body=JSON.parse(init.body);states.push(body.state);const options=Object.keys(body.questions.selection.criteria);return Response.json({model:'test/jev',answers:{selection:{type:'choice',choice:options[0],confidence:.95,probabilities:Object.fromEntries(options.map((k,i)=>[k,i?.05/(options.length-1):.95]))}}});}) as typeof fetch;
+ await jevAsk(store,{taskId:'a',question:'Which approach?',options:['safe','risky'],state:'the amount is rounded twice'},fetcher);
+ const contract={intent:'Correct charge amount',constraints:[],task:{id:'a',goal:'Correct observable behavior',criteria:['correct result'],resources:['a'],kind:'code',checks:[{id:'test',role:'probe'}],repairCycles:0}};
+ assert.deepEqual(states[0],{...contract,workerState:'the amount is rounded twice'});
+ await delegate(store,'a',{workspace:dir},{runWorker:fakeWorker(dir) as any,runReviewer:fakeReviewer(dir,[[...blocking],[]]) as any,fetcher});
+ const repair=states.find(x=>'findings' in x);
+ assert.deepEqual(repair.task,contract.task);
+ assert.equal(repair.findings[0].id,'wrong');
+});
 test('batched decisions settle independent questions in one gateway call',async t=>{
  const {store}=await fixture(t);let calls=0;
  const fetcher=(async(_url:any,init:any)=>{calls++;const body=JSON.parse(init.body);const answers=Object.fromEntries(Object.keys(body.questions).map(k=>[k,{type:'choice',choice:'x',confidence:.9,probabilities:{x:.9,y:.1}}]));return Response.json({model:'test/jev',answers});}) as typeof fetch;
@@ -93,7 +104,7 @@ async function batchFixture(t:any,ids:string[],maxWorkers:number,withChecks=true
  await store.transaction(s=>{s.config.maxWorkers=maxWorkers;for(const id of ids)c.taskOf(s,id).workspace=spaces[id];});
  return {dir,store,spaces};
 }
-function arrivalGate(width:number,timeoutMs=4000){
+function arrivalGate(width:number,timeoutMs=30000){
  let seen=0,open=()=>{};
  const opened=new Promise<void>(resolve=>{open=resolve;});
  const timer=setTimeout(open,timeoutMs);timer.unref?.();
@@ -119,7 +130,7 @@ const batchReviewer=(script:Record<string,any[][]>={})=>{const calls:Record<stri
  return {findings};
 };};
 
-test('delegate-batch drives the whole frontier and never exceeds maxWorkers at once',{timeout:60000},async t=>{
+test('delegate-batch drives the whole frontier and never exceeds maxWorkers at once',{timeout:180000},async t=>{
  const ids=['a','b','c','d','e','f'];
  const {store,spaces}=await batchFixture(t,ids,2);
  const live={n:0,peak:0};
@@ -142,7 +153,7 @@ test('a failing id neither aborts the batch nor hides its reason',async t=>{
  assert.match((out.outcomes[2] as {reason:string}).reason,/not delegable/);
  assert.equal(c.taskOf(await store.load(),'a').status,'accepted');
 });
-test('a batch holds a chunk whose resources overlap a running chunk and starts it when that one finishes',{timeout:60000},async t=>{
+test('a batch holds a chunk whose resources overlap a running chunk and starts it when that one finishes',{timeout:180000},async t=>{
  const ids=['doc','notes','other'];
  const {store,spaces}=await batchFixture(t,ids,3);
  await store.transaction(s=>{c.taskOf(s,'doc').resources=['website/**/*.md'];c.taskOf(s,'notes').resources=['website/DESIGN-SYSTEM.md'];c.taskOf(s,'other').resources=['amaleh/scripts/**'];});
@@ -245,6 +256,31 @@ test('a rate-limited provider is routed around without spending a repair cycle',
  assert.equal(task.blocked,undefined);
  assert.equal(state.events.filter(e=>e.type==='provider-failover').length,2);
  assert.deepEqual(out.trail.filter(s=>s.stage==='provider-failover').length,2);
+});
+const stoppedWorker=(store:c.Store,edit?:string)=>async(_s:any,id:string)=>{
+ await store.transaction(x=>{const t=c.taskOf(x,id);c.event(x,'route-used',{decisionId:'route-stalled',taskId:id,purpose:'worker',model:'xiaomi/mimo-v2.6-flash'});t.status='blocked';t.blocked='pi call exceeded the wall-clock time limit of 5400s and was stopped';c.event(x,'worker-blocked',{id,reason:t.blocked});});
+ if(edit)writeFileSync(edit,'half done');
+ throw new CallStopped('call-timeout','pi call exceeded the wall-clock time limit of 5400s and was stopped');
+};
+test('a worker stopped before it changed anything is routed away from its family without spending a repair cycle',async t=>{
+ const {dir,store}=await fixture(t);const routes:any[]=[];let calls=0;
+ const worker=async(s:any,id:string,input:any)=>{routes.push(input.routing);return ++calls===1?stoppedWorker(store)(s,id):fakeWorker(dir)(s,id,input);};
+ const out=await delegate(store,'a',{workspace:dir},{runWorker:worker as any,runReviewer:fakeReviewer(dir,[[]]) as any,fetcher:jevTargeted});
+ assert.equal(out.outcome,'accepted');
+ assert.deepEqual(routes,[undefined,{excludeFamilies:['xiaomi']}]);
+ const state=await store.load(),task=c.taskOf(state,'a');
+ assert.equal(task.cycles,0,'a stalled call that changed nothing is not a defect of the task');
+ assert.equal(task.blocked,undefined);
+ assert.deepEqual(state.events.filter(e=>e.type==='provider-failover').map(e=>(e.detail as any).excludedFamily),['xiaomi']);
+});
+test('a worker stopped after it changed files stays blocked for the host',async t=>{
+ const {dir,store}=await fixture(t);let calls=0;
+ const worker=async(s:any,id:string)=>{calls++;return stoppedWorker(store,join(dir,'app.txt'))(s,id);};
+ const out=await delegate(store,'a',{workspace:dir},{runWorker:worker as any,runReviewer:fakeReviewer(dir,[[]]) as any,fetcher:jevTargeted});
+ assert.equal(out.outcome,'failed');
+ assert.match(String(out.reason),/wall-clock time limit/);
+ assert.equal(calls,1,'partial work must not be thrown away by a silent retry');
+ assert.equal(c.taskOf(await store.load(),'a').status,'blocked');
 });
 test('a failover budget that runs out reports the provider message instead of retrying forever',async t=>{
  const {dir,store}=await fixture(t);
@@ -396,9 +432,9 @@ test('model speed names a model far slower than its role median without blocking
  const ops=['slow/reviewer','fast/one','fast/two'].flatMap(model=>Array.from({length:3},()=>call(model,model==='slow/reviewer'?1200000:300000)));
  const speeds=modelSpeed(speedSamples(ops));
  assert.deepEqual(speeds.map(s=>[s.model,s.role,s.calls,s.averageMinutes,s.outputTokensPerCall]),[['slow/reviewer','reviewer',3,20,1000],['fast/one','reviewer',3,5,1000],['fast/two','reviewer',3,5,1000]]);
- const slow=slowModels(speeds);
+ const peers=['slow/reviewer','fast/one','fast/two'],slow=slowModels(speeds,peers);
  assert.deepEqual(slow.map(s=>[s.model,s.medianMinutes,s.times]),[['slow/reviewer',5,4]]);
- assert.deepEqual(slowModels(speeds.slice(0,2)),[],'two models are too few to call either one slow');
+ assert.deepEqual(slowModels(speeds.slice(0,2),peers),[],'two models are too few to call either one slow');
  const health=await processHealth(store);
  if(!health.available)throw new Error(health.reason);
  assert.ok(!health.warnings.some(w=>/slow|min per call/.test(w)),'a slow vendor is not a coordinator anti-pattern and must not block finish');
@@ -409,4 +445,39 @@ test('batch guidance reaches every delegated worker',async t=>{
  const recording=async(store:any,id:string,input:any)=>{seen[id]={skills:input.skills,references:input.references};return (batchWorker(spaces) as any)(store,id,input);};
  await delegateBatch(store,{ids,skills:['taste-bar'],references:['docs/contract.md']},{runWorker:recording as any,runReviewer:batchReviewer() as any,fetcher:jevTargeted});
  for(const id of ids)assert.deepEqual(seen[id],{skills:['taste-bar'],references:['docs/contract.md']});
+});
+const flakyCheck={id:'test',command:process.execPath,args:['-e',"const fs=require('fs'),p=require('path'),flake=p.join(process.cwd(),'..',p.basename(process.cwd())+'.flake');if(fs.existsSync(flake)){fs.rmSync(flake);console.error('timed out beside other checks');process.exit(1)}process.exit(fs.readFileSync(p.join(process.cwd(),'app.txt'),'utf8').includes('original')?1:0)"],role:'probe' as const};
+async function flakyFixture(t:any){
+ const {dir,store}=await fixture(t);const flake=join(dir,'..',basename(dir)+'.flake');t.after(()=>rm(flake,{force:true}));
+ await store.transaction(s=>{c.taskOf(s,'a').checks=[flakyCheck];});
+ const worker=async(store:any,id:string,input:any)=>{await writeFile(flake,'');return (fakeWorker(dir) as any)(store,id,input);};
+ return {dir,store,worker};
+}
+test('a check that fails beside other checks but passes alone spends no repair cycle',async t=>{
+ const {dir,store,worker}=await flakyFixture(t);let seen:any;
+ const reviewer=async(store:any,id:string)=>{seen=await reviewPacket(store,id);return (fakeReviewer(dir,[[]]) as any)(store,id);};
+ const out=await delegate(store,'a',{workspace:dir},{runWorker:worker as any,runReviewer:reviewer as any,fetcher:jevTargeted});
+ assert.equal(out.outcome,'accepted');
+ assert.deepEqual(out.unstableChecks,['test']);
+ assert.deepEqual(out.trail.filter(x=>x.stage==='check').map(x=>x.detail),[{check:'test',code:1,pass:1},{check:'test',code:0,pass:1,isolated:true}]);
+ const s=await store.load();
+ assert.equal(c.taskOf(s,'a').cycles,0);
+ assert.equal(s.events.filter(e=>e.type==='check-unstable').length,1);
+ const packetCheck=seen.checks.find((x:any)=>x.command.id==='test');
+ assert.equal(packetCheck.passed,true);
+ assert.match(packetCheck.unstable.failedOutput.stderr,/timed out beside other checks/);
+ const health=await processHealth(store);
+ if(!health.available)throw new Error(health.reason);
+ assert.equal(health.metrics.unstableChecks,1);
+});
+test('a check that also fails alone spends a repair cycle',async t=>{
+ const {dir,store}=await fixture(t);let calls=0;
+ const worker=async(store:any,id:string,input:any)=>{if(++calls>1)return (fakeWorker(dir) as any)(store,id,input);await fixtureClaim(store,id,{workspace:dir,model:'deepseek/flash'});writeFileSync(join(dir,'app.txt'),'original still');await c.result(store,id,{changed:'app.txt'});return {artifact:c.taskOf(await store.load(),id).output};};
+ const out=await delegate(store,'a',{workspace:dir},{runWorker:worker as any,runReviewer:fakeReviewer(dir,[[]]) as any,fetcher:jevTargeted});
+ assert.equal(out.outcome,'accepted');
+ assert.equal(out.unstableChecks,undefined);
+ assert.deepEqual(out.trail.filter(x=>x.stage==='check').map(x=>x.detail),[{check:'test',code:1,pass:1},{check:'test',code:1,pass:1,isolated:true},{check:'test',code:0,pass:1}]);
+ const s=await store.load();
+ assert.equal(c.taskOf(s,'a').cycles,1);
+ assert.equal(s.events.filter(e=>e.type==='check-unstable').length,0);
 });

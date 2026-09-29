@@ -4,8 +4,9 @@ import {randomUUID} from 'node:crypto';
 import {Store,invariant} from './core.ts';
 import {sanitize,diagnostics,modelSpeed,slowModels,recentSpeeds,readSpeedSamples,spend} from './telemetry.ts';
 import {loadModelConfig} from './config.ts';
+import {routedPrices} from './routing.ts';
 
-export const deepSpendShareLimit=0.3;
+const deepSpendShareLimit=0.3,deepSpendFloor=0.1;
 const readOnlyOperations=new Set(['cli:health','cli:fingerprint','cli:html','cli:review-packet','cli:preflight','cli:catalog','cli:save']);
 type TracedOperation={operation:string;outcome:string;started:string;elapsedMs:number};
 const timeSpan=(o:TracedOperation)=>{const start=Date.parse(o.started);return {start,end:start+o.elapsedMs};};
@@ -67,13 +68,14 @@ export async function processHealth(store:Store):Promise<{available:false;reason
  const retries=s.events.filter(e=>e.type==='provider-failover'||e.type==='repair').length;
  const coordinatorOperations=coordinatorOperationCount(runtime.operations);
  const contractQuestions=s.events.filter(e=>e.type==='contract-question').length;
+ const unstableChecks=s.events.filter(e=>e.type==='check-unstable').length;
  const loopSteps=['cli:worker','cli:reviewer','cli:repair','cli:accept'];
  const manualSteps=runtime.operations.filter(o=>loopSteps.includes(o.operation)).length;
  const reopened=s.events.filter((e,i)=>e.type==='invalidated'&&reopenKind(e,s.events[i+1])==='defect').length;
  const config=await loadModelConfig().catch(()=>undefined),windowMs=config?.slowModelWindowMs??0;
- const costs=spend(runtime.operations),estimatedTotal=costs.byModel.reduce((total,r)=>total+r.estimatedCost,0);
+ const costs=spend(runtime.operations,routedPrices(s)),estimatedTotal=costs.total?.estimatedCost??0;
  const deepSpend=costs.byModel.filter(r=>config?.deep.includes(r.key)),deepCost=deepSpend.reduce((total,r)=>total+r.estimatedCost,0),deepShare=estimatedTotal?deepCost/estimatedTotal:0;
- const speeds=windowMs?await recentSpeeds(store.amalehDir,windowMs):modelSpeed(await readSpeedSamples(store.amalehDir)),slow=slowModels(speeds);
+ const speeds=windowMs?await recentSpeeds(store.amalehDir,windowMs):modelSpeed(await readSpeedSamples(store.amalehDir)),slow=slowModels(speeds,config?.flash??[]);
  const skipNote=(role:string)=>windowMs?` Routing skips it as ${role} while this holds over the last ${Math.round(windowMs/86400000*10)/10} day(s), unless no other model is eligible.`:' slowModelWindowMs is 0, so routing still uses it.';
  const warnings:string[]=[];
  if(tasks&&coordinatorDecisions.length>2*tasks)warnings.push(`${coordinatorDecisions.length} coordinator-authored Jev decisions across ${tasks} task(s): micro-decision pattern. Delegate chunks and let workers consult Jev through the worker helper.`);
@@ -84,9 +86,9 @@ export async function processHealth(store:Store):Promise<{available:false;reason
  if(tasks&&delegations.length&&manualSteps>tasks)warnings.push(`${manualSteps} worker, reviewer, repair and accept call(s) made by hand across ${tasks} task(s): the coordinator is stepping the chunk loop itself between delegations. Re-delegate the chunk instead.`);
  if(tasks&&reopened>=Math.max(2,Math.ceil(tasks/2)))warnings.push(`${reopened} invalidation(s) reopened chunks across ${tasks} task(s): the coordinator is finding defects the chunks' own checks cannot see, and each reopening costs a repair cycle and a full chunk round. Register the probe you judge by as a task check before delegating.`);
  if(tasks===1&&s.criteria.length>=3&&!s.events.some(e=>e.type==='single-chunk'))warnings.push(`One task carries ${s.criteria.length} run outcomes: nothing can run in parallel. Split the work into independent chunks, or record a single-chunk reason.`);
- if(deepShare>deepSpendShareLimit&&estimatedTotal>=1)warnings.push(`${deepSpend.map(r=>r.key).join(', ')} took ${Math.round(deepShare*100)}% of the $${estimatedTotal.toFixed(2)} estimated spend across ${deepSpend.reduce((n,r)=>n+r.calls,0)} call(s). Deep repairs come from repeated reopens and failed repairs: find the check each chunk is missing instead of paying the deep model to guess.`);
+ if(deepShare>deepSpendShareLimit&&estimatedTotal>=deepSpendFloor)warnings.push(`${deepSpend.map(r=>r.key).join(', ')} took ${Math.round(deepShare*100)}% of the $${estimatedTotal.toFixed(2)} estimated spend across ${deepSpend.reduce((n,r)=>n+r.calls,0)} call(s). Deep repairs come from repeated reopens and failed repairs: find the check each chunk is missing instead of paying the deep model to guess.`);
  const slowNotes=slow.map(m=>`${m.model} as ${m.role} averages ${m.averageMinutes} min per call over ${m.calls} calls, ${m.times}× the ${m.medianMinutes} min median for that role: ${m.outputTokensPerSecond} output tokens per second and ${m.outputTokensPerCall} output tokens per call.${skipNote(m.role)}`);
- return {available:true,slowModels:slowNotes,metrics:{modelSpeed:speeds,tasks,coordinatorDecisions:coordinatorDecisions.length,hostDecisions:hostDecisions.length,workerJevCalls:workerJev.length,delegations:delegations.length,workerDispatches:claims.length,manualLoopSteps:manualSteps,reopenedChunks:reopened,hostTakeovers:hostTakeovers.length,hostTakeoversByTask,hostActionRecords:ledger.records.length,contractQuestions,revisions:s.revision,coordinatorOperations,retries,coordinatorDecisionsPerTask:perTask(coordinatorDecisions.length),hostActionsPerTask:perTask(ledger.records.length),coordinatorOperationsPerTask:perTask(coordinatorOperations),workerFamilies:families,cost:runtime.totals,spend:costs},warnings};
+ return {available:true,slowModels:slowNotes,metrics:{modelSpeed:speeds,tasks,coordinatorDecisions:coordinatorDecisions.length,hostDecisions:hostDecisions.length,workerJevCalls:workerJev.length,delegations:delegations.length,workerDispatches:claims.length,manualLoopSteps:manualSteps,reopenedChunks:reopened,hostTakeovers:hostTakeovers.length,hostTakeoversByTask,hostActionRecords:ledger.records.length,contractQuestions,unstableChecks,revisions:s.revision,coordinatorOperations,retries,coordinatorDecisionsPerTask:perTask(coordinatorDecisions.length),hostActionsPerTask:perTask(ledger.records.length),coordinatorOperationsPerTask:perTask(coordinatorOperations),workerFamilies:families,cost:runtime.totals,spend:costs},warnings};
 }
 // Shareable by explicit user choice: omit all free text, paths, models, raw
 // identifiers, prompts, artifact bodies and original exception messages.

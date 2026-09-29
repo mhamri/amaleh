@@ -5,6 +5,7 @@ import type { Run } from './core.ts';
 import { catalog } from './adapters.ts';
 import { loadModelConfig, configPath } from './config.ts';
 import { recentSpeeds, slowModels } from './telemetry.ts';
+import { priceBook, type CatalogPricing, type PriceBook } from './pricing.ts';
 
 export type RoutingRequest = { role?:string; requiredInputs?:string[]; contextTokens?:number; evidence?:string; excludeFamilies?:string[] };
 type Purpose = 'worker'|'reviewer';
@@ -77,9 +78,10 @@ export async function selectModel(store:Store,id:string,purpose:Purpose,workspac
  const absent=listed.filter(id=>!card.has(id)),unfit=listed.filter(id=>card.has(id)&&!capable(card.get(id)));
  let eligible=listed.filter(id=>card.has(id)&&capable(card.get(id))).map(id=>card.get(id));
  if(purpose==='reviewer'){const excluded=new Set([t.family,...(request.excludeFamilies??[])]);eligible=eligible.filter((m:any)=>!excluded.has(family(m.id)));}
+ else if(request.excludeFamilies?.length){const kept=eligible.filter((m:any)=>!request.excludeFamilies!.includes(family(m.id)));if(kept.length)eligible=kept;}
  const responsive=eligible.filter((m:any)=>!cooling(s,m.id,config.providerCooldownMs));
  if(responsive.length)eligible=responsive;
- const slow=config.slowModelWindowMs?slowModels(await recentSpeeds(store.amalehDir,config.slowModelWindowMs)).filter(m=>m.role===purpose):[];
+ const slow=config.slowModelWindowMs?slowModels(await recentSpeeds(store.amalehDir,config.slowModelWindowMs),listed).filter(m=>m.role===purpose):[];
  const brisk=eligible.filter((m:any)=>!slow.some(x=>x.model===m.id));
  const skippedSlow=brisk.length&&brisk.length<eligible.length?slow.filter(x=>eligible.some((m:any)=>m.id===x.model)).map(x=>({model:x.model,averageMinutes:x.averageMinutes,medianMinutes:x.medianMinutes})):[];
  if(skippedSlow.length)eligible=brisk;
@@ -109,6 +111,15 @@ export async function selectModel(store:Store,id:string,purpose:Purpose,workspac
   return made;
  });
  return resolve(decision);
+}
+
+export function routedPrices(s:Run):PriceBook{
+ const routedAt=new Map(s.events.filter(e=>e.type==='model-routed').map(e=>[(e.detail as {id?:string}).id,e.at]));
+ return priceBook(s.decisions.flatMap(d=>{
+  const cards=(d.state as {catalog?:{verifiedAt?:string;models?:{id?:unknown;pricing?:CatalogPricing}[]}}|undefined)?.catalog;
+  const at=routedAt.get(d.id)??cards?.verifiedAt??'';
+  return (cards?.models??[]).flatMap(m=>typeof m.id==='string'&&m.pricing?[{at,model:m.id,pricing:m.pricing}]:[]);
+ }));
 }
 
 // Reconstruct grants from durable decisions; never trust a caller-supplied scope.

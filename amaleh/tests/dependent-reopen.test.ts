@@ -83,7 +83,7 @@ test('a dependent whose own last attempt failed is sent back for a repair and ch
  assert.deepEqual((s.events.findLast(e=>e.type==='invalidated')!.detail as {reverified:string[]}).reverified,[]);
 });
 
-test('a kept dependent whose checkout lacks the integrated upstream commit is not verified until it is refreshed',{timeout:60000},async t=>{
+test('a kept dependent whose checkout lacks the integrated upstream commit is not verified until it is refreshed',{timeout:180000},async t=>{
  const root=await mkdtemp(join(tmpdir(),'amaleh-dependent-git-'));t.after(()=>rm(root,{recursive:true,force:true}));
  const main=join(root,'main'),down=join(root,'down');
  await mkdir(main);

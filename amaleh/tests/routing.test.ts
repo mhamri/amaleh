@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import * as c from '../scripts/core.ts';
 import { selectModel, consumeRoute } from '../scripts/routing.ts';
 import { worker, reviewer } from '../scripts/adapters.ts';
+import { slowModels } from '../scripts/telemetry.ts';
 
 const card=(id:string,created:number,images=false)=>({id,created,context_length:64000,architecture:{input_modalities:images?['text','image']:['text']},supported_parameters:['tools'],pricing:{prompt:'0.000001',completion:'0.000002'},description:'Synthetic test card, not a capability benchmark'});
 const cards=[card('deepseek/old-flash',1),card('deepseek/new-flash',3),card('z-ai/glm-new-flash',4),card('moonshot/kimi-specialist',5,true),card('deepseek/preview-flash',9),card('~deepseek/deepseek-flash-latest',10),card('z-ai/glm-flash-latest',11)];
@@ -113,6 +114,24 @@ console.log(JSON.stringify({type:'agent_end'}));`);
  assert.equal(review?.family,author.includes('glm')?'deepseek':'glm');
  assert.equal((await store.load()).events.filter(e=>e.type==='route-used').length,2);assert.equal(g.calls.length,2);
 });
+test('the worker brief frames run outcomes as background and names what other tasks own',async t=>{
+ const {dir,store}=await fixture(t),g=gateway();
+ await store.transaction(s=>{s.tasks.push({...s.tasks[0],id:'docs',title:'docs',goal:'Document the amount',resources:['website/VERIFICATION.md'],criteria:['amount documented'],receipts:[],status:'ready'});});
+ const old={fetch:globalThis.fetch,entry:process.env.AMALEH_PI_ENTRY,node:process.env.AMALEH_NODE};
+ t.after(()=>{globalThis.fetch=old.fetch;for(const [key,value] of [['AMALEH_PI_ENTRY',old.entry],['AMALEH_NODE',old.node]])if(value===undefined)delete process.env[key!];else process.env[key!]=value;});
+ const entry=join(dir,'fake-pi.ts');await writeFile(entry,`const model=process.argv[process.argv.indexOf('--model')+1];
+console.log(JSON.stringify({type:'message_end',message:{role:'assistant',model,content:[{type:'text',text:'Synthetic worker fixture'}],stopReason:'stop'}}));
+console.log(JSON.stringify({type:'agent_end'}));`);
+ process.env.AMALEH_PI_ENTRY=entry;process.env.AMALEH_NODE=process.execPath;globalThis.fetch=g.fetcher;
+ await worker(store,'a',{workspace:dir});
+ const brief=await readFile(join(store.root,'sessions','a','brief.md'),'utf8');
+ assert.match(brief,/satisfy every criterion in task\.criteria/);
+ assert.match(brief,/## Your share of the run\nThis task is one of 2 tasks in run route\./);
+ const context=JSON.parse(brief.match(/```json\n([\s\S]*?)\n```/)![1]);
+ assert.deepEqual(context.runOutcomes,['Select suitable author and independent reviewer']);
+ assert.ok(!('criteria' in context),'run outcomes must not sit where a worker reads its own criteria');
+ assert.deepEqual(context.otherTasks,[{id:'docs',goal:'Document the amount',resources:['website/VERIFICATION.md'],status:'ready'}]);
+});
 test('manual model overrides cannot bypass routing and credit errors cannot become host fallback',async t=>{
  const {dir,store}=await fixture(t),g=gateway();const old=globalThis.fetch;globalThis.fetch=g.fetcher;t.after(()=>{globalThis.fetch=old;});
  await assert.rejects(()=>worker(store,'a',{workspace:dir,brief:'fixture',model:'deepseek/old-flash'}),/disagrees/);assert.equal(c.taskOf(await store.load(),'a').status,'ready');
@@ -168,15 +187,29 @@ test('synthetic reviewer process owns capacity until completion and prevents dup
  const {dir,store}=await fixture(t),g=gateway();await fixtureClaim(store,'a',{workspace:dir,model:'z-ai/glm-new-flash'});await c.result(store,'a',{});
  const old={fetch:globalThis.fetch,entry:process.env.AMALEH_PI_ENTRY,node:process.env.AMALEH_NODE};
  t.after(()=>{globalThis.fetch=old.fetch;for(const [key,value] of [['AMALEH_PI_ENTRY',old.entry],['AMALEH_NODE',old.node]])if(value===undefined)delete process.env[key!];else process.env[key!]=value;});
- const entry=join(dir,'synthetic-review-pi.ts');await writeFile(entry,`const model=process.argv[process.argv.indexOf('--model')+1];setTimeout(()=>{console.log(JSON.stringify({type:'message_end',message:{role:'assistant',model,content:[{type:'text',text:JSON.stringify({report:'Synthetic reviewer fixture, not a model judgment',findings:[]})}],stopReason:'stop'}}));console.log(JSON.stringify({type:'agent_end'}));},600);`);
+ const signals=await mkdtemp(join(tmpdir(),'amaleh-reviewer-signal-'));t.after(()=>rm(signals,{recursive:true,force:true}));
+ const entry=join(dir,'synthetic-review-pi.ts'),release=join(signals,'release');
+ await writeFile(entry,`const {existsSync}=process.getBuiltinModule('node:fs');const model=process.argv[process.argv.indexOf('--model')+1];const finish=()=>{console.log(JSON.stringify({type:'message_end',message:{role:'assistant',model,content:[{type:'text',text:JSON.stringify({report:'Synthetic reviewer fixture, not a model judgment',findings:[]})}],stopReason:'stop'}}));console.log(JSON.stringify({type:'agent_end'}));};const started=Date.now();const wait=()=>existsSync(${JSON.stringify(release)})||Date.now()-started>60000?finish():setTimeout(wait,20);wait();`);
  process.env.AMALEH_PI_ENTRY=entry;process.env.AMALEH_NODE=process.execPath;globalThis.fetch=g.fetcher;
  const pending=reviewer(store,'a',undefined,['Spec']);let activity;
- for(let i=0;i<100;i++){activity=c.taskOf(await store.load(),'a').activity;if(activity&&activity.owner.pid!==process.pid)break;await new Promise(r=>setTimeout(r,10));}
+ for(let i=0;i<3000;i++){activity=c.taskOf(await store.load(),'a').activity;if(activity&&activity.owner.pid!==process.pid)break;await new Promise(r=>setTimeout(r,10));}
  assert.equal(activity?.kind,'review');assert.equal(activity?.owner.coordinatorPid,process.pid);assert.notEqual(activity?.owner.pid,process.pid);
  const before=g.calls.length;const duplicate=await reviewer(store,'a',undefined,['Spec']);assert.ok('action' in duplicate);assert.equal(duplicate.action,'dispatch-blocked');assert.equal(g.calls.length,before);
+ await writeFile(release,'');
  await pending;assert.equal(c.taskOf(await store.load(),'a').activity,undefined);
 });
 
+test('a worker route skips an excluded family unless that leaves no model',async t=>{
+ const {dir,store}=await fixture(t),g=gateway();
+ const skip=await selectModel(store,'a','worker',dir,{excludeFamilies:['deepseek']},g.fetcher);
+ assert.equal(skip.action,'launch');if(skip.action!=='launch')throw Error('Expected launch');
+ assert.equal(skip.model,'z-ai/glm-new-flash');
+ await store.transaction(s=>{s.decisions=[];});
+ const all=await selectModel(store,'a','worker',dir,{excludeFamilies:['deepseek','glm']},g.fetcher);
+ assert.equal(all.action,'launch','excluding every family must not block a worker');
+ const offered=Object.values(((await store.load()).decisions[0].state as any).routing.models);
+ assert.deepEqual(offered.sort(),[...flashPair].sort());
+});
 test('a model that exhausted its retries is skipped until its cooldown expires',async t=>{
  const {dir,store}=await fixture(t),g=gateway();
  const first=await selectModel(store,'a','worker',dir,{},g.fetcher);
@@ -223,6 +256,18 @@ test('a model slow for its role is skipped until its slow calls age out of the w
  const aged=await eligibleNow(store,dir,g);
  assert.deepEqual(aged.offered.sort(),[...trio].sort(),'aged-out slowness must return the model to the rotation');
  assert.deepEqual(aged.skipped,[]);
+});
+test('only the configured peers set the median a model is judged against',async t=>{
+ const {dir,store}=await fixture(t,{flash:trio}),g=gateway();
+ await speedLedger(store,{'deepseek/new-flash':8,'z-ai/glm-new-flash':5,'deepseek/old-flash':5,'removed/one':2,'removed/two':2,'moonshotai/kimi-k3':1});
+ const now=await eligibleNow(store,dir,g);
+ assert.deepEqual(now.offered.sort(),[...trio].sort(),'removed models and the deep model must not drag the median down');
+ assert.deepEqual(now.skipped,[]);
+});
+test('a slow model does not lower its own median',()=>{
+ const speed=(model:string,averageMinutes:number)=>({model,role:'worker' as const,calls:3,failures:0,averageMinutes,longestMinutes:averageMinutes,outputTokensPerCall:1000,outputTokensPerSecond:1});
+ const slow=slowModels([speed('a',5),speed('b',5),speed('c',20),speed('d',20)],['a','b','c','d']);
+ assert.deepEqual(slow.map(s=>[s.model,s.medianMinutes,s.times]),[['c',5,4],['d',5,4]]);
 });
 test('slowness measured as a reviewer does not skip the same model as a worker',async t=>{
  const {dir,store}=await fixture(t,{flash:trio}),g=gateway();

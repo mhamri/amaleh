@@ -37,6 +37,36 @@ test('an amend that only changes the contract is not counted as a defect reopen 
  assert.equal(amended.cycles,0);
 });
 
+const probe=(id:string,code:number)=>({id,command:process.execPath,args:['-e',`process.exit(${code})`],role:'probe' as const});
+const findsMore='Host inspection of the accepted chunk found the caption joins the names with and';
+
+test('asking accepted work for more needs the probe that shows the gap, and counts as a defect reopen',async t=>{
+ const store=await delivered(t);
+ const stricter={...task('a'),criteria:['correct result','the caption joins the names with or']};
+ await assert.rejects(()=>c.amend(store,{id:'a',reason:findsMore,task:stricter}),/asking it for more reopens delivered work.*Add the probe/s);
+ await assert.rejects(()=>c.amend(store,{id:'a',reason:findsMore,task:{...stricter,checks:[...stricter.checks,probe('joined-with-or',0)]}}),/already passes on the current checkout/);
+ assert.equal(c.taskOf(await store.load(),'a').status,'accepted','a refused amend changes nothing');
+ await c.amend(store,{id:'a',reason:findsMore,task:{...stricter,checks:[...stricter.checks,probe('joined-with-or',1)]}});
+ const s=await store.load(),amended=c.taskOf(s,'a');
+ assert.equal(await reopened(store),1);
+ assert.equal(amended.cycles,1,'the next worker run repairs delivered work');
+ assert.equal(amended.status,'ready');
+ assert.deepEqual(s.events.filter(e=>e.type==='reopen-probe').map(e=>(e.detail as any).check.id),['joined-with-or']);
+ assert.equal((s.events.filter(e=>e.type==='contract-amended').at(-1)!.detail as {reopenedAccepted?:boolean}).reopenedAccepted,true);
+});
+
+test('asking accepted work for more without a probe is allowed once per task',async t=>{
+ const store=await delivered(t);
+ const noProbe='The caption wording has no executable measure';
+ await c.amend(store,{id:'a',reason:findsMore,noProbe,task:{...task('a'),goal:'Join the names with or'}});
+ assert.equal(await reopened(store),1);
+ const s=await store.load();
+ await store.transaction(x=>{const a=c.taskOf(x,'a');a.status='accepted';});
+ await assert.rejects(()=>c.amend(store,{id:'a',reason:'Another gap',noProbe,task:{...task('a'),goal:'Join the names with or, in order'}}),/already reopened once without a probe/);
+ assert.equal(c.taskOf(s,'a').goal,'Join the names with or');
+ await assert.rejects(()=>c.amend(store,{id:'a',reason:'Resources only',noProbe,task:{...task('a',['a','b']),goal:'Join the names with or'}}),/noProbe applies only when/);
+});
+
 test('an amend while a registered check fails spends one repair cycle, because the next worker run is a repair',async t=>{
  const dir=await mkdtemp(join(tmpdir(),'amaleh-amend-failing-'));t.after(()=>rm(dir,{recursive:true,force:true}));
  const store=await c.start(dir,{shape:clearCut,id:'failing',host:{kind:'codex',model:'gpt-6-astra'},intent:'Charge only real repairs',criteria:['a repair attempt spends a cycle']});

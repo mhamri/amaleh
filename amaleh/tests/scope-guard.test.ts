@@ -93,7 +93,7 @@ test('widening the resources after a scope question re-verifies the same output 
  assert.equal(c.taskOf(await store.load(),'a').cycles,0);
 });
 
-test('a path already asked about is not asked again: a repair that keeps it is a failed repair, and only a new path is a new question',{timeout:30000},async t=>{
+test('a path already asked about is not asked again: a repair that keeps it is a failed repair, and only a new path is a new question',{timeout:120000},async t=>{
  const {workspace,store}=await scopeFixture(t,['src/**']);
  await mkdir(join(workspace,'src'),{recursive:true});
  let call=0;

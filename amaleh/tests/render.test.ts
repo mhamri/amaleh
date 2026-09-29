@@ -33,7 +33,7 @@ const samples: Record<string, unknown> = {
     metrics: {
       tasks: 2, coordinatorDecisions: 1, coordinatorDecisionsPerTask: 0.5, workerJevCalls: 3,
       delegations: 2, workerDispatches: 2, hostTakeovers: 3, hostTakeoversByTask: { seo: 3 }, hostActionRecords: 3, hostActionsPerTask: 1.5,
-      revisions: 604, coordinatorOperations: 9, coordinatorOperationsPerTask: 4.5, contractQuestions: 1, retries: 1, workerFamilies: { deepseek: 1, zai: 1 },
+      revisions: 604, coordinatorOperations: 9, coordinatorOperationsPerTask: 4.5, contractQuestions: 1, unstableChecks: 2, retries: 1, workerFamilies: { deepseek: 1, zai: 1 },
     },
     warnings: [],
   },
@@ -46,7 +46,7 @@ const samples: Record<string, unknown> = {
     stateError: undefined,
     hostActions: { records: [{ actionId: 'a1' }], unreadable: [] },
     diagnostics: { operations: [{ id: 'o1', outcome: 'success' }], totals: { operations: 3, unfinished: 0, failures: 1, reportedCost: 0.02, estimatedCost: 0.03, inputTokens: 900, outputTokens: 300 }, unreadable: [] },
-    health: { available: true, warnings: [] },
+    health: { available: true, warnings: [], metrics: { spend: { total: { key: 'total', estimatedCost: 0.012, costSource: 'openrouter-catalog', piEstimate: 0.03 } } } },
   },
   preflight: {
     checkedAt: '2026-01-01T00:00:00.000Z', channel: 'synthetic-test', network: 'allowed',
@@ -86,8 +86,23 @@ test('health counts the coordinator\'s own operations and shows state revisions 
   const report = renderHuman('health', samples.health);
   assert.match(report, /Coordinator operations +9 \(4\.5 per task\)/);
   assert.match(report, /Contract questions +1/);
+  assert.match(report, /Checks failing only under load +2/);
   assert.match(report, /State revisions +604$/m);
   assert.doesNotMatch(report, /allowed/);
+});
+
+test('spend names where each price came from, beside the pi estimate', () => {
+  const health = samples.health as { metrics: Record<string, unknown> };
+  const spend = { byModel: [{ key: 'moonshotai/kimi-k3', estimatedCost: 0.193, costSource: 'openrouter-catalog', piEstimate: 0.138, calls: 1, turns: 8, inputTokens: 34723, cacheReadTokens: 92160, outputTokens: 4050 }] };
+  const report = renderHuman('health', { ...health, metrics: { ...health.metrics, spend } });
+  assert.match(report, /Name +Est\. \$ +Priced from +pi est\. \$/);
+  assert.match(report, /moonshotai\/kimi-k3 +0\.193 +openrouter-catalog +0\.138/);
+  assert.match(renderHuman('diagnose', samples.diagnose), /Cost +\$0\.020 reported, \$0\.012 estimated from openrouter-catalog \(pi estimated \$0\.030\)/);
+  const unpriced = { ...(samples.diagnose as object), health: { available: false, reason: 'state unreadable' } };
+  assert.match(renderHuman('diagnose', unpriced), /Cost +\$0\.020 reported, \$0\.030 estimated by pi/);
+  const diagnostics = (samples.diagnose as { diagnostics: { totals: object } }).diagnostics;
+  const tiny = { ...(samples.diagnose as object), diagnostics: { ...diagnostics, totals: { ...diagnostics.totals, reportedCost: 0.000201096 } } };
+  assert.match(renderHuman('diagnose', tiny), /Cost +\$0\.00020 reported/);
 });
 
 test('an operation without a renderer pretty-prints the same JSON detail', () => {

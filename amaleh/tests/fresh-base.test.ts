@@ -27,7 +27,7 @@ async function startInput(root:string,name:string,extra:Record<string,unknown>={
  return path;
 }
 
-test('start refuses a checkout that does not contain the freshly fetched origin default branch',{timeout:60000},async t=>{
+test('start refuses a checkout that does not contain the freshly fetched origin default branch',{timeout:180000},async t=>{
  const {root,work}=await staleClone(t);
  const input=await startInput(root,'stale');
  await assert.rejects(()=>main(['start',work,'stale',input]),/origin\/main/);

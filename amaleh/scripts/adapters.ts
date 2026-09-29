@@ -1,11 +1,11 @@
-import { readFile, writeFile, mkdir, access, realpath } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, access, realpath, lstat, readlink } from 'node:fs/promises';
 import { join, delimiter, dirname, basename, isAbsolute, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { invariant, execute, Store, event, claim, result, review, packet, fingerprint, taskOf, family, acquireActivity, releaseActivity, activitySpawned, reviewObligations, reopenReasons } from './core.ts';
-import type { Decision, Command, Guidance } from './core.ts';
+import { invariant, execute, Store, event, claim, result, review, packet, fingerprint, hash, taskOf, family, acquireActivity, releaseActivity, activitySpawned, reviewObligations, reopenReasons, unstableChecks } from './core.ts';
+import type { Decision, Command, Guidance, Run } from './core.ts';
 import { selectModel, consumeRoute } from './routing.ts';
 import type { RoutingRequest } from './routing.ts';
 import { trace, registerSecret, sanitize, recordSpeed } from './telemetry.ts';
@@ -45,7 +45,7 @@ export async function requestJson(url:string,body?:unknown,fetcher:typeof fetch=
  throw new Error('OpenRouter request failed');
  }catch(error){await telemetry.end('failed',{message:(error as Error).message});throw error;}
 }
-export function choiceAnswerFor(raw:any,key:string,criteria:Record<string,string>,threshold=.7){const a=raw?.answers?.[key];invariant(a?.type==='choice'&&typeof a.choice==='string'&&Object.hasOwn(criteria,a.choice),'Invalid Jev choice');invariant(Number.isFinite(a.confidence)&&a.confidence>=0&&a.confidence<=1,'Invalid Jev confidence');invariant(a.probabilities&&Object.keys(a.probabilities).length===Object.keys(criteria).length&&Object.keys(criteria).every(k=>Number.isFinite(a.probabilities[k])&&a.probabilities[k]>=0&&a.probabilities[k]<=1),'Invalid Jev probabilities');invariant(Math.abs(Object.values(a.probabilities as Record<string,number>).reduce((a,b)=>a+b,0)-1)<.02,'Invalid Jev probability sum');return {choice:a.confidence>=threshold?a.choice:undefined,confidence:a.confidence,source:String(raw.model??'OpenRouter Jev')};}
+function choiceAnswerFor(raw:any,key:string,criteria:Record<string,string>,threshold=.7){const a=raw?.answers?.[key];invariant(a?.type==='choice'&&typeof a.choice==='string'&&Object.hasOwn(criteria,a.choice),'Invalid Jev choice');invariant(Number.isFinite(a.confidence)&&a.confidence>=0&&a.confidence<=1,'Invalid Jev confidence');invariant(a.probabilities&&Object.keys(a.probabilities).length===Object.keys(criteria).length&&Object.keys(criteria).every(k=>Number.isFinite(a.probabilities[k])&&a.probabilities[k]>=0&&a.probabilities[k]<=1),'Invalid Jev probabilities');invariant(Math.abs(Object.values(a.probabilities as Record<string,number>).reduce((a,b)=>a+b,0)-1)<.02,'Invalid Jev probability sum');return {choice:a.confidence>=threshold?a.choice:undefined,confidence:a.confidence,source:String(raw.model??'OpenRouter Jev')};}
 export function choiceAnswer(raw:any,criteria:Record<string,string>,threshold=.7){return choiceAnswerFor(raw,'selection',criteria,threshold);}
 // One HTTP round trip settles many independent questions; use instead of repeated decide calls.
 export async function decideBatch(store:Store,input:{decisions:Omit<Decision,'revision'>[]},fetcher?:typeof fetch){
@@ -99,8 +99,9 @@ export function debuggerWait(command:unknown){
 const writePathArg=(args:unknown)=>{if(!args||typeof args!=='object')return undefined;const a=args as Record<string,unknown>;for(const key of ['path','file_path','filePath'])if(typeof a[key]==='string')return a[key] as string;return undefined;};
 const escapedTarget=(workspace:string,path:string)=>{const full=resolve(workspace,path),rel=relative(workspace,full);return rel.startsWith('..')||isAbsolute(rel)?full:undefined;};
 export class WorkspaceEscape extends Error{readonly paths:string[];constructor(paths:string[]){super(`Worker wrote outside the task workspace: ${paths.join(', ')}`);this.name='WorkspaceEscape';this.paths=paths;}}
+export class CallStopped extends Error{readonly stage:string;constructor(stage:string,message:string){super(message);this.name='CallStopped';this.stage=stage;}}
 export const resolveWrites=(workspace:string,paths:(string|undefined)[])=>{const root=resolve(workspace),writes:string[]=[],outside:string[]=[];for(const p of paths){if(typeof p!=='string'||!p.trim())continue;const full=resolve(root,p);writes.push(full);if(escapedTarget(root,p))outside.push(full);}return {paths:writes,outside};};
-export type CallUsage={at:string;ms:number;outputTokens:number};
+type CallUsage={at:string;ms:number;outputTokens:number};
 const recordCallSpeed=(speedDir:string,model:string,role:'worker'|'reviewer',usage:CallUsage,failed=false)=>recordSpeed(speedDir,{...usage,model,role,...(failed?{failed:true}:{})}).catch(()=>{});
 export async function piRun(input:{workspace:string;model:string;prompt:string;sessionDir:string;continueSession?:boolean;readOnly?:boolean;diagnosticRoot?:string;speedDir?:string;speedCarry?:CallUsage;deferSpeedOnSuccess?:boolean;onSpawn?:(pid:number)=>Promise<void>;attempts?:number;idleTimeoutMs?:number;maxTurns?:number}){
  const telemetry=await trace(input.diagnosticRoot,'pi',{model:input.model,workspace:input.workspace,readOnly:!!input.readOnly,sessionDir:input.sessionDir});
@@ -123,8 +124,8 @@ export async function piRun(input:{workspace:string;model:string;prompt:string;s
    const writeArgs:(string|undefined)[]=[];
    let spawnError:Error|undefined;
    let writes=Promise.resolve();const record=(stage:string,data:unknown)=>{writes=writes.then(()=>telemetry.write(stage,data));writes.catch(()=>child.kill());};
-   let stopped=false;
-   const stop=(message:string,stage:string,data:Record<string,unknown>)=>{if(stopped)return;stopped=true;providerError=message;record(stage,{...data,pid:child.pid});killTree(child);};
+   let stoppedAt:string|undefined;
+   const stop=(message:string,stage:string,data:Record<string,unknown>)=>{if(stoppedAt)return;stoppedAt=stage;providerError=message;record(stage,{...data,pid:child.pid});killTree(child);};
    const escapedPaths=new Set<string>();
    let escapeError:WorkspaceEscape|undefined;
    const parse=(line:string)=>{
@@ -149,7 +150,7 @@ export async function piRun(input:{workspace:string;model:string;prompt:string;s
      if(!Array.isArray(item.message.content)||item.message.content.some((c:any)=>!c||typeof c.type!=='string'||(c.type==='text'&&typeof c.text!=='string'))||typeof item.message.model!=='string'){protocolError='pi assistant event has invalid model/content shape';record('protocol-error',{reason:protocolError});return;}
      actual=item.message.model??actual;text=(item.message.content??[]).filter((c:any)=>c.type==='text').map((c:any)=>c.text).join('\n');
      if(typeof item.message.stopReason==='string')stopReason=item.message.stopReason;
-     if(!stopped&&(['error','aborted'].includes(item.message.stopReason)||item.message.errorMessage))providerError=String(item.message.errorMessage??`Assistant stopped: ${item.message.stopReason}`);
+     if(!stoppedAt&&(['error','aborted'].includes(item.message.stopReason)||item.message.errorMessage))providerError=String(item.message.errorMessage??`Assistant stopped: ${item.message.stopReason}`);
      const usage=item.message.usage;if(usage)outputTokens+=Number(usage.output)||0;if(usage)record('usage',{inputTokens:usage.input,outputTokens:usage.output,cacheRead:usage.cacheRead,cacheWrite:usage.cacheWrite,cost:usage.cost?.total,costSource:'pi-estimate',model:actual});
      turns++;
      if(input.maxTurns&&turns===input.maxTurns&&!ended&&item.message.stopReason==='toolUse')stop(`Stopped after ${turns} turns, the limit for this call, without a final answer. Inspect diagnostic trace ${telemetry.id}.`,'turn-limit',{turns});
@@ -186,6 +187,7 @@ export async function piRun(input:{workspace:string;model:string;prompt:string;s
     if(spawnError)throw spawnError;
     invariant(!protocolError,protocolError);
     if(escapeError)throw escapeError;
+    if(stoppedAt)throw new CallStopped(stoppedAt,String(sanitize(providerError)));
     invariant(!providerError,String(sanitize(providerError)));
     invariant(code===0&&ended&&actual,`pi incomplete: exit ${code}, agent_end=${ended}; inspect diagnostic trace ${telemetry.id}`);
     invariant(!input.readOnly||!!text,`pi returned no final text for a reviewer call, whose JSON report is the reply; inspect diagnostic trace ${telemetry.id}`);
@@ -242,7 +244,7 @@ export async function handoffFile(store:Store,id:string,name:string,body:string)
  const path=join(dir,name);await writeFile(path,body);
  return path;
 }
-export type WorkerPromptInput={workspace:string;briefPath:string;artifacts:string;runtime:string;jev:string;question:string;runWorkspace:string;runId:string;taskId:string;nested?:boolean};
+type WorkerPromptInput={workspace:string;briefPath:string;artifacts:string;runtime:string;jev:string;question:string;runWorkspace:string;runId:string;taskId:string;nested?:boolean};
 export const nestedRunCheckout=(runWorkspace:string,workspace:string)=>{const inside=relative(resolve(runWorkspace),resolve(workspace));return inside!==''&&!inside.startsWith('..')&&!isAbsolute(inside);};
 export const workerPrompt=({workspace,briefPath,artifacts,runtime,jev,question,runWorkspace,runId,taskId,nested}:WorkerPromptInput)=>`You are an Amaleh worker owning this task end to end inside the task workspace "${workspace}". Do not invoke other skills or delegate. Do not add hypothetical features.
 Every edit and write must stay under "${workspace}".
@@ -253,6 +255,10 @@ Jev chooses between options inside the task contract; it cannot repair the contr
 Never write vendor code or setup for a third-party service from memory: an embed or tag snippet, the argument order of a vendor call, the steps in a vendor console. Copy it from a file in the workspace or in this task's references, and name that file in your result. When no such file exists, raise a contract question.
 Every command you run must end on its own: never start a debugger that waits for a client (--inspect-brk, --inspect-wait), a watch mode or an interactive prompt, and stop any server you start before the command returns. In bash, discard output with /dev/null; NUL creates a file.
 Return actual changed artifacts, checks and unresolved issues.`;
+// See references/runtime.md#the-workers-share-of-the-run
+const runShare=(s:Run,id:string)=>s.tasks.length<2?'':`## Your share of the run
+This task is one of ${s.tasks.length} tasks in run ${s.id}. Your contract is task.criteria and task.checks in the context below. runOutcomes is what the whole run must achieve once every task is done: it is background, not your checklist, and other tasks deliver most of it. Do not run a suite or edit a file only because a run outcome names it.
+otherTasks lists every other task with the resources it owns. Leave those resources to their owners. If your criteria cannot be met without changing one of them, raise a contract question instead of changing it.`;
 export async function worker(store:Store,id:string,input:{workspace:string;model?:string;brief?:string;routing?:RoutingRequest}&Guidance){
  const route=await selectModel(store,id,'worker',input.workspace,input.routing);if(route.action!=='launch')return route;
  invariant(!input.model||input.model===route.model,'Explicit model disagrees with recorded route; omit model for automatic selection');
@@ -260,16 +266,17 @@ export async function worker(store:Store,id:string,input:{workspace:string;model
  const workspace=await realpath(input.workspace);
  const s=await store.load(),t=taskOf(s,id);const context=await packet(store,id);
  const scripts=dirname(fileURLToPath(import.meta.url)),runId=basename(store.root),runtime=await jsRuntime();
- const brief=input.brief??'Own this task end to end: satisfy every criterion and make the registered checks pass, stay within the allowed scope and resources, and do not add hypothetical features.';
+ const brief=input.brief??'Own this task end to end: satisfy every criterion in task.criteria and make every check in task.checks pass. Stay within task.resources, and do not add hypothetical features.';
  const guidance=await guidanceBlock(t.workspace??input.workspace,{skills:input.skills??t.skills,references:input.references??t.references});
  const reopened=reopenReasons(s,id);
  const briefPath=await handoffFile(store,id,'brief.md',[`# Task ${id}\n\n## Your brief\n${brief}`,
+  runShare(s,id),
   reopened.length?`## Why this task was reopened\nIt was accepted before and then sent back. Fix each defect below and keep the rest of the accepted work as it is; a fresh reviewer verifies each one against the actual artifact.\n${reopened.map(r=>`- ${r}`).join('\n')}`:'',
   `## Task and run context\n\`\`\`json\n${JSON.stringify(context,null,1)}\n\`\`\``,guidance].filter(Boolean).join('\n\n'));
  const prompt=workerPrompt({workspace,briefPath,artifacts:join(store.root,'artifacts'),runtime,jev:join(scripts,'jev.ts'),question:join(scripts,'question.ts'),runWorkspace:s.workspace,runId,taskId:id,nested:nestedRunCheckout(s.workspace,workspace)});
  await claim(store,id,{...input,workspace,model,pid:process.pid,routeDecisionId:route.decisionId});try{const out=await piRun({...input,workspace,model,prompt,diagnosticRoot:store.root,speedDir:store.amalehDir,sessionDir:join(store.root,'sessions',id),onSpawn:async pid=>{await store.transaction(s=>{taskOf(s,id).owner!.pid=pid;});}});await result(store,id,out);return {artifact:taskOf(await store.load(),id).output};}catch(e){await store.transaction(s=>{const t=taskOf(s,id);t.status='blocked';t.owner=undefined;t.blocked=(e as Error).message;event(s,'worker-blocked',{id,reason:t.blocked});if(transientProvider(t.blocked))event(s,'provider-unavailable',{model,family:family(model),taskId:id,purpose:'worker'});});throw e;}
 }
-export const diffLimit=400000;
+const diffLimit=400000;
 const receiptTailLimit=3000;
 async function git(args:string[],cwd:string){try{const r=await execute({command:'git',args},cwd);return r.code===0?r.stdout:undefined;}catch{return undefined;}}
 // The task checkout forks from the run's main checkout, so their merge base is
@@ -282,14 +289,25 @@ export async function taskDiff(mainWorkspace:string,workspace:string){
  if(patch===undefined)return undefined;
  return {base,stat:stat?.trim()??'',paths:(names??'').split(/\r?\n/).filter(Boolean),untracked:(untracked??'').split(/\r?\n/).filter(Boolean),patch:patch.length>diffLimit?patch.slice(0,diffLimit)+`\n[diff truncated at ${diffLimit} characters; read the remaining changed files named in stat directly]`:patch};
 }
+// See references/runtime.md#worker-failover
+export async function trackedContent(workspace:string){
+ const [head,changes,untracked]=await Promise.all([git(['rev-parse','HEAD'],workspace),git(['diff','--binary','HEAD'],workspace),git(['ls-files','--others','--exclude-standard','-z'],workspace)]);
+ if(head===undefined||changes===undefined||untracked===undefined)return fingerprint(workspace);
+ try{
+  const files=untracked.split('\0').filter(Boolean).sort();
+  const body=async(path:string)=>(await lstat(path)).isSymbolicLink()?`link:${await readlink(path)}`:hash((await readFile(path)).toString('base64'));
+  const bodies=await Promise.all(files.map(async f=>`${f}:${await body(join(workspace,f))}`));
+  return hash([head.trim(),changes,...bodies].join('\n'));
+ }catch{return fingerprint(workspace);}
+}
 async function receiptTail(store:Store,artifact:string){
  try{const r=JSON.parse(await store.readArtifact(artifact));const tail=(text:unknown)=>String(text??'').slice(-receiptTailLimit);return {stdout:tail(r.stdout),stderr:tail(r.stderr)};}catch{return undefined;}
 }
 // Factual projection: never forward author output, verdicts or decision rationale.
 export async function reviewPacket(store:Store,id:string,lenses:string[]=[],changes?:{base:string;stat:string;untracked:string[];patchFile:string},references?:string[]){
  const s=await store.load(),t=taskOf(s,id),context=await packet(store,id);
- const checks=await Promise.all(t.checks.map(async command=>{const receipt=t.receipts.find(r=>r.id===command.id);
-  return {command,receipt,executed:!!receipt,passed:receipt?.code===0,current:receipt?.fingerprint===t.fingerprint,output:receipt?await receiptTail(store,receipt.artifact):undefined};}));
+ const checks=await Promise.all(t.checks.map(async command=>{const receipt=t.receipts.find(r=>r.id===command.id),unstable=receipt&&unstableChecks(s,id,receipt.fingerprint).filter(u=>u.checkId===command.id).at(-1);
+  return {command,receipt,executed:!!receipt,passed:receipt?.code===0,current:receipt?.fingerprint===t.fingerprint,output:receipt?await receiptTail(store,receipt.artifact):undefined,unstable:unstable?{failedOutput:await receiptTail(store,unstable.failed)}:undefined};}));
  return {intent:s.intent,constraints:s.constraints,goal:t.goal,criteria:t.criteria,outcomes:s.criteria,references:references??t.references??[],
   workspace:t.workspace,fingerprint:t.workspace?await fingerprint(t.workspace):undefined,lenses,
   obligations:reviewObligations(s,t),artifactDirectory:join(store.root,'artifacts'),
@@ -298,6 +316,7 @@ export async function reviewPacket(store:Store,id:string,lenses:string[]=[],chan
   dependencies:s.tasks.filter(d=>('dependencies' in context && context.dependencies.some(ref=>ref.id===d.id))).map(d=>({id:d.id,goal:d.goal,criteria:d.criteria,workspace:d.workspace,integrated:d.integrated})),
   inspection:{standards:'Read applicable repository AGENTS.md and existing conventions. Context files are not automatically injected.',
    scope:changes?`The task's changes against ${changes.base} are in changes.patchFile, with a file summary in changes.stat and new files in changes.untracked. Start from that diff. Read other files only to trace callers and consumers of what changed, or to check a criterion the diff alone cannot show.`:'No Git diff is available for this workspace. Trace changed behavior to its callers and consumers; locate trustworthy scope evidence or mark the relevant boundary unreviewed.',
+   unstable:'A check that carries unstable failed while other checks ran on the same machine, then passed when it ran alone on the same content; failedOutput is the end of the failed run. Judge from it whether this task\'s changes cause that failure, for example a race, a shared file or port, or a timing dependency the change added. If they do, file a blocking regression. A timeout in code this task did not change is machine load, not a defect of this task.',
    probes:'Read registered command receipts via artifactDirectory. You cannot execute tests yourself, but a registered check whose receipt carries exit code 0 at the task fingerprint below did execute and did pass: that receipt is executed evidence, so cite it as covered rather than marking the obligation unreviewed. A nonzero or fingerprint-mismatched receipt is not evidence. Reserve unreviewed for behaviour no receipt covers, and name the exact host probe you need.'}};
 }
 // Killing pi alone leaves a hung grandchild running, holding the pipe open, so
@@ -307,7 +326,7 @@ export function killTree(child:{pid?:number;kill:(signal?:NodeJS.Signals)=>boole
  const killer=spawn('taskkill',['/pid',String(child.pid),'/T','/F'],{windowsHide:true,shell:false,stdio:'ignore'});
  killer.on('error',()=>{child.kill('SIGKILL');});
 }
-export const reviewFormatAttempts=2;
+const reviewFormatAttempts=2;
 export const blockingDefinition='A finding is blocking only when it is a regression of existing behaviour, a failed task criterion, a false statement in documentation this task changed, or vendor code or setup for a third-party service that this task added with no source in the workspace or the task\'s references, such as an embed or tag snippet, the argument order of a vendor call or the steps in a vendor console. A preference, style choice or optional improvement is never blocking.';
 // Windows caps a whole command line near 32767 characters; leave room for the
 // executable, the flags and the session paths that sit alongside the prompt.

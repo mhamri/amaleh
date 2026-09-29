@@ -14,7 +14,8 @@ test('worker context retains global constraints and dependency evidence without 
  await store.transaction(s=>{for(const id of ['ancestor','dep','focus','unrelated','global'])s.decisions.push({id,question:id,criteria:{yes:'fixture answer'},choice:'yes',state:id==='global'?{}:{routing:{scope:{taskId:id}}},revision:s.revision});s.tasks[0].output='ancestor-artifact';});
  const packet=await c.packet(store,'focus');assert.deepEqual(packet.constraints,['Never change currency']);assert.deepEqual(packet.decisions.map(d=>d.id),['ancestor','dep','focus','global']);assert.ok(!('next' in packet));assert.ok(!('phaseStatus' in packet));
  assert.ok('dependencies' in packet);assert.deepEqual(packet.dependencies!.map(d=>d.id),['ancestor','dep']);assert.equal(packet.dependencies![0].output,'ancestor-artifact');assert.ok(packet.durableState?.endsWith('.json'));
- const host=await c.packet(store);assert.equal(host.decisions.length,5);assert.ok('next' in host);
+ assert.ok('runOutcomes' in packet&&!('criteria' in packet));assert.deepEqual(packet.otherTasks.map(o=>[o.id,o.resources]),[['ancestor',['ancestor']],['dep',['dep']],['unrelated',['unrelated']]]);
+ const host=await c.packet(store);assert.equal(host.decisions.length,5);assert.ok('next' in host);assert.deepEqual('criteria' in host&&host.criteria,['Keep relevant evidence']);
 });
 
 
