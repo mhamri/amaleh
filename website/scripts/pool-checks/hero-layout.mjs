@@ -7,6 +7,18 @@ const SIDES = ['top', 'right', 'bottom', 'left'];
 const CLEARANCE = 0.15;
 const SEPARATION = 0.1;
 
+const NARROWEST_ADVANCE = {
+  ' ': 0.26,
+  I: 0.28, J: 0.36, f: 0.28, i: 0.22, j: 0.22, l: 0.22, r: 0.34, t: 0.28,
+  c: 0.48, e: 0.52, k: 0.5, m: 0.82, o: 0.54, s: 0.48, v: 0.5, w: 0.7, x: 0.48, y: 0.5, z: 0.46,
+};
+const NARROWEST_DEFAULT_ADVANCE = 0.5;
+
+function narrowestLabelWidth(label, labelSize) {
+  const ems = [...label].reduce((total, character) => total + (NARROWEST_ADVANCE[character] ?? NARROWEST_DEFAULT_ADVANCE), 0);
+  return ems * labelSize;
+}
+
 const right = (box) => box.x + box.width;
 const bottom = (box) => box.y + box.height;
 const centre = (box) => ({ x: box.x + box.width / 2, y: box.y + box.height / 2 });
@@ -124,6 +136,9 @@ async function inspect(failures, size, direction) {
       }
       if (node.labelBox.width < [...node.label].length * scene.labelSize * 0.5 - EPS) {
         failures.push(`${at}: the label box of ${label} is narrower than half an em per character`);
+      }
+      if (node.labelBox.width < narrowestLabelWidth(node.label, scene.labelSize) - EPS) {
+        failures.push(`${at}: the label box of ${label} is narrower than the narrowest system font advance of its characters`);
       }
       if (node.ports.bottom.y < bottom(node.labelBox) - EPS) {
         failures.push(`${at}: the bottom side point of ${label} sits above the bottom of its label`);
