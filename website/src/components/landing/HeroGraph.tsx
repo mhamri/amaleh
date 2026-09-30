@@ -10,7 +10,6 @@ const HUB_EDGE = 0.07;
 const MONOGRAM = 0.36;
 const PATCH_SIDE = 0.1;
 const LABEL_BASELINE = 0.63;
-const LABEL_PAD = '\u200A';
 const LINK_STROKE = 1.7;
 const REVIEW_STROKE = 1.1;
 const LINK_OPACITY = 0.7;
@@ -120,11 +119,10 @@ export default function HeroGraph(props: { scene: HeroScene; fallbackRef: (eleme
                   y={label.y + label.height * LABEL_BASELINE}
                   font-size={`${scene().labelSize}`}
                   letter-spacing="normal"
-                  text-rendering="geometricPrecision"
                   text-anchor="middle"
                   fill="var(--color-dim)"
                 >
-                  {`${LABEL_PAD}${node.label}${LABEL_PAD}`}
+                  {node.label}
                 </text>
               ) : null}
               <rect

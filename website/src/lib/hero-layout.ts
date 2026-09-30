@@ -71,10 +71,8 @@ const ROOT_OPTIONS: Record<string, string> = {
 
 const LABEL_DEFAULT_ADVANCE = 0.6;
 const HALF_EM = 0.5;
-const LABEL_PAD = '\u200A';
-const LABEL_PAD_ADVANCE = 0.08;
+const LABEL_PADDING = 0.16;
 const LABEL_ADVANCE: Record<string, number> = {
-  [LABEL_PAD]: LABEL_PAD_ADVANCE,
   ' ': 0.28,
   A: 0.7, B: 0.68, C: 0.72, D: 0.75, E: 0.67, F: 0.62, G: 0.8, H: 0.75, I: 0.3, J: 0.4, K: 0.7, L: 0.58,
   M: 0.95, N: 0.75, O: 0.8, P: 0.67, Q: 0.8, R: 0.72, S: 0.67, T: 0.62, U: 0.75, V: 0.68, W: 1, X: 0.68, Y: 0.67,
@@ -89,8 +87,8 @@ function labelAdvance(character: string): number {
 }
 
 function labelWidth(label: string): number {
-  const characters = [...`${LABEL_PAD}${label}${LABEL_PAD}`];
-  const ems = characters.reduce((total, character) => total + labelAdvance(character), 0);
+  const characters = [...label];
+  const ems = LABEL_PADDING + characters.reduce((total, character) => total + labelAdvance(character), 0);
   return Math.max(Math.ceil(ems * LABEL_SIZE), Math.ceil(characters.length * LABEL_SIZE * HALF_EM));
 }
 
