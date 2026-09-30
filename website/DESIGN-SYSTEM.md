@@ -225,8 +225,8 @@ Four widths are the contract. Every page is checked at all four.
 | Width | Target | What must be true |
 | --- | --- | --- |
 | 320–389 px | Small phone | One column. Nothing overflows horizontally. Diagrams switch to their stacked form. |
-| 390–767 px | Phone | One column. Cards full width. The hero scene is its own full-width band under the copy, cropped to the tile grid at `aspect-[3/4]` under 640 px and at `sm:aspect-[4/3]` from 640 px. |
-| 768–1023 px | Tablet | Two-column card grids (`md:grid-cols-2`). Docs sidebar still stacked above the article. The hero scene stays a full-width band at `sm:aspect-[4/3]`. |
+| 390–767 px | Phone | One column. Cards full width. Below 640 px the hero shows the narrow graph, stacked top to bottom under the copy. |
+| 768–1023 px | Tablet | Two-column card grids (`md:grid-cols-2`). Docs sidebar still stacked above the article. From 640 px the hero shows the wide graph, running left to right. |
 | 1024 px and up | Desktop | The prose column is paired with a second column of real content. Docs use the three-column shell. Card grids reach three columns at `xl`. |
 
 Rules that produce that:
@@ -294,8 +294,8 @@ repeats the offer and the one action, and nothing follows it but the footer.
 Where a section carries a fragment id it is the section element's own `id`, so
 an in-page link lands on the whole band.
 
-**The hero rule.** The hero carries exactly four things over the full-bleed
-scene, and nothing else:
+**The hero rule.** The hero carries exactly four things of copy beside the
+graph, and nothing else:
 
 1. one `<h1>` of at most 12 words that states the benefit the reader gets —
    never a statistic, a price or a token count;
@@ -310,42 +310,20 @@ scene, and nothing else:
 Measured rebuild figures, the pronunciation and origin of the name, and every
 explanation of the scene belong to the benefits and author sections, not to the
 hero. The scene is never covered by the copy: **at 1024 CSS pixels and wider no
-headline, paragraph or button may overlap any model tile.** The copy therefore
-sits in one compact block on the left (about a third of the band) and every
-labelled model tile in the scene stays right of the prose measure. **Below
-1024 CSS pixels the scene leaves the background** and becomes its own
-full-width band under the buttons, and that band crops the design box to the
-tile grid in two steps, each with its own aspect ratio and zoom. Under 640 CSS
-pixels the band is `aspect-[3/4]` with the canvas at `aspect-[2/1] w-[300%]`,
-so the design box is fitted inside a canvas box 3 band widths wide and 1.5
-tall, one design unit is a sixth of the band's width, and the crop is 6 by 8
-design units, x 10.2 to 16.2 and y 0.18 to 8.18. From 640 CSS pixels the band
-is `sm:aspect-[4/3]` with the canvas at `sm:aspect-[8/3] sm:w-[225%]`, so the
-design box is fitted inside a canvas box 2.25 band widths wide and 0.84 tall
-and the crop widens to 10.67 by 8 design units, x 7.87 to 18.53 and y 0.18 to
-8.18. Both crops are centred on `HERO_FOCUS`, the focus point `hero-scene.ts`
-exports. Both canvas boxes are wider than the design box they hold, so landing
-that point at the centre of the band takes 78.8889% across the phone canvas box
-and 71.6667% across the tablet one, and 46.4444% down both. Both crops hold
-every labelled tile and its label with at least 0.15 design units to spare, and
-both canvas boxes reach past every edge of their band, so no part of the band
-shows bare page. The phone crop holds no part of the coordinator hub: the hub's
-circle ends at x 8.4, left of the crop's x 10.2, so the phone band shows the
-tile grid and the links that join tiles to the decision node, while the lines
-that run to the hub leave its left edge. The tablet crop starts at x 7.87,
-inside that hub circle, so there the hub runs off the left edge of the band.
-Both crops reach past the right edge of the design box at x 16 — the phone crop
-to x 16.2 and the tablet crop to x 18.53 — so the last thirtieth of the phone
-band and the last quarter of the tablet band are bare grid. The band is full
-width, not a centred box: the strip of bare canvas between the crop's left edge
-and the first tile belongs to the scene, and no edge of the band is a hard
-panel edge. Model name
-labels under a tile are supporting label copy: below body scale, and in the
-sans stack, because a model name is a topic rather than a string a reader could
-type or search. Each crop's zoom keeps the label below the 16 pixel body size
-across its whole width range: a design unit reaches at most 640 ÷ 6 = 106.7 CSS
-pixels in the phone band and 1024 × 0.09375 = 96 in the tablet band, so the
-0.15 unit label stays under 16 and 14.4 CSS pixels.
+headline, paragraph or button may overlap any model tile.** From 1024 CSS
+pixels the hero is a two-column grid, `lg:grid-cols-[minmax(0,1fr)_420px]`: the
+copy sits in one compact block in the fluid column on the left, capped at
+`max-w-xl` and at `lg:max-w-md` (28rem, 448 CSS pixels), and the wide graph
+has a column of its own, the fixed 420 CSS pixel column to the right of it.
+The graph is a block beside or under the copy at every width, never a
+background behind it: **below 1024 CSS pixels it is one full-width block under
+the buttons**, and nothing is ever cropped: each layout's box takes the aspect
+ratio of the scene that holds it, so the whole graph — the
+coordinator hub, every tile, every link and every label — shows at every width.
+The block is capped so a tile label stays below the 16 pixel body size, which
+is the only zoom rule the hero carries. Model name labels under a tile are
+supporting label copy: below body scale, and in the sans stack, because a
+model name is a topic rather than a string a reader could type or search.
 
 **Benefit figures.** Every figure on the landing page comes from
 `CASE-STUDY.md` — the two runs (`website-visuals` and `website-polish`) that
@@ -835,7 +813,7 @@ clipboard API rejects). It returns to **`Copy`** after about two seconds.
 The site shows delegation instead of only describing it. Three component
 kinds carry that, and all are subject to the rules here.
 
-**Hero canvas** — one per site, on the landing page only. A WebGL scene whose
+**Hero canvas** — on the landing page only, one canvas per hero layout. A WebGL scene whose
 subject is the workflow itself: Claude Code or Codex running the coordinator,
 the coordinator handing chunks to the Flash workers, workers asking the
 decision model bounded questions, another Flash family reviewing each chunk, a
@@ -846,153 +824,118 @@ in palette hues (brass for the coordinator and action, teal for accepted or
 verified, violet for orchestration and routing) on the `base-100` background.
 No photographic texture, no lens flare, no particle confetti.
 
-**The scene is the pool.** `HeroCanvas.tsx` writes no model name of its own: it
-calls `heroScene` in `website/src/lib/hero-scene.ts` with the worker, repair
-and decision identities that `website/src/lib/pool.ts` resolves from
-`amaleh/models.json` at build time through `family()` in
-`amaleh/scripts/family.ts` and the identity table in
-`website/src/lib/models.ts`, so the tiles, the links and the `aria-label`
-follow the pool by themselves. `hero-scene.ts` holds the whole layout rule:
-up to three workers fill one row above the decision node and the rest spill
-into a second row below it, each row centred on the decision node's column and
-running left to right in pool order; the repair node sits 2 design units in
-the decision node's row to its right, and the two host tiles sit above the top
-worker row. Neighbours in a row stand 1.8 design units apart and the rows
-stand 2.15 apart, which is more than a 0.72 tile and its label need, so no
-line ever runs short. Every worker keeps its own line to the decision node.
-Review lines join neighbours in the same row, and a second row that holds one
-worker takes its review line from the first worker of the top row. The hosts
-reach the coordinator hub, the hub dispatches to the first worker of each row
-and hears the review back on that same line, and the escalation runs from the
-last worker of the top row to the repair node. `heroScene`
-takes every name from its argument and never looks one up, so the scene is
-placed for whatever the pool holds, and the geometry is proved on synthetic
-pools of two to six workers by `website/scripts/pool-checks/hero.mjs`, which
-fails the layout when a link is shorter than 0.8 design units, passes within
-0.3 of a tile or label it does not connect, runs within 0.12 of a link that
-joins a different pair of nodes for longer than 0.3 outside 0.6 of a node both
-touch, meets a node anywhere but the port on the side it arrives from, or
-crosses another link that meets the same node.
+**The scene is the pool, and ELK lays it out.** No component writes a model
+name or a coordinate of its own. `website/src/lib/hero-layout.ts` builds the
+graph as data — Claude Code and Codex feeding the coordinator hub, the hub
+dispatching to every Flash worker, every worker consulting the decision model,
+the last worker escalating to the repair model, and a review link between each
+pair of neighbouring workers — from the worker, repair and decision identities
+that `website/src/lib/pool.ts` resolves from `amaleh/models.json` at build
+time through `family()` in `amaleh/scripts/family.ts` and the identity table
+in `website/src/lib/models.ts`, so the nodes, the links and the `aria-label`
+follow the pool by themselves.
 
-The hero canvas is a **full-bleed background**, not a panel beside the copy.
-It spans the whole hero band edge to edge, and below 1024 CSS pixels that band
-is the page's own width edge to edge as well, never a centred box: a narrower
-box would read as a panel with empty page on either side. It sits behind the
-headline at low
-enough contrast that the type stays at its documented ratios, and carries no
-`figcaption` — a caption under a background is a panel again. Whatever the
-scene needs explaining goes in body copy further down the page, next to the
-thing it explains.
+`layoutHero(pool, direction)` hands that graph to ELK layered (elkjs) with
+`elk.direction` `RIGHT` for `'wide'` and `DOWN` for `'narrow'`, with
+`elk.edgeRouting` `ORTHOGONAL` and `elk.portConstraints` `FIXED_POS` on every
+node, so every link is a chain of horizontal and vertical segments. ELK places
+every node and routes every host, dispatch, decision and escalation link; no
+node coordinate is written by hand. The review links are the one exception and
+they are drawn in `hero-layout.ts`, because ELK layered moves an edge's target
+into a new layer, which turned the workers into a staircase; each review link is
+therefore one straight segment between two neighbouring workers' facing side
+points (bottom to top in wide, right to left in narrow), computed after ELK has
+placed the workers. The two hosts are constrained into the first layer, the
+decision and repair nodes into the last, so the coordinator group starts the
+graph — at the left in the wide layout and at the top in the narrow one — and
+the workers run in pool order between them. The same pool and direction return
+an identical scene, and the geometry is proved on synthetic pools of two to six
+workers in both directions by `website/scripts/pool-checks/hero-layout.mjs`.
+
+**One side point per side, and the label below the tile.** Every tile and the
+coordinator hub carry exactly four side points: `top` is the midpoint of the
+tile's top edge, `right` and `left` are the midpoints of the side edges, and
+`bottom` sits on the tile's vertical axis at or below the bottom of the label
+box (at the bottom of the tile for the hub). Every link starts and ends exactly
+on one of these points and runs straight out of the side it leaves, so the
+lines meeting a node on one side all share that side's single point instead of
+entering the tile at scattered places, and no line ever runs into a tile or a
+label. A tile's label box sits under the tile, centred on it, at least
+`scene.labelSize` tall, and the label is part of the box ELK lays out, so ELK
+keeps every line clear of it.
+
+**Two layouts, one box each, no crop.** `website/vite.config.ts` resolves the
+module id `virtual:hero-scene` and loads it as
+`export default { "wide": <scene>, "narrow": <scene> }`, both computed by
+`layoutHero` at build time for the real pool; `website/src/virtual-hero-scene.d.ts`
+types that default export as `{ wide: HeroScene; narrow: HeroScene }`. The
+browser therefore receives laid-out coordinates only and never elkjs: client
+code imports types from `hero-layout.ts` and no value from it. Both scenes are
+server-rendered, each in its own `svg[data-hero-layout="wide"]` and
+`svg[data-hero-layout="narrow"]` with a `viewBox` of `0 0 scene.width
+scene.height`; the narrow one is shown below 640 CSS pixels and the wide one
+from 640, so the switch happens live while a window is resized. Every link is
+a `polyline[data-link][data-kind]` through its points, every non-hub node is a
+`g[data-model][data-role]` holding `rect[data-tile]`, a `rect[data-label-patch]`
+and the label text, and the hub is a `circle[data-role="coordinator"]`. The
+label patch is filled with the page background `var(--color-base-100)` at full
+opacity, so a label reads as text on a patch of the page rather than on the
+graph. The wrapper sets `aspect-ratio: scene.width / scene.height`, so the box
+is the scene's own shape and nothing is cropped, and caps its width at
+`15.5 × scene.width / scene.labelSize` pixels so a label never reaches the 16
+pixel body size.
+
+**No visible canvas rectangle.** The visible layout's WebGL canvas covers its
+SVG and resizes its drawing buffer with it through a `ResizeObserver`, so no
+line goes missing after a resize. Everything the canvas adds — the drifting
+grid, every segment's rail and every packet — is multiplied by a smoothstep
+that reaches zero before the canvas border, so the glow blends into the page
+background and the page never shows a lighter box with hard edges. Where
+several links share a segment, the shader keeps the brightest contribution
+instead of adding them, so a shared trunk is no brighter than one line. The
+still frame under `prefers-reduced-motion` and the `IntersectionObserver`
+pause are unchanged.
 
 **Depth is built into the scene, not applied to the whole canvas.** Both the
 canvas and every model tile render at full opacity; the layering inside the
-scene supplies the depth. Far edges — the coordinator distribution and the
-decision model's consultation — are thinner, dimmer and softer, a whisper of
-the workflow, while near edges — the cross-family review, the escalation to
-the repair model and the accepted-chunk returns — are brighter, thicker and
-sharper. On top of that
-banding each link carries its own fixed weight, described below, which thins
-the coordinator's dispatches and the returns one step. Node glows are additive
+scene supplies the depth. The review links — the cross-family review loop
+between neighbouring workers — are thinner and dimmer than the workflow's own
+lines, a whisper beside the dispatch, decision and escalation traffic. Each
+segment carries its own weight: review segments run at
+`REVIEW_WEIGHT` 0.7 and every other segment at `FULL_WEIGHT` 1, one number read
+from the link kind and never a runtime random, so the canvas and the no-WebGL
+SVG thin exactly the same connections. Node glows are additive
 and soft and breathe slowly, so a
 node is a small light in the dark rather than a flat disc, and the packet
-travelling each active edge is a bright pulse in that edge's own hue with a
-tight hot core and a wider soft halo. The additive palette stays below the
+travelling each link's full path is a bright pulse in that link's own hue with a
+tight hot core and a wider soft halo, with a return packet running back along
+each dispatch link for an accepted chunk. The additive palette stays below the
 luminance that would cost the copy its contrast ratios: a packet, its rail and
 a node ring together stay under half the AA threshold for `dim` body copy.
 
-A straight line between two node centres would run through the model-name label
-under a tile, so every node carries exactly four connection ports and a link
-never meets a tile anywhere else: a tile's top, right and left ports are the
-middle of its own top, right and left edge, 0.36 of a design unit from its
-centre, and its bottom port sits on its vertical axis 0.93 below the centre —
-the same distance for every tile, clear of the label that ends at 0.813. The
-coordinator hub is a circle, so its four ports sit on its edge, 0.9 from the
-centre, above, right of, below and left of it. `port(node, side)` in
-`hero-scene.ts` returns the one point for a side and every link is drawn
-between two of them, so two lines that meet a node on one side share that
-side's single port instead of entering the tile at scattered points, and every
-link runs away from the side it leaves: a left-port link runs left, a top-port
-link runs up. A link meets each node on the side it arrives from. Measured from
-the node's centre to the link's other end, a link whose run across is more than
-1.1 times its run up or down uses the left or right port facing that end, one
-whose run up or down is more than 1.1 times its run across uses the top or
-bottom port, and a link between those two ratios may use either. `join(a, b)`
-in `hero-scene.ts` draws every link: it tries the ports each node faces most,
-giving way first at `a`, and keeps the first pair where both ends meet the side
-they arrive from. So a line from the far left enters a tile's left port rather
-than its top one. `join` looks at one link at a time, so it cannot stop two
-links from crossing; `website/scripts/pool-checks/hero.mjs` fails any layout in
-which two lines that meet the same node cross.
-The canvas clamps edge glow
-below the higher of the two tiles, so no glowing line and no glow reaches a
-label box — the same "no label is crossed" rule the diagrams obey. A link that
-runs down a column starts below the upper tile's own label, so the name it
-passes is never in its way, and every worker holds its own query link to the
-decision node, whichever row it sits in.
-
-**One fixed weight per link.** Every link `heroScene` returns carries a
-`weight`, and the split is the workflow's own: the ordinary dispatch and return
-traffic between the coordinator hub and a worker tile runs at `THIN_WEIGHT`
-0.7, while the queries to the decision node, the cross-family review loop and
-the escalation to the repair node keep `FULL_WEIGHT` 1. The number is data
-written on the link itself, never a runtime random, and one number drives both
-renderers, so the canvas and the no-WebGL SVG thin exactly the same
-connections: the fragment shader reads it as
-`uniform float uLinkWeight[...]` and multiplies it into the rail's glow width
-and brightness, and the fallback `<line>` sets `stroke-width` from it on top of
-the near/far stroke (0.032 of a design unit for the near band, 0.018 for the
-far one). A thinned near link stays thicker than an untouched far one, so the
-two dimensions never invert, and the travelling packet keeps its size because
-it marks the event rather than the rail.
-
-**One design box, one source of colour.** The scene is drawn in a 16 × 9 box
-fitted inside the canvas the way SVG `preserveAspectRatio` `xMidYMid meet`
-fits a `viewBox` — the shader scales by `min(width / 16, height / 9)` and
-insets the remainder — so the canvas and the fallback SVG put every node, tile
+**One scene box, one source of colour.** The shader fits the scene into the
+canvas the way SVG `preserveAspectRatio` `xMidYMid meet` fits a `viewBox` — it
+scales by `min(width / scene.width, height / scene.height)` and insets the
+remainder — so the canvas and the server-rendered SVG put every node, tile
 and label in the same place at every aspect ratio. No hex value is ever
 written into the component: the canvas resolves each palette custom property
 once after mount through `getComputedStyle`, which keeps the daisyUI theme in
 `style.css` the single source of truth for both renderers. A model node glows
 in its own routed hue from `models.ts`; the coordinator hub and the review
 links keep their role hues. Labels under the tiles are supporting label copy at
-0.15 of a design unit, set in the sans stack, because a model name is a topic
-rather than a string a reader could type or search. Measured on the built page,
-a label is 8 CSS pixels at 320 and grows to just under 16 at 639 in the phone
-band, is 9 to 14.4 CSS pixels from 640 to 1023 in the tablet band, and is 9.6
-from 1024 CSS pixels up, where the 36rem hero height sets the fit — below the
-16 pixel body size at every width. Every labelled tile sits at x ≥ 10.5 of the
-16 design units, clear of the hero copy at `lg` and wider; below `lg`,
-`Problem.tsx` crops the band onto that region twice, at `aspect-[3/4]` with the
-canvas at `aspect-[2/1] w-[300%]` under 640 CSS pixels — a 6 by 8 design unit
-window, x 10.2 to 16.2 and y 0.18 to 8.18 — and at `sm:aspect-[4/3]` with the
-canvas at `sm:aspect-[8/3] sm:w-[225%]` from 640 CSS pixels — a 10.67 by 8
-window, x 7.87 to 18.53 and y 0.18 to 8.18. At both steps the window holds
-every labelled tile and its label, and the phone window holds none of the
-coordinator hub, whose circle ends at x 8.4. Both windows are centred on
-`HERO_FOCUS`, the focus point `hero-scene.ts` exports. Neither canvas box is the
-design box itself: the phone canvas box is `2/1` and 300% of the band width, so
-the design box sits inside it with a sixth of a band width of bare canvas on
-each side, and the tablet canvas box is `8/3` and 225% of the band width, so the
-design box sits inside it with 0.375 of a band width of bare canvas on each
-side. The offset that lands the focus point at the centre of the band is
-therefore 78.8889% across the phone canvas box and 71.6667% across the tablet
-one, and 46.4444% down both. `website/scripts/pool-checks/hero.mjs` reads both
-bands and both canvas boxes out of `Problem.tsx` and fails when a band states
-no aspect ratio of its own, when its canvas box states no width, aspect ratio
-or offset of its own, when that offset does not land `HERO_FOCUS` at the centre
-of the band, when the canvas box does not reach every edge of the band, when a
-tile or label leaves that band's window, or when the band's zoom would set a
-label at 16 CSS pixels or more before the next breakpoint (640 for the phone
-band, 1024 for the tablet band).
-From `lg` the band is the whole hero section again, the canvas fills it, and
-the 16 × 9 design box is fitted inside that canvas. The fallback
+`scene.labelSize` scene units, set in the sans stack, because a model name is a
+topic rather than a string a reader could type or search. The wrapper's width
+cap keeps every label below the 16 pixel body size at every width, and at 320
+CSS pixels the narrow scene takes nearly the full content width, which keeps its
+labels above 11 CSS pixels. The fallback
 group ships at `opacity="0.25"`, the quiet background weight of the live
 frame, and the identity tiles sit outside it, so they never fade.
 
-Each model node wears a **logo tile**: one rounded square, 0.72 of a design unit
-with a 0.18 corner radius, carrying the vendor's real mark when
-`website/public/models/` holds one, and otherwise a monogram in that model's
-routed hue — the rule for a model whose vendor publishes no mark. The tile is
+Each model node wears a **logo tile**: one rounded square, 36 scene units wide
+with a corner radius of 0.25 of its own width, which is 9 scene units,
+carrying the vendor's real mark when `website/public/models/` holds one, and
+otherwise a monogram in that model's routed hue — the rule for a model whose
+vendor publishes no mark. The tile is
 the same size and shape either way, so a missing logo reads as a deliberate
 mark rather than a hole. The shipped
 mechanism reads the model's `logo` field in `website/src/lib/models.ts`, not
@@ -1066,11 +1009,12 @@ Required of every visual in this layer, without exception:
   CSS pixels, the count of labels straddling a card edge must be zero. Two
   labels must never cross either: measured with `getBBox` mapped through the
   element's own transform into the viewport's CSS pixels, the count of label
-  pairs crossing inside the hero scene or either topology variant must be zero
-  at 320, 768 and 1440 CSS pixels, counting a pair only when it overlaps by
-  more than 0.5 CSS pixels on both axes. A variant that CSS hides at the width
-  being measured is shown for the measurement and hidden again, so both
-  topology variants are measured at every one of those widths.
+  pairs crossing inside either hero layout or either topology variant must be
+  zero at 320, 768 and 1440 CSS pixels, counting a pair only when it overlaps
+  by more than 0.5 CSS pixels on both axes. A variant or a hero layout that CSS
+  hides at the width being measured is shown for the measurement and hidden
+  again, so both hero layouts and both topology variants are measured at every
+  one of those widths.
 - **Accessible.** A decorative canvas is `aria-hidden="true"` and the meaning
   is carried by adjacent text. A diagram that carries meaning is
   `role="img"` with an `aria-label` naming what it shows, or it exposes the
@@ -1078,11 +1022,11 @@ Required of every visual in this layer, without exception:
   `<text>` in the SVG, so they are selectable and scale with the page.
 - **Sized in the layout, not by the window.** The wrapper sets an explicit
   aspect ratio — a diagram panel uses
-  `aspect-[4/3] sm:aspect-[16/10] lg:aspect-[16/9]`, and the hero band uses,
-  below `lg`, the crop ratios stated under **Hero canvas** and, from `lg`, the
-  hero section's own box — the canvas fills it with `size-full`, and the drawing buffer is set from
-  `getBoundingClientRect()` times `devicePixelRatio`, capped at 2, on mount
-  and on resize. Nothing reads `window.innerWidth` to decide a layout.
+  `aspect-[4/3] sm:aspect-[16/10] lg:aspect-[16/9]`, and each hero box uses
+  its own `scene.width / scene.height` — the canvas fills it with `size-full`, and the drawing buffer is set from
+  the box's `getBoundingClientRect()` times `devicePixelRatio`, capped at 2, on
+  mount and whenever a `ResizeObserver` reports the box changing. Nothing reads
+  `window.innerWidth` to decide a layout.
 - **Cheap.** Target 60 frames per second on integrated graphics: no more than
   a few hundred draw calls per frame, no per-frame allocation, no shader
   recompilation after mount.
@@ -1206,8 +1150,10 @@ redrawn or recoloured.
 - The pool checks in `website/scripts/pool-checks/` run inside
   `npm run test:static`: every built Workers card names exactly the worker
   families in `amaleh/models.json` and no model the pool no longer routes,
-  every built topology variant names exactly those families, the hero scene's
-  geometry holds for synthetic pools and its built worker tiles are exactly
-  the pool, no built page outside the case study names a model identity the
+  every built topology variant names exactly those families, the ELK layout of
+  `website/src/lib/hero-layout.ts` holds for synthetic pools of two to six
+  workers in both directions, both built hero layouts draw exactly the pool as
+  worker tiles with a label patch each, no built page outside the case study
+  names a model identity the
   pool no longer routes, and a family in the pool with no identity in
   `website/src/lib/models.ts` fails the build.
