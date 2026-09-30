@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { piRun } from '../scripts/adapters.ts';
+import { piRun, CallStopped } from '../scripts/adapters.ts';
 import { speedSamples, modelSpeed, readSpeedSamples, diagnostics } from '../scripts/telemetry.ts';
 
 const modelsConfig=join(import.meta.dirname,'..','models.json');
@@ -61,7 +61,7 @@ test('a worker call that keeps talking past the wall-clock limit is stopped and 
  const chatter=JSON.stringify({type:'tool_execution_start',toolName:'read',args:{path:'x'}})+'\n';
  const {dir,input}=await fakePi(t,`setInterval(()=>process.stdout.write(${JSON.stringify(chatter)}),200);`,{workerTimeoutMs:1500});
  const started=Date.now();
- await assert.rejects(()=>piRun(input),/time limit/i);
+ await assert.rejects(()=>piRun(input),(error:unknown)=>error instanceof CallStopped&&error.stage==='call-timeout'&&/time limit/i.test(error.message));
  assert.ok(Date.now()-started<15000,'the limit must stop the call, not the idle timer');
  const report=await diagnostics(input.diagnosticRoot);
  assert.equal(report.operations[0].events.filter((e:any)=>e.stage==='attempt').length,1,'a timed-out call is not retried as a transient provider failure');

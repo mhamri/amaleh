@@ -6,15 +6,17 @@ import { spawn } from 'node:child_process';
 import { hostname } from 'node:os';
 import { resourceSetsOverlap } from './resources.ts';
 import { family } from './family.ts';
+import { processAlive, ownerAlive } from './owner.ts';
+import { withCheckLock } from './check-lock.ts';
 export { family } from './family.ts';
 
 export type Command = { command:string; args:string[] };
-export type IntegrationCheck = Command & { id:string };
+type IntegrationCheck = Command & { id:string };
 export type Check = IntegrationCheck & { role:'probe'|'guard' };
 export type Finding = { id:string; lens:string; location:string; scenario:string; evidence:string; consequence:string; blocking:boolean; disposition?:'open'|'resolved'|'refuted'; resolution?:string };
 export type ReviewCoverage = { id:string; status:'covered'|'finding'|'unreviewed'|'not-applicable'; evidence:string };
 export type Guidance = { skills?:string[]; references?:string[] };
-export type Task = { id:string; title:string; goal:string; phase:string; deps:string[]; resources:string[]; criteria:string[]; checks:Check[]; kind:'code'|'research'|'plan'; skills?:string[]; references?:string[]; noProbe?:string; status:'ready'|'running'|'review'|'repair'|'accepted'|'blocked'; workspace?:string; activity?:{kind:'check'|'review';owner:{pid:number;coordinatorPid?:number;host:string;operation:string};checkId?:string}; owner?:{pid:number;coordinatorPid?:number;host:string;operation:string}; execution?:{kind:'routed-worker'|'coordinator-exception';authorization:string}; author?:string; family?:string; fingerprint?:string; output?:string; receipts:{id:string;code:number;fingerprint:string;artifact:string}[]; review?:{family:string;fingerprint:string;findings:Finding[];artifact:string;coverage?:ReviewCoverage[]}; cycles:number; depth:'flash'|'deep'|'host'; blocked?:string; integrated?:string };
+export type Task = { id:string; title:string; goal:string; phase:string; deps:string[]; resources:string[]; criteria:string[]; checks:Check[]; kind:'code'|'research'|'plan'; skills?:string[]; references?:string[]; noProbe?:string; status:'ready'|'running'|'review'|'repair'|'accepted'|'blocked'; workspace?:string; activity?:{kind:'check'|'review';owner:{pid:number;coordinatorPid?:number;host:string;operation:string};checkId?:string}; owner?:{pid:number;coordinatorPid?:number;host:string;operation:string}; execution?:{kind:'routed-worker'|'coordinator-exception';authorization:string}; author?:string; family?:string; fingerprint?:string; output?:string; receipts:{id:string;code:number;fingerprint:string;artifact:string;isolated?:boolean}[]; review?:{family:string;fingerprint:string;findings:Finding[];artifact:string;coverage?:ReviewCoverage[]}; cycles:number; depth:'flash'|'deep'|'host'; blocked?:string; integrated?:string };
 export type Decision = { purpose?:'requirement'|'workflow'; id:string; question:string; criteria:Record<string,string>; state:unknown; revision:number; choice?:string; source?:string; confidence?:number; reason?:string; artifact?:string };
 export type TaskInput = Pick<Task,'id'|'title'|'goal'|'phase'|'deps'|'resources'|'criteria'|'checks'|'kind'|'skills'|'references'> & { noProbe?:string };
 export type ModelPool = { role:string; models:string[]; requiredInputs:string[]; requiresTools:boolean; notes:string };
@@ -22,16 +24,16 @@ export type Run = { schema:1; id:string; workspace:string; host:{kind:string;mod
 export type RunSummary = { id:string; status:Run['status']; intent:string; criteria:string[]; tasks:number; revision:number; continues?:string; acceptance?:Run['acceptance'] };
 export type ShapeOption = { id:string; summary:string; gains:string; costs:string };
 export type ShapeInput = { understanding:string; gaps?:string[]; pushback?:string[]; additions?:string[]; mentor?:string[]; options?:ShapeOption[]; recommendation?:string; clearCut?:string; questions?:string[]; affects?:string[]; chosen?:{option:string;quote:string} };
-export type ShapeRequest = { request:number; kind:'intent'|'feedback'; text:string };
-export type Shaped = { request:number; open:boolean; artifact:string; affects:string[]; questions:string[]; options:{id:string;summary:string}[]; recommendation?:string; chosen?:string };
+type ShapeRequest = { request:number; kind:'intent'|'feedback'; text:string };
+type Shaped = { request:number; open:boolean; artifact:string; affects:string[]; questions:string[]; options:{id:string;summary:string}[]; recommendation?:string; chosen?:string };
 export function invariant(value:unknown,message:string):asserts value { if(!value) throw new Error(message); }
 export const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
-export const idCheck=(id:string)=>invariant(typeof id==='string'&&/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(id),'Invalid identifier');
+const idCheck=(id:string)=>invariant(typeof id==='string'&&/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(id),'Invalid identifier');
 export const scopeCheckId='scope';
-export const taskCheckId=(id:string)=>{idCheck(id);invariant(id!==scopeCheckId,`Check id '${scopeCheckId}' is reserved for the built-in scope check; rename the registered check`);};
-export function validCommand(c:Command) { invariant(c&&typeof c.command==='string'&&c.command.length>0&&Array.isArray(c.args)&&c.args.every(a=>typeof a==='string'),'Commands require an executable and argument array'); }
-export function validRole(c:Check,taskId?:string) { invariant(c.role==='probe'||c.role==='guard',`Check ${c.id}${taskId?` on task ${taskId}`:''} requires role: 'probe' or 'guard'`); }
-export function validateContract(t:TaskInput) {
+const taskCheckId=(id:string)=>{idCheck(id);invariant(id!==scopeCheckId,`Check id '${scopeCheckId}' is reserved for the built-in scope check; rename the registered check`);};
+function validCommand(c:Command) { invariant(c&&typeof c.command==='string'&&c.command.length>0&&Array.isArray(c.args)&&c.args.every(a=>typeof a==='string'),'Commands require an executable and argument array'); }
+function validRole(c:Check,taskId?:string) { invariant(c.role==='probe'||c.role==='guard',`Check ${c.id}${taskId?` on task ${taskId}`:''} requires role: 'probe' or 'guard'`); }
+function validateContract(t:TaskInput) {
  for(const c of t.checks){taskCheckId(c.id);validRole(c,t.id);}
  if(t.kind==='code')invariant(t.checks.some(c=>c.role==='probe')||typeof t.noProbe==='string'&&!!t.noProbe.trim(),`Code task ${t.id} needs at least one probe check or noProbe explaining why no executable can detect the defect`);
 }
@@ -58,10 +60,7 @@ export class Store {
  async save(s:Run){const name=`revision-${String(s.revision).padStart(9,'0')}.json`,temp=join(this.root,randomUUID()+'.tmp');await writeFile(temp,JSON.stringify(s,null,2));await rename(temp,join(this.root,name));}
 }
 export function event(s:Run,type:string,detail:unknown){s.events.push({at:new Date().toISOString(),type,detail});}
-export function processAlive(pid:number){try{process.kill(pid,0);return true;}catch(e){return (e as NodeJS.ErrnoException).code!=='ESRCH';}}
-// A remote owner cannot be proven dead from here, so it counts as alive.
-export function ownerAlive(owner:{pid:number;coordinatorPid?:number;host:string}){return owner.host!==hostname()||[owner.pid,owner.coordinatorPid].some(pid=>pid!==undefined&&processAlive(pid));}
-export type OpenDelegation={id:string;pid?:number;host?:string;at:string;alive:boolean};
+type OpenDelegation={id:string;pid?:number;host?:string;at:string;alive:boolean};
 export function openDelegations(s:Run):OpenDelegation[]{
  const open=new Map<string,{pid?:number;host?:string;at:string}>();
  for(const e of s.events){const d=e.detail as {id:string;pid?:number;host?:string};if(e.type==='delegate-started')open.set(d.id,{pid:d.pid,host:d.host,at:e.at});else if(e.type==='delegate-finished')open.delete(d.id);}
@@ -88,7 +87,7 @@ export function requireShaped(s:Run,operation:string){
  invariant(!state.open,`${operation} waits for the user: the shape of request ${state.request.request} still has open questions or an unchosen option. Put them to the user, then run shape again with the answers or chosen`);
 }
 const strings=(value:unknown,field:string)=>{invariant(value===undefined||Array.isArray(value)&&value.every(v=>typeof v==='string'&&!!v.trim()),`shape ${field} must be an array of non-empty strings`);return (value as string[]|undefined)??[];};
-export function validateShape(s:Run,input:ShapeInput){
+function validateShape(s:Run,input:ShapeInput){
  invariant(input&&typeof input.understanding==='string'&&!!input.understanding.trim(),'shape needs understanding: the request restated in your own words, including what it is for');
  const options=input.options??[];
  invariant(Array.isArray(options)&&options.every(o=>o&&[o.id,o.summary,o.gains,o.costs].every(v=>typeof v==='string'&&!!v.trim())),'Each shape option needs id, summary, gains and costs');
@@ -102,7 +101,7 @@ export function validateShape(s:Run,input:ShapeInput){
  invariant(chosen===undefined||options.some(o=>o.id===chosen?.option)&&typeof chosen.quote==='string'&&!!chosen.quote.trim(),'chosen needs an option id from options and quote with the user\'s actual words');
  return {understanding:input.understanding.trim(),gaps:strings(input.gaps,'gaps'),pushback:strings(input.pushback,'pushback'),additions:strings(input.additions,'additions'),mentor:strings(input.mentor,'mentor'),options,recommendation:input.recommendation,clearCut:clearCut||undefined,questions:strings(input.questions,'questions'),affects,chosen};
 }
-export function recordShape(s:Run,shape:ReturnType<typeof validateShape>,artifact:string){
+function recordShape(s:Run,shape:ReturnType<typeof validateShape>,artifact:string){
  const state=shaping(s);invariant(state,'Nothing to shape: this run predates shaping and has no recorded request; record new user feedback with feedback');
  const open=shape.questions.length>0||shape.options.length>0&&!shape.chosen;
  const detail:Shaped={request:state.request.request,open,artifact,affects:shape.affects,questions:shape.questions,options:shape.options.map(o=>({id:o.id,summary:o.summary})),recommendation:shape.recommendation,chosen:shape.chosen?.option};
@@ -191,7 +190,7 @@ export function reviewCoverageDebt(s:Run,t:Task){return reviewObligations(s,t).f
  return matches.length!==1||!matches[0].evidence?.trim()||!(matches[0].status==='covered'||matches[0].status==='not-applicable'&&!ownObligation.test(required.id));
 });}
 export const hostAuthored=(t:Task)=>t.execution?.kind==='coordinator-exception';
-export const openBlocking=(t:Task)=>!!t.review?.findings.some(f=>f.blocking&&f.disposition==='open');
+const openBlocking=(t:Task)=>!!t.review?.findings.some(f=>f.blocking&&f.disposition==='open');
 const scopeEvents=(s:Run,id:string)=>s.events.filter(e=>(e.type==='scope-question'||e.type==='scope-answered')&&(e.detail as {id?:string}).id===id);
 export const askedScopePaths=(s:Run,id:string)=>new Set(scopeEvents(s,id).filter(e=>e.type==='scope-question').flatMap(e=>(e.detail as {outOfScope:string[]}).outOfScope));
 export function scopeQuestion(s:Run,t:Task){
@@ -200,12 +199,15 @@ export function scopeQuestion(s:Run,t:Task){
  return last?.type==='scope-question'?last.detail as {fingerprint:string;outOfScope:string[]}:undefined;
 }
 export function answerScopeQuestion(s:Run,t:Task,answer:'revert'|'amend'){if(scopeQuestion(s,t))event(s,'scope-answered',{id:t.id,answer});}
-export type ContractQuestion={question:string;check?:string};
+type ContractQuestion={question:string;check?:string};
 export function contractQuestions(s:Run,t:Task):ContractQuestion[]{
  const events=s.events.filter(e=>(e.type==='contract-question'||e.type==='contract-answered')&&(e.detail as {id?:string}).id===t.id);
  const answered=events.findLastIndex(e=>e.type==='contract-answered');
  return events.slice(answered+1).map(e=>{const d=e.detail as ContractQuestion;return {question:d.question,check:d.check};});
 }
+export const jevTaskContext=(s:Run,t:Task)=>({intent:s.intent,constraints:s.constraints,task:{id:t.id,goal:t.goal,criteria:t.criteria,resources:t.resources,kind:t.kind,checks:t.checks.map(c=>({id:c.id,role:c.role})),repairCycles:t.cycles}});
+export type UnstableCheck={id:string;checkId:string;fingerprint:string;failed:string;passed:string};
+export const unstableChecks=(s:Run,id:string,fingerprint:string|undefined)=>s.events.filter(e=>{const d=e.detail as UnstableCheck;return e.type==='check-unstable'&&d.id===id&&d.fingerprint===fingerprint;}).map(e=>e.detail as UnstableCheck);
 export function answerContractQuestions(s:Run,t:Task,answer:'stands'|'amend',reason:string){if(contractQuestions(s,t).length)event(s,'contract-answered',{id:t.id,answer,reason});}
 export function keptForUpstream(s:Run,t:Task){
  for(let i=s.events.length-1;i>=0;i--){const e=s.events[i],d=e.detail as {id?:string;reverified?:string[]};
@@ -244,7 +246,7 @@ export async function configure(store:Store,input:Partial<Run['config']>&{userIn
  for(const key of keys)s.config[key]=input[key]!;
  event(s,'configured',budget.length?{...s.config,userInstruction}:s.config);
 });}
-export function hostExceptionKey(s:Run,t:Task){return hash(JSON.stringify({host:s.host,intent:s.intent,constraints:s.constraints,repairPolicy:{flash:s.config.flashRepairCycles,deep:s.config.deepRepairCycles},task:{id:t.id,goal:t.goal,criteria:t.criteria,checks:t.checks,deps:t.deps,resources:t.resources,kind:t.kind,status:t.status,cycles:t.cycles,depth:t.depth,output:t.output}}));}
+function hostExceptionKey(s:Run,t:Task){return hash(JSON.stringify({host:s.host,intent:s.intent,constraints:s.constraints,repairPolicy:{flash:s.config.flashRepairCycles,deep:s.config.deepRepairCycles},task:{id:t.id,goal:t.goal,criteria:t.criteria,checks:t.checks,deps:t.deps,resources:t.resources,kind:t.kind,status:t.status,cycles:t.cycles,depth:t.depth,output:t.output}}));}
 export async function hostException(store:Store,input:{id:string;reason:'user-request'|'repair-escalation';evidence:string}){
  const authorization=randomUUID();await store.transaction(s=>{const t=taskOf(s,input.id);
  invariant(['ready','repair'].includes(t.status),'Exception requires an executable task');
@@ -290,7 +292,21 @@ export async function reconcileExecution(store:Store,input:{id:string;operation?
 }
 export async function result(store:Store,id:string,output:unknown){const artifact=await store.artifact(output);await store.transaction(async s=>{const t=taskOf(s,id);invariant(t.status==='running'&&t.workspace,'Task not running');invariant(t.execution,'Legacy claim lacks execution authorization; reconcile and requeue through worker routing');t.fingerprint=await fingerprint(t.workspace);t.output=artifact;t.review=undefined;t.status='review';t.owner=undefined;event(s,'result',{id,artifact,fingerprint:t.fingerprint});});}
 export async function execute(command:Command,cwd:string,onSpawn?:(pid:number)=>Promise<void>):Promise<{code:number;stdout:string;stderr:string}>{validCommand(command);return new Promise((done,fail)=>{const child=spawn(command.command,command.args,{cwd,shell:false,windowsHide:true,stdio:['ignore','pipe','pipe']});let stdout='',stderr='';child.stdout.on('data',d=>stdout+=d);child.stderr.on('data',d=>stderr+=d);let ownershipError:unknown;const ownership=Promise.resolve().then(()=>child.pid?onSpawn?.(child.pid):undefined).catch(error=>{ownershipError=error;child.kill();});child.on('error',fail);child.on('close',code=>{void ownership.then(()=>{if(ownershipError)fail(ownershipError);else done({code:code??1,stdout,stderr});});});});}
-export async function check(store:Store,id:string|undefined,checkId:string){const s=await store.load(),t=id?taskOf(s,id):undefined;const c=(t?t.checks:s.integrationChecks).find(c=>c.id===checkId);invariant(c,'Unknown check');const cwd=t?.workspace??s.workspace;const operation=id?await acquireActivity(store,id,'check',checkId):undefined;try{const before=await fingerprint(cwd);let receipt:{code:number;stdout:string;stderr:string};try{receipt=await execute(c,cwd,id&&operation?pid=>activitySpawned(store,id,operation,pid):undefined);}catch(error){receipt={code:1,stdout:"",stderr:"Check could not execute: "+(error as Error).message};}const after=await fingerprint(cwd);const artifact=await store.artifact({command:c,cwd,before,after,...receipt});await store.transaction(current=>{const target=id?taskOf(current,id):undefined;invariant(!target||target.workspace===cwd,'Task workspace changed during check');const list=target?target.receipts:current.integrationReceipts;const prior=list.findIndex(r=>r.id===checkId);if(prior>=0)list.splice(prior,1);list.push({id:checkId,code:receipt.code,fingerprint:before,artifact});event(current,'check',{id,checkId,code:receipt.code,artifact});});return {code:receipt.code,artifact,changed:before!==after};}finally{if(id&&operation)await releaseActivity(store,id,operation);}}
+export async function check(store:Store,id:string|undefined,checkId:string,options:{isolated?:boolean}={}){
+ const s=await store.load(),t=id?taskOf(s,id):undefined;const c=(t?t.checks:s.integrationChecks).find(c=>c.id===checkId);invariant(c,'Unknown check');
+ const cwd=t?.workspace??s.workspace,isolated=options.isolated===true,marker=isolated?{isolated:true}:{};
+ const operation=id?await acquireActivity(store,id,'check',checkId):undefined;
+ try{
+  const {before,after,receipt}=await withCheckLock(store.amalehDir,isolated?'exclusive':'shared',async()=>{
+   const before=await fingerprint(cwd);let receipt:{code:number;stdout:string;stderr:string};
+   try{receipt=await execute(c,cwd,id&&operation?pid=>activitySpawned(store,id,operation,pid):undefined);}catch(error){receipt={code:1,stdout:'',stderr:'Check could not execute: '+(error as Error).message};}
+   return {before,after:await fingerprint(cwd),receipt};
+  });
+  const artifact=await store.artifact({command:c,cwd,before,after,...marker,...receipt});
+  await store.transaction(current=>{const target=id?taskOf(current,id):undefined;invariant(!target||target.workspace===cwd,'Task workspace changed during check');const list=target?target.receipts:current.integrationReceipts;const prior=list.findIndex(r=>r.id===checkId);if(prior>=0)list.splice(prior,1);list.push({id:checkId,code:receipt.code,fingerprint:before,artifact,...marker});event(current,'check',{id,checkId,code:receipt.code,artifact,...marker});});
+  return {code:receipt.code,artifact,changed:before!==after,fingerprint:before,isolated};
+ }finally{if(id&&operation)await releaseActivity(store,id,operation);}
+}
 export async function addReviewCheck(store:Store,id:string,check:Check){await store.transaction(s=>{
  const t=taskOf(s,id);invariant(t.status==='review'&&!t.activity,'Review evidence checks require an idle task awaiting review');
  taskCheckId(check.id);validCommand(check);validRole(check,t.id);invariant(!t.checks.some(c=>c.id===check.id),'Duplicate check ID');
@@ -337,17 +353,17 @@ export async function resume(store:Store,host?:Run['host']){
 export async function packet(store:Store,id?:string){
  const s=await store.load(),t=id?taskOf(s,id):undefined;
  const decision=(d:Decision)=>({id:d.id,question:d.question,choice:d.choice,answer:d.choice?d.criteria[d.choice]:undefined,reason:d.reason,artifact:d.artifact});
- const common={run:s.id,host:s.host,intent:s.intent,criteria:s.criteria,constraints:s.constraints,artifactDirectory:join(store.root,'artifacts')};
+ const common={run:s.id,host:s.host,intent:s.intent,constraints:s.constraints,artifactDirectory:join(store.root,'artifacts')};
  if(t){
   const relevant=new Set([t.id]);const visit=(id:string)=>{for(const dep of taskOf(s,id).deps)if(!relevant.has(dep)){relevant.add(dep);visit(dep);}};visit(t.id);
-  return {...common,task:t,reopened:reopenReasons(s,t.id),decisions:s.decisions.filter(d=>{
+  return {...common,runOutcomes:s.criteria,task:t,otherTasks:s.tasks.filter(o=>o.id!==t.id).map(o=>({id:o.id,goal:o.goal,resources:o.resources,status:o.status})),reopened:reopenReasons(s,t.id),decisions:s.decisions.filter(d=>{
    const routing=(d.state as any)?.routing;
    // Unscoped intent/technical decisions are retained; never discard them by recency.
    return d.choice&&(!routing?.scope?.taskId||relevant.has(routing.scope.taskId));
   }).map(decision),dependencies:s.tasks.filter(d=>d.id!==t.id&&relevant.has(d.id)).map(d=>({id:d.id,goal:d.goal,criteria:d.criteria,status:d.status,output:d.output,review:d.review?.artifact,integrated:d.integrated})),
   durableState:join(store.root,`revision-${String(s.revision).padStart(9,'0')}.json`)};
  }
- return {...common,effort:s.effort,modelPools:s.modelPools,decisions:s.decisions.filter(d=>d.choice).map(decision),phaseStatus:s.tasks.map(t=>({id:t.id,phase:t.phase,status:t.status,deps:t.deps,integrated:!!t.integrated})),next:await next(store)};
+ return {...common,criteria:s.criteria,effort:s.effort,modelPools:s.modelPools,decisions:s.decisions.filter(d=>d.choice).map(decision),phaseStatus:s.tasks.map(t=>({id:t.id,phase:t.phase,status:t.status,deps:t.deps,integrated:!!t.integrated})),next:await next(store)};
 }
 export async function summarize(workspace:string,id:string):Promise<RunSummary>{const s=await new Store(workspace,id).load();return {id:s.id,status:s.status,intent:s.intent,criteria:s.criteria,tasks:s.tasks.length,revision:s.revision,continues:s.lineage?.continues,acceptance:s.acceptance};}
 
@@ -370,14 +386,24 @@ export function invalidateTree(s:Run,id:string,reason:string,feedback?:number,is
 }
 
 type ReopenInput={id:string;reason:string;check?:Check;noProbe?:string;feedback?:boolean};
+function noProbeOnce(s:Run,t:Task,noProbe:string){
+ const earlierNoProbe=s.events.find(e=>e.type==='reopen-probe'&&(e.detail as {id?:string;noProbe?:string}).id===t.id&&(e.detail as {noProbe?:string}).noProbe);
+ invariant(!noProbe||!earlierNoProbe,`${t.id} was already reopened once without a probe ("${(earlierNoProbe?.detail as {noProbe?:string})?.noProbe}"). A second defect the checks cannot see means the checks are missing something: register the probe that shows it as check`);
+}
+async function requireFailingProbes(probes:Check[],workspace:string|undefined){
+ if(!workspace)return;
+ for(const probe of probes.filter(c=>c.role==='probe')){
+  let code:number;try{code=(await execute(probe,workspace)).code;}catch{code=1;}
+  invariant(code!==0,`Probe check ${probe.id} already passes on the current checkout (${workspace}); a probe that passes there cannot detect the defect, so the reopen is refused`);
+ }
+}
 function validateReopen(s:Run,input:ReopenInput){
  const t=taskOf(s,input.id),noProbe=typeof input.noProbe==='string'?input.noProbe.trim():'';
  invariant(!(input.check&&noProbe),'Pass check or noProbe, not both');
  const fromFeedback=input.feedback===true?feedbackReopen(s,t.id):undefined;
  if(fromFeedback===undefined)requireShaped(s,'invalidate');
  if((t.output||t.review)&&fromFeedback===undefined)invariant(input.check||noProbe,`Reopening ${t.id} needs the probe that found the defect: pass check with the executable that shows it, so every later repair of this task runs it too, or noProbe naming why no executable can show it`);
- const earlierNoProbe=s.events.find(e=>e.type==='reopen-probe'&&(e.detail as {id?:string;noProbe?:string}).id===t.id&&(e.detail as {noProbe?:string}).noProbe);
- invariant(!noProbe||!earlierNoProbe,`${t.id} was already reopened once without a probe ("${(earlierNoProbe?.detail as {noProbe?:string})?.noProbe}"). A second defect the checks cannot see means the checks are missing something: register the probe that shows it as check`);
+ noProbeOnce(s,t,noProbe);
  const same=input.check&&t.checks.find(c=>c.id===input.check!.id);
  if(input.check){
   taskCheckId(input.check.id);validCommand(input.check);validRole(input.check,t.id);
@@ -387,10 +413,7 @@ function validateReopen(s:Run,input:ReopenInput){
 }
 export async function invalidate(store:Store,input:ReopenInput){
  const before=validateReopen(await store.load(),input);
- if(input.check?.role==='probe'&&before.t.workspace){
-  let code:number;try{code=(await execute(input.check,before.t.workspace)).code;}catch{code=1;}
-  invariant(code!==0,`Probe check ${input.check.id} already passes on the current checkout (${before.t.workspace}); a probe that passes there cannot detect the defect, so the reopen is refused`);
- }
+ await requireFailingProbes(input.check?[input.check]:[],before.t.workspace);
  await store.transaction(s=>{
  const {t,noProbe,fromFeedback,same}=validateReopen(s,input);
  if(input.check&&!same)t.checks.push({id:input.check.id,command:input.check.command,args:input.check.args,role:input.check.role});
@@ -401,26 +424,43 @@ const amendedFields=['title','goal','phase','deps','resources','criteria','check
 const changesOnly=(t:Task,next:TaskInput,allowed:readonly (typeof amendedFields[number])[])=>amendedFields.every(key=>allowed.includes(key)||JSON.stringify(t[key])===JSON.stringify(next[key]))&&(next.noProbe===undefined||next.noProbe===t.noProbe);
 const awaitingVerdict=(t:Task)=>!!t.output&&(t.status==='review'||t.status==='repair'&&hostAuthored(t));
 const failedAttempt=(t:Task)=>t.status==='review'&&(t.receipts.some(r=>r.code!==0&&r.id!==scopeCheckId)||openBlocking(t));
-export async function amend(store:Store,input:{id:string;reason:string;task:TaskInput;feedback?:boolean}){await store.transaction(s=>{
+type AmendInput={id:string;reason:string;task:TaskInput;feedback?:boolean;noProbe?:string};
+// See references/runtime.md#reopening-accepted-work
+const demandsMore=(t:Task,next:TaskInput)=>next.goal!==t.goal||JSON.stringify(next.criteria)!==JSON.stringify(t.criteria)||(next.checks??[]).some(c=>!t.checks.some(o=>o.id===c.id));
+function acceptedReopen(s:Run,input:AmendInput){
+ const t=taskOf(s,input.id),noProbe=typeof input.noProbe==='string'?input.noProbe.trim():'';
+ if(t.status!=='accepted'||input.feedback===true||!demandsMore(t,input.task)){invariant(!noProbe,`noProbe applies only when an amend without feedback asks accepted task ${t.id} for more: a new goal, new criteria or a new check`);return undefined;}
+ const probes=(input.task.checks??[]).filter(c=>c.role==='probe'&&!t.checks.some(o=>o.id===c.id));
+ invariant(!(probes.length&&noProbe),'Add a new probe check to task.checks or pass noProbe, not both');
+ invariant(probes.length||noProbe,`${t.id} is accepted, so asking it for more reopens delivered work as a defect the accepted checks missed. Add the probe that shows what the accepted work misses to task.checks, so every later repair of this task runs it, or pass noProbe naming why no executable can show it. A change the user asked for is feedback: shape it and amend with feedback`);
+ noProbeOnce(s,t,noProbe);
+ return {t,probes,noProbe};
+}
+export async function amend(store:Store,input:AmendInput){
+ const reopening=acceptedReopen(await store.load(),input);
+ await requireFailingProbes(reopening?.probes??[],reopening?.t.workspace);
+ await store.transaction(s=>{
  invariant(input.task.id===input.id,'Amend retains task identity');
  const fromFeedback=input.feedback===true?feedbackReopen(s,input.id):undefined;
  if(fromFeedback===undefined)requireShaped(s,'amend');
- const before=taskOf(s,input.id),answersQuestion=contractQuestions(s,before).length>0;
+ const before=taskOf(s,input.id),answersQuestion=contractQuestions(s,before).length>0,reopen=acceptedReopen(s,input);
  const keepsOutput=fromFeedback===undefined&&awaitingVerdict(before)&&!openBlocking(before)&&changesOnly(before,input.task,answersQuestion?['resources','checks']:['resources']);
  const charged=fromFeedback===undefined&&!answersQuestion&&!keepsOutput&&failedAttempt(before);
  answerScopeQuestion(s,before,'amend');
  answerContractQuestions(s,before,'amend',input.reason);
- invalidateTree(s,input.id,input.reason,fromFeedback,false);
+ invalidateTree(s,input.id,input.reason,fromFeedback,!!reopen);
  const t=taskOf(s,input.id);
  for(const key of amendedFields)(t as any)[key]=input.task[key];
  if(input.task.noProbe!==undefined)(t as any).noProbe=input.task.noProbe;
  validateTasks(s.tasks);validateContract(input.task);
  if(keepsOutput)t.status='review';
  if(charged)chargeCycle(s,t);
- event(s,'contract-amended',{id:input.id,reason:input.reason,keepsOutput,charged,answersQuestion});
-});}
+ if(reopen)for(const probe of reopen.probes.length?reopen.probes:[undefined])event(s,'reopen-probe',{id:t.id,check:probe,noProbe:reopen.noProbe||undefined});
+ event(s,'contract-amended',{id:input.id,reason:input.reason,keepsOutput,charged:charged||!!reopen,answersQuestion,...(reopen?{reopenedAccepted:true}:{})});
+ });
+}
 
-export type ParallelAction={task:string;action:string;workspace?:string;resources:string[];checks?:Check[];[key:string]:unknown};
+type ParallelAction={task:string;action:string;workspace?:string;resources:string[];checks?:Check[];[key:string]:unknown};
 export async function next(store:Store){
  const s=await store.load();
  const reviewed=s.status==='active'?s.tasks.filter(t=>t.status==='review'):[];

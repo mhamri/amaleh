@@ -16,6 +16,11 @@ function text(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function dollars(value: unknown): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return text(value);
+  return `$${value > 0 && value < 0.001 ? value.toPrecision(2) : value.toFixed(3)}`;
+}
+
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
@@ -119,6 +124,7 @@ function renderHealth(value: unknown): string {
     ['Host action records', `${text(metrics.hostActionRecords)} (${text(metrics.hostActionsPerTask)} per task)`],
     ['Coordinator operations', `${text(metrics.coordinatorOperations)} (${text(metrics.coordinatorOperationsPerTask)} per task)`],
     ['Contract questions', text(metrics.contractQuestions)],
+    ['Checks failing only under load', text(metrics.unstableChecks)],
     ['State revisions', text(metrics.revisions)],
     ['Retries', text(metrics.retries)],
     ['Worker families', families.join(', ')],
@@ -146,8 +152,8 @@ function speedTable(value: unknown): string {
 const spendRowLimit = 10;
 function spendTable(title: string, value: unknown): string {
   const rows = Array.isArray(value) ? value.map(record).slice(0, spendRowLimit) : [];
-  return table(title, ['Name', 'Est. $', 'Calls', 'Turns', 'New input', 'Cached', 'Output'],
-    rows.map((r) => [text(r.key), text(r.estimatedCost), text(r.calls), text(r.turns), text(r.inputTokens), text(r.cacheReadTokens), text(r.outputTokens)]));
+  return table(title, ['Name', 'Est. $', 'Priced from', 'pi est. $', 'Calls', 'Turns', 'New input', 'Cached', 'Output'],
+    rows.map((r) => [text(r.key), text(r.estimatedCost), text(r.costSource), text(r.piEstimate), text(r.calls), text(r.turns), text(r.inputTokens), text(r.cacheReadTokens), text(r.outputTokens)]));
 }
 
 function slowSection(value: unknown): string {
@@ -173,6 +179,7 @@ function renderNext(value: unknown): string {
 function renderDiagnose(value: unknown): string {
   const v = record(value), state = record(v.state), runDiagnostics = record(v.diagnostics);
   const totals = record(runDiagnostics.totals), health = record(v.health), ledger = record(v.hostActions);
+  const spendTotal = record(record(record(health.metrics).spend).total);
   const phases = Array.isArray(state.phaseStatus) ? state.phaseStatus.map(record) : [];
   const records = Array.isArray(ledger.records) ? ledger.records.length : 0;
   const unreadable = Array.isArray(ledger.unreadable) ? ledger.unreadable.length : 0;
@@ -186,7 +193,9 @@ function renderDiagnose(value: unknown): string {
     ['Next action', text(record(state.next).action)],
     ['Tasks', phases.length ? phases.map((phase) => `${text(phase.id)}:${text(phase.status)}`).join(', ') : 'none planned'],
     ['Operations', `${text(totals.operations)} total, ${text(totals.failures)} failed, ${text(totals.unfinished)} unfinished`],
-    ['Cost', `${text(totals.reportedCost)} reported, ${text(totals.estimatedCost)} estimated`],
+    ['Cost', spendTotal.estimatedCost === undefined
+      ? `${dollars(totals.reportedCost)} reported, ${dollars(totals.estimatedCost)} estimated by pi`
+      : `${dollars(totals.reportedCost)} reported, ${dollars(spendTotal.estimatedCost)} estimated from ${text(spendTotal.costSource)} (pi estimated ${dollars(totals.estimatedCost)})`],
     ['Tokens', `${text(totals.inputTokens)} in / ${text(totals.outputTokens)} out`],
     ['Host actions', `${records} recorded, ${unreadable} unreadable`],
     ['Health', healthSummary],

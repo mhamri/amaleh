@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile, readdir, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, readdir, readFile, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { piRun, requestJson, guidanceBlock, handoffFile, reviewReport, promptLimit, transientProvider } from '../scripts/adapters.ts';
+import { execFileSync } from 'node:child_process';
+import { piRun, requestJson, guidanceBlock, handoffFile, reviewReport, promptLimit, transientProvider, trackedContent } from '../scripts/adapters.ts';
 import { Store } from '../scripts/core.ts';
 import { jsRuntime, onPath } from '../scripts/runtime.ts';
 import { diagnostics, trace, readSpeedSamples } from '../scripts/telemetry.ts';
@@ -143,3 +144,13 @@ test('runtime resolution prefers explicit overrides, then bun, then the running 
  delete process.env.AMALEH_NODE;assert.match(await jsRuntime(),/bun/);
  process.env.PATH='';assert.equal(await jsRuntime(),process.execPath);
  assert.equal(await onPath('definitely-not-an-installed-executable'),undefined);});
+
+test('tracked content changes when an untracked link points somewhere else, even at identical bytes',async t=>{
+ const dir=await mkdtemp(join(tmpdir(),'amaleh-tracked-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ execFileSync('git',['init','-q'],{cwd:dir});
+ await writeFile(join(dir,'a.txt'),'same');await writeFile(join(dir,'b.txt'),'same');
+ try{await symlink('a.txt',join(dir,'link'));}catch(e){t.skip(`this machine cannot create a symbolic link: ${(e as Error).message}`);return;}
+ const before=await trackedContent(dir);
+ await rm(join(dir,'link'));await symlink('b.txt',join(dir,'link'));
+ assert.notEqual(await trackedContent(dir),before);
+});

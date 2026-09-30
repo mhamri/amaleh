@@ -5,11 +5,11 @@ import { dirname, join, resolve, sep } from 'node:path';
 import * as core from './core.ts';
 import { resolvedDefault, type BaseCheck } from './base.ts';
 
-export const ignoreProbe='.amaleh/worktrees/probe';
-export const ignoreLine='/.amaleh/';
-export const ignoreMessage='Ignore Amaleh run state and task worktrees';
-export const worktreeFolderName=join('.amaleh','worktrees');
-export const branchPrefix='amaleh/';
+const ignoreProbe='.amaleh/worktrees/probe';
+const ignoreLine='/.amaleh/';
+const ignoreMessage='Ignore Amaleh run state and task worktrees';
+const worktreeFolderName=join('.amaleh','worktrees');
+const branchPrefix='amaleh/';
 
 type GitRun={code:number;stdout:string;stderr:string};
 const git=(cwd:string,args:string[]):Promise<GitRun>=>new Promise((done,fail)=>execFile('git',args,{cwd,maxBuffer:104857600,windowsHide:true},(error,stdout,stderr)=>{
@@ -30,7 +30,7 @@ async function workTree(workspace:string):Promise<string>{
  return dir;
 }
 
-export type DefaultBranch={remote:string;branch:string}|{skip:string}|{fail:string};
+type DefaultBranch={remote:string;branch:string}|{skip:string}|{fail:string};
 async function defaultOf(dir:string,base?:BaseCheck):Promise<DefaultBranch>{
  if(base?.status==='verified')return {remote:base.remote,branch:base.branch};
  if(base?.status==='unverified'||base?.status==='override')return {skip:base.reason};
@@ -40,7 +40,7 @@ async function defaultOf(dir:string,base?:BaseCheck):Promise<DefaultBranch>{
  return {remote:r.remote,branch:r.branch};
 }
 
-export type WorktreeFolderCheck={status:'committed';commit:string}|{status:'ignored'}|{status:'unverified';reason:string};
+type WorktreeFolderCheck={status:'committed';commit:string}|{status:'ignored'}|{status:'unverified';reason:string};
 export async function ensureWorktreeFolder(workspace:string,base?:BaseCheck):Promise<WorktreeFolderCheck>{
  let dir:string;
  try{dir=await realpath(workspace);}catch(error){return {status:'unverified',reason:`The workspace ${workspace} cannot be read (${(error as Error).message}), so no ignore rule could be verified`};}
@@ -70,7 +70,7 @@ export async function recordWorktreeFolder(store:core.Store,check:WorktreeFolder
  await store.transaction(s=>core.event(s,'worktree-folder',check));
 }
 
-export type TaskWorktree={id:string;workspace:string;branch:string;base:string;created:boolean};
+type TaskWorktree={id:string;workspace:string;branch:string;base:string;created:boolean};
 export async function taskWorktree(store:core.Store,input:{id:string;base?:string}):Promise<TaskWorktree>{
  const state=await store.load(),dir=await workTree(state.workspace);
  const id=typeof input?.id==='string'?input.id.trim():'';
@@ -93,8 +93,8 @@ export async function taskWorktree(store:core.Store,input:{id:string;base?:strin
  return {id,workspace:path,branch,base:sha,created:true};
 }
 
-export type WorktreeTask={run:string;id:string;status:string;integrated:boolean};
-export type WorktreeEntry={path:string;branch:string|null;head:string;main:boolean;dirty:boolean;adds:boolean|null;missing:boolean;task:WorktreeTask|null;reason?:string};
+type WorktreeTask={run:string;id:string;status:string;integrated:boolean};
+type WorktreeEntry={path:string;branch:string|null;head:string;main:boolean;dirty:boolean;adds:boolean|null;mergedVia?:string;missing:boolean;task:WorktreeTask|null;reason?:string};
 export type WorktreeListing={defaultBranch:string|null;worktrees:WorktreeEntry[];reason?:string};
 
 async function taskOwners(dir:string){
@@ -124,6 +124,22 @@ async function defaultTip(dir:string):Promise<{label:string|null;tip?:string;tre
  return {label:name,tip,tree:trim(await git(dir,['rev-parse',`${tip}^{tree}`]))};
 }
 
+type DefaultTip={label:string;tip:string;tree:string};
+const addsTo=async(dir:string,target:DefaultTip,commit:string)=>{
+ const merge=await git(dir,['merge-tree','--write-tree',target.tip,commit]);
+ if(merge.code===0)return out(merge)[0].trim()!==target.tree;
+ if(merge.code===1)return true;
+ throw new Error(`git merge-tree --write-tree ${target.label} ${commit} failed: ${failure(merge)}`);
+};
+async function mergedContainer(dir:string,target:DefaultTip,head:string,own:string|null,known:Map<string,boolean>){
+ const refs=out(await git(dir,['for-each-ref','--contains',head,'--format=%(refname)','refs/heads','refs/remotes'])).map(r=>r.trim()).filter(r=>r&&r!==`refs/heads/${own}`&&!r.endsWith('/HEAD'));
+ for(const ref of refs){
+  if(!known.has(ref))known.set(ref,await addsTo(dir,target,ref).catch(()=>true));
+  if(known.get(ref)===false)return ref.replace(/^refs\/(heads|remotes)\//,'');
+ }
+ return undefined;
+}
+
 export async function listWorktrees(workspace:string):Promise<WorktreeListing>{
  const dir=await workTree(workspace);
  const listed=await git(dir,['worktree','list','--porcelain']);
@@ -138,23 +154,23 @@ export async function listWorktrees(workspace:string):Promise<WorktreeListing>{
   else if(line.startsWith('branch '))entry.branch=line.slice('branch '.length).replace(/^refs\/heads\//,'');
   else if(line==='detached')entry.branch=null;
  }
- const target=await defaultTip(dir),owners=await taskOwners(dir);
+ const target=await defaultTip(dir),owners=await taskOwners(dir),containers=new Map<string,boolean>();
  for(const entry of entries){
   entry.missing=!existsSync(entry.path);
   if(entry.missing)entry.reason='The worktree directory is missing, so it can be neither clean nor compared with the default branch';
   else entry.dirty=trim(await git(entry.path,['status','--porcelain']))!=='';
   entry.task=owners.get(key(entry.path))?.[0]?.task??null;
   if(entry.missing)continue;
-  if(!target.tip){entry.adds=null;entry.reason=target.reason??'No remote default branch to compare this worktree with';continue;}
-  const merge=await git(dir,['merge-tree','--write-tree',target.tip,entry.head]);
-  if(merge.code===0)entry.adds=out(merge)[0].trim()!==target.tree;
-  else if(merge.code===1)entry.adds=true;
-  else{entry.adds=null;entry.reason=`git merge-tree --write-tree ${target.label} ${entry.head} failed: ${failure(merge)}`;}
+  if(!target.tip||!target.label||target.tree===undefined){entry.adds=null;entry.reason=target.reason??'No remote default branch to compare this worktree with';continue;}
+  const tip={label:target.label,tip:target.tip,tree:target.tree};
+  try{entry.adds=await addsTo(dir,tip,entry.head);}catch(error){entry.adds=null;entry.reason=(error as Error).message;continue;}
+  const via=entry.adds?await mergedContainer(dir,tip,entry.head,entry.branch,containers):undefined;
+  if(via){entry.adds=false;entry.mergedVia=via;}
  }
  return {defaultBranch:target.label,worktrees:entries,...(target.reason?{reason:target.reason}:{})};
 }
 
-export type CleanResult={path:string;branch:string|null;branchDeleted:boolean};
+type CleanResult={path:string;branch:string|null;branchDeleted:boolean};
 
 async function pruneEmptyFolders(dir:string,path:string){
  const root=key(join(dir,worktreeFolderName));

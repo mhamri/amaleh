@@ -198,6 +198,27 @@ test('worktrees reports every worktree of the project with merged and dirty stat
  assert.equal(entryOf(withoutRemote,localOne.workspace)!.dirty,false);
 });
 
+test('a task branch whose run branch was squash-merged adds nothing, even where later tasks rewrote its lines',{timeout:120000},async t=>{
+ const {root,work}=await repo(t,'stacked');
+ const early=join(work,'.amaleh','worktrees','run','early');
+ git(work,'worktree','add','-q','-b','amaleh/run/early',early,'origin/main');
+ writeFileSync(join(early,'app.txt'),'early\n');git(early,'commit','-q','-am','early task');
+ git(work,'branch','feat/run','amaleh/run/early');
+ const later=join(root,'later');git(work,'worktree','add','-q',later,'feat/run');
+ writeFileSync(join(later,'app.txt'),'later\n');git(later,'commit','-q','-am','later task rewrites the same line');
+ const rival=join(root,'rival');
+ execFileSync('git',['clone','-q',join(root,'origin.git'),rival],{stdio:'ignore'});
+ writeFileSync(join(rival,'app.txt'),'later\n');git(rival,'commit','-q','-am','squash of feat/run');git(rival,'push','-q','origin','main');
+ const listing=await listWorktrees(work);
+ const entry=entryOf(listing,early)!;
+ assert.equal(entry.adds,false,'the early task conflicts with main only because a later task in the same run rewrote its line');
+ assert.equal(entry.mergedVia,'feat/run');
+ git(work,'worktree','remove',later);git(work,'branch','-D','feat/run');
+ const orphan=entryOf(await listWorktrees(work),early)!;
+ assert.equal(orphan.adds,true,'without a merged container the conflicting branch still adds');
+ assert.equal(orphan.mergedVia,undefined);
+});
+
 test('clean-worktrees removes only what the user named and only clean, integrated worktrees',{timeout:120000},async t=>{
  const {work}=await repo(t,'clean');
  const store=await started(work,'r1');

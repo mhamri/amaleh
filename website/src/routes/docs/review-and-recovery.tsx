@@ -222,7 +222,7 @@ export default function DocsReviewAndRecovery() {
           </p>
           <div class="alert alert-soft alert-warning rounded-box mt-6 border border-line text-sm">
             <span>
-              Costs are separated into OpenRouter response-reported cost and pi local estimates. Neither is a reconciled billing ledger, and missing usage is unknown, not proof of zero cost.
+              Costs are separated into OpenRouter response-reported cost for Jev calls and estimated cost for pi worker and reviewer calls. Each pi call is priced from the OpenRouter catalog card that routing recorded before it started, and keeps pi’s local estimate only when no card exists. Neither is a reconciled billing ledger, and missing usage is unknown, not proof of zero cost.
             </span>
           </div>
           <p class="mt-6 text-base leading-relaxed">

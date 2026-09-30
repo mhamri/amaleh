@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {taskDiff,piRun} from '../scripts/adapters.ts';
 import {spend,trace,diagnostics} from '../scripts/telemetry.ts';
+import {catalogCost,priceBook} from '../scripts/pricing.ts';
 import {processHealth} from '../scripts/host-diagnostics.ts';
 import * as c from '../scripts/core.ts';
 import {clearCut} from './execution-fixture.ts';
@@ -62,6 +63,45 @@ test('spend splits estimated cost and cached tokens by model, role and task',asy
  assert.deepEqual(costs.byModel.map(r=>[r.key,r.estimatedCost]),[['moonshotai/kimi-k3',2],['xiaomi/mimo-v2.5',.75]]);
  assert.deepEqual(costs.byTask.map(r=>[r.key,r.calls]),[['hero',2],['docs',1]]);
  assert.deepEqual(costs.byRole.map(r=>r.key),['worker','reviewer']);
+ assert.deepEqual([costs.total?.estimatedCost,costs.total?.piEstimate,costs.total?.costSource],[2.75,2.75,'pi-estimate'],'without a recorded OpenRouter price, spend falls back to the pi estimate and says so');
+});
+
+test('a malformed usage row counts as zero, never as negative money',async t=>{
+ const root=await temp(t,'amaleh-spend-malformed-');
+ const tr=await trace(root,'pi',{model:'m',readOnly:false,sessionDir:join(root,'sessions','hero')});
+ await tr.write('usage',{inputTokens:-2_000_000,outputTokens:'many',cacheRead:null,cost:-0.5,costSource:'pi-estimate'});await tr.end('success');
+ const costs=spend((await diagnostics(root)).operations,()=>({prompt:'0.000001',completion:'0.000001'}));
+ assert.deepEqual([costs.total?.estimatedCost,costs.total?.piEstimate,costs.total?.inputTokens,costs.total?.outputTokens],[0,0,0,0]);
+});
+
+test('catalog cost prices every token kind at its own OpenRouter rate',()=>{
+ const turn={inputTokens:1_000_000,cacheRead:2_000_000,cacheWrite:500_000,outputTokens:100_000};
+ assert.equal(catalogCost({prompt:'0.000003',completion:'0.000015',input_cache_read:'0.0000003',input_cache_write:'0.00000375'},[turn,turn]),2*(3+.6+1.875+1.5));
+ assert.equal(catalogCost({prompt:'0.000001',completion:'0.000002'},[turn]),1+2+.5+.2,'cache tokens without their own rate cost the prompt rate');
+ assert.equal(catalogCost({prompt:'0',completion:'0',request:'0.01'},[turn,turn]),.02);
+ assert.equal(catalogCost({prompt:'0',completion:'0'},[turn]),0,'a free model costs nothing');
+ assert.equal(catalogCost({prompt:'-1',completion:'-1'},[turn]),undefined,'a router placeholder price is not a price');
+ assert.equal(catalogCost(undefined,[turn]),undefined);
+});
+
+test('each call is priced at the quote routing recorded before it started',()=>{
+ const book=priceBook([{at:'2026-09-28T05:00:00.000Z',model:'m',pricing:{prompt:'1',completion:'1'}},{at:'2026-09-28T07:00:00.000Z',model:'m',pricing:{prompt:'2',completion:'2'}}]);
+ assert.equal(book('m','2026-09-28T06:00:00.000Z')?.prompt,'1');
+ assert.equal(book('m','2026-09-28T08:00:00.000Z')?.prompt,'2');
+ assert.equal(book('m','2026-09-28T04:00:00.000Z')?.prompt,'1','a call traced before its first quote uses the earliest quote');
+ assert.equal(book('other','2026-09-28T06:00:00.000Z'),undefined);
+});
+
+test('health prices spend from the OpenRouter catalog cards its route decisions recorded',async t=>{
+ const dir=await temp(t,'amaleh-catalog-spend-');
+ const store=await c.start(dir,{shape:clearCut,id:'priced',host:{kind:'claude',model:'claude-opus-5-5'},intent:'Price the run',criteria:['Run priced']});
+ const cards=[{id:'stealth/free-alpha',pricing:{prompt:'0',completion:'0'}},{id:'xiaomi/mimo-v2.6-flash',pricing:{prompt:'0.00000014',completion:'0.00000028',input_cache_read:'0.0000000028'}}];
+ await store.transaction(s=>{s.decisions.push({id:'route-1',question:'route',criteria:{model_0:'a',model_1:'b'},state:{routing:{models:{model_0:cards[0].id,model_1:cards[1].id}},catalog:{verifiedAt:new Date().toISOString(),models:cards}},revision:s.revision,choice:'model_1',source:'runtime:round-robin'});c.event(s,'model-routed',{id:'route-1'});});
+ const call=async(model:string,cost:number)=>{const tr=await trace(store.root,'pi',{model,readOnly:false,sessionDir:join(store.root,'sessions','hero')});await tr.write('usage',{inputTokens:1_000_000,outputTokens:1_000_000,cacheRead:1_000_000,cost,costSource:'pi-estimate'});await tr.end('success');};
+ await call('stealth/free-alpha',4.95);await call('xiaomi/mimo-v2.6-flash',4.95);await call('unrouted/model',.5);
+ const health=await processHealth(store) as any,rows=Object.fromEntries(health.metrics.spend.byModel.map((r:any)=>[r.key,[r.estimatedCost,r.piEstimate,r.costSource]]));
+ assert.deepEqual(rows,{'stealth/free-alpha':[0,4.95,'openrouter-catalog'],'xiaomi/mimo-v2.6-flash':[.423,4.95,'openrouter-catalog'],'unrouted/model':[.5,.5,'pi-estimate']});
+ assert.deepEqual([health.metrics.spend.total.estimatedCost,health.metrics.spend.total.costSource],[.923,'mixed']);
 });
 
 test('health warns when the deep model takes most of the spend, and stays quiet otherwise',async t=>{

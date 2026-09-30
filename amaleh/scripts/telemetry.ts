@@ -2,6 +2,7 @@ import { mkdir, writeFile, readdir, readFile, appendFile } from 'node:fs/promise
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
+import { catalogCost, type PriceBook } from './pricing.ts';
 
 const secrets = new Set<string>();
 export function registerSecret(value:string){if(value.length>7)secrets.add(value);}
@@ -25,10 +26,10 @@ export async function trace(root:string|undefined,operation:string,metadata:unkn
  };
  await write('started');return {id,write,end:(outcome,data)=>write('finished',{outcome,...(data&&typeof data==='object'?data:{detail:data})})};
 }
-export type SpeedRole='worker'|'reviewer';
-export type SpeedSample={at:string;model:string;role:SpeedRole;ms:number;outputTokens:number;failed?:boolean};
-export type ModelSpeed={model:string;role:SpeedRole;calls:number;failures:number;averageMinutes:number;longestMinutes:number;outputTokensPerCall:number;outputTokensPerSecond:number};
-export type SlowModel=ModelSpeed&{medianMinutes:number;times:number};
+type SpeedRole='worker'|'reviewer';
+type SpeedSample={at:string;model:string;role:SpeedRole;ms:number;outputTokens:number;failed?:boolean};
+type ModelSpeed={model:string;role:SpeedRole;calls:number;failures:number;averageMinutes:number;longestMinutes:number;outputTokensPerCall:number;outputTokensPerSecond:number};
+type SlowModel=ModelSpeed&{medianMinutes:number;times:number};
 const round1=(n:number)=>Math.round(n*10)/10;
 const median=(values:number[])=>{const sorted=[...values].sort((a,b)=>a-b),mid=sorted.length>>1;return sorted.length%2?sorted[mid]:(sorted[mid-1]+sorted[mid])/2;};
 type Operation={operation:string;outcome:string;started:string;elapsedMs:number;metadata:any;events:{stage:string;data:any}[]};
@@ -60,29 +61,38 @@ export async function readSpeedSamples(amalehDir:string):Promise<SpeedSample[]>{
  return text.split('\n').flatMap(line=>{try{const s=JSON.parse(line);return validSample(s)?[s]:[];}catch{return [];}});
 }
 export async function recentSpeeds(amalehDir:string,windowMs:number,now=Date.now()){return modelSpeed((await readSpeedSamples(amalehDir)).filter(s=>now-Date.parse(s.at)<=windowMs));}
-export function slowModels(speeds:ModelSpeed[],minimumCalls=3,factor=2):SlowModel[]{
+// See references/runtime.md#diagnostic-traces
+export function slowModels(speeds:ModelSpeed[],peers:readonly string[],minimumCalls=3,factor=2):SlowModel[]{
  return (['worker','reviewer'] as const).flatMap(role=>{
-  const measured=speeds.filter(s=>s.role===role&&s.calls>=minimumCalls);if(measured.length<3)return [];
-  const typical=median(measured.map(s=>s.averageMinutes));
-  return measured.filter(s=>s.averageMinutes>=factor*typical).map(s=>({...s,medianMinutes:round1(typical),times:round1(s.averageMinutes/typical)}));
+  const measured=speeds.filter(s=>s.role===role&&s.calls>=minimumCalls&&peers.includes(s.model));if(measured.length<3)return [];
+  return measured.flatMap(s=>{
+   const typical=median(measured.filter(other=>other!==s).map(other=>other.averageMinutes));
+   return s.averageMinutes>=factor*typical?[{...s,medianMinutes:round1(typical),times:round1(s.averageMinutes/typical)}]:[];
+  });
  });
 }
-export type SpendRow={key:string;calls:number;turns:number;estimatedCost:number;inputTokens:number;cacheReadTokens:number;outputTokens:number};
+type SpendTally={key:string;calls:number;pricedCalls:number;turns:number;estimatedCost:number;piEstimate:number;inputTokens:number;cacheReadTokens:number;cacheWriteTokens:number;outputTokens:number};
 const reviewSession=/-review-\d+$/;
-export function spend(operations:Operation[]){
- const tables={byModel:new Map<string,SpendRow>(),byRole:new Map<string,SpendRow>(),byTask:new Map<string,SpendRow>()};
+const dollars=(n:number)=>Math.round(n*1000)/1000;
+const amount=(value:unknown)=>{const n=Number(value);return Number.isFinite(n)&&n>0?n:0;};
+const costSource=(t:SpendTally)=>t.pricedCalls===t.calls?'openrouter-catalog':t.pricedCalls?'mixed':'pi-estimate';
+// See references/runtime.md#diagnostic-traces
+export function spend(operations:Operation[],prices:PriceBook=()=>undefined){
+ const tables={byModel:new Map<string,SpendTally>(),byRole:new Map<string,SpendTally>(),byTask:new Map<string,SpendTally>(),total:new Map<string,SpendTally>()};
  for(const o of operations.filter(o=>o.operation==='pi')){
-  const usage=o.events.filter(e=>e.stage==='usage'),session=String(o.metadata?.sessionDir??'').split(/[\\/]/).pop()||'unknown';
-  const keys={byModel:String(o.metadata?.model??'unknown'),byRole:o.metadata?.readOnly?'reviewer':'worker',byTask:session.replace(reviewSession,'')};
+  const usage=o.events.filter(e=>e.stage==='usage').map(e=>e.data),model=String(o.metadata?.model??'unknown'),session=String(o.metadata?.sessionDir??'').split(/[\\/]/).pop()||'unknown';
+  const turns=usage.map(u=>({inputTokens:amount(u?.inputTokens),outputTokens:amount(u?.outputTokens),cacheRead:amount(u?.cacheRead),cacheWrite:amount(u?.cacheWrite)}));
+  const piEstimate=usage.reduce((total,u)=>total+amount(u?.cost),0),catalog=catalogCost(prices(model,o.started),turns);
+  const keys={byModel:model,byRole:o.metadata?.readOnly?'reviewer':'worker',byTask:session.replace(reviewSession,''),total:'total'};
   for(const [table,key] of Object.entries(keys) as [keyof typeof tables,string][]){
-   const row=tables[table].get(key)??{key,calls:0,turns:0,estimatedCost:0,inputTokens:0,cacheReadTokens:0,outputTokens:0};
-   row.calls++;row.turns+=usage.length;
-   for(const u of usage){row.estimatedCost+=Number(u.data?.cost)||0;row.inputTokens+=Number(u.data?.inputTokens)||0;row.cacheReadTokens+=Number(u.data?.cacheRead)||0;row.outputTokens+=Number(u.data?.outputTokens)||0;}
+   const row=tables[table].get(key)??{key,calls:0,pricedCalls:0,turns:0,estimatedCost:0,piEstimate:0,inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0};
+   row.calls++;row.turns+=turns.length;row.estimatedCost+=catalog??piEstimate;row.piEstimate+=piEstimate;if(catalog!==undefined)row.pricedCalls++;
+   for(const u of turns){row.inputTokens+=u.inputTokens;row.cacheReadTokens+=u.cacheRead;row.cacheWriteTokens+=u.cacheWrite;row.outputTokens+=u.outputTokens;}
    tables[table].set(key,row);
   }
  }
- const sorted=(m:Map<string,SpendRow>)=>[...m.values()].map(r=>({...r,estimatedCost:Math.round(r.estimatedCost*1000)/1000})).sort((a,b)=>b.estimatedCost-a.estimatedCost);
- return {byModel:sorted(tables.byModel),byRole:sorted(tables.byRole),byTask:sorted(tables.byTask)};
+ const rows=(m:Map<string,SpendTally>)=>[...m.values()].map(t=>{const {pricedCalls:_,...r}=t;return {...r,estimatedCost:dollars(t.estimatedCost),piEstimate:dollars(t.piEstimate),costSource:costSource(t)};}).sort((a,b)=>b.estimatedCost-a.estimatedCost);
+ return {byModel:rows(tables.byModel),byRole:rows(tables.byRole),byTask:rows(tables.byTask),total:rows(tables.total)[0]};
 }
 const emptyTotals={operations:0,unfinished:0,failures:0,reportedCost:0,estimatedCost:0,inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0};
 const sum=(rows:any[],field:string)=>rows.reduce((total,r)=>total+(Number(r.data[field])||0),0);

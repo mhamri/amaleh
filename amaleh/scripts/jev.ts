@@ -3,17 +3,20 @@
 // sees these calls; they are recorded as worker-jev events for health auditing.
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Store, event } from './core.ts';
+import { Store, event, jevTaskContext } from './core.ts';
 import { jevModel } from './config.ts';
 import { requestJson, choiceAnswer } from './adapters.ts';
 
-export type JevAnswer = { choice?:string; confidence?:number; source:string; reason?:string };
+type JevAnswer = { choice?:string; confidence?:number; source:string; reason?:string };
 
 export async function jevAsk(store:Store,input:{taskId?:string;question:string;options:string[]|Record<string,string>;state?:unknown},fetcher?:typeof fetch):Promise<JevAnswer>{
  const criteria=Array.isArray(input.options)?Object.fromEntries(input.options.map(o=>[o,o])):input.options;
  if(!input.question||Object.keys(criteria).length<2)throw new Error('Jev ask needs a question and at least two options');
- try{await store.load();}catch(e){throw new Error(`No Amaleh run at ${store.root}: pass the run's workspace, not the task workspace. ${(e as Error).message}`);}
- const raw=await requestJson('https://openrouter.ai/api/alpha/decisions',{model:await jevModel(),state:input.state??{},questions:{selection:{type:'choice',instructions:input.question,criteria}}},fetcher,store.root);
+ let s:Awaited<ReturnType<Store['load']>>;
+ try{s=await store.load();}catch(e){throw new Error(`No Amaleh run at ${store.root}: pass the run's workspace, not the task workspace. ${(e as Error).message}`);}
+ const task=input.taskId?s.tasks.find(t=>t.id===input.taskId):undefined;
+ const state={...(task?jevTaskContext(s,task):{}),...(input.state===undefined?{}:{workerState:input.state})};
+ const raw=await requestJson('https://openrouter.ai/api/alpha/decisions',{model:await jevModel(),state,questions:{selection:{type:'choice',instructions:input.question,criteria}}},fetcher,store.root);
  let answer:JevAnswer;try{answer=choiceAnswer(raw,criteria);}catch(e){answer={source:'invalid-jev-response',reason:(e as Error).message};}
  await store.transaction(s=>event(s,'worker-jev',{taskId:input.taskId,question:input.question,...answer})).catch(()=>{});
  return answer;

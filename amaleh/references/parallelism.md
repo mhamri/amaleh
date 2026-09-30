@@ -11,7 +11,7 @@ Read `next.parallel` alongside the focus action:
 - `independent`: a conservative batch of checks/reviews in distinct, nonconflicting task workspaces, within currently available capacity. The focus may be included: execute each listed operation once, not once for the focus and again for the batch.
 - `running` and `available`: execution ownership and remaining shared slots. A suggested batch is not a reservation; runtime guards recheck at execution.
 
-Dispatch the batch concurrently and await individual outcomes. Within a single task, run its registered checks sequentially: builds/tests may share generated files. Across independent isolated checkouts, the same lint/build command can overlap. Do not use a blanket shared resource name for unrelated work; resource claims should describe actual shared state and coupled changes.
+Dispatch the batch concurrently and await individual outcomes. Within a single task, run its registered checks sequentially: builds/tests may share generated files. Across independent isolated checkouts, the same lint/build command can overlap. Overlapping suites can push a timing-tight test past its limit, so inside `delegate` a failed check is run once more alone before it counts; see [check isolation](runtime.md#check-isolation). Do not use a blanket shared resource name for unrelated work; resource claims should describe actual shared state and coupled changes.
 
 Checks and pi reviews hold durable activity leases. Duplicate verification of one task, conflicting workspace/resource access and capacity overflow are rejected. Leases are released on completion/failure; interrupted ownership is reconciled through `resume`. Do not interpret a cleared conversation as proof a child process stopped.
 
