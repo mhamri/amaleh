@@ -30,6 +30,7 @@
     "@tailwindcss/vite": "4.3.3",
     "@types/node": "26.6.2",
     "daisyui": "5.7.42",
+    "elkjs": "0.12.0",
     "nitro": "3.0.260903-beta",
     "schema-dts": "2.0.0",
     "tailwindcss": "4.3.3",
