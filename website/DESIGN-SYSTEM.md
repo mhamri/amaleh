@@ -855,16 +855,20 @@ running left to right in pool order; the repair node sits 2 design units in
 the decision node's row to its right, and the two host tiles sit above the top
 worker row. Neighbours in a row stand 1.8 design units apart and the rows
 stand 2.15 apart, which is more than a 0.72 tile and its label need, so no
-line ever runs short. Every worker keeps its own line to the decision node,
-review lines join neighbours in the same row, the hosts reach the coordinator
-hub, and the escalation runs from a worker to the repair node. `heroScene`
+line ever runs short. Every worker keeps its own line to the decision node.
+Review lines join neighbours in the same row, and a second row that holds one
+worker takes its review line from the first worker of the top row. The hosts
+reach the coordinator hub, the hub dispatches to the first worker of each row
+and hears the review back on that same line, and the escalation runs from the
+last worker of the top row to the repair node. `heroScene`
 takes every name from its argument and never looks one up, so the scene is
 placed for whatever the pool holds, and the geometry is proved on synthetic
 pools of two to six workers by `website/scripts/pool-checks/hero.mjs`, which
 fails the layout when a link is shorter than 0.8 design units, passes within
-0.3 of a tile or label it does not connect, runs alongside another link for
-longer than 0.3, meets a node anywhere but the port on the side it arrives
-from, or crosses another link that meets the same node.
+0.3 of a tile or label it does not connect, runs within 0.12 of a link that
+joins a different pair of nodes for longer than 0.3 outside 0.6 of a node both
+touch, meets a node anywhere but the port on the side it arrives from, or
+crosses another link that meets the same node.
 
 The hero canvas is a **full-bleed background**, not a panel beside the copy.
 It spans the whole hero band edge to edge, and below 1024 CSS pixels that band
@@ -1062,8 +1066,10 @@ Required of every visual in this layer, without exception:
   same structure as real text beside it. Labels inside a diagram are real
   `<text>` in the SVG, so they are selectable and scale with the page.
 - **Sized in the layout, not by the window.** The wrapper sets an explicit
-  aspect ratio (`aspect-[4/3] sm:aspect-[16/10] lg:aspect-[16/9]`), the canvas
-  fills it with `size-full`, and the drawing buffer is set from
+  aspect ratio — a diagram panel uses
+  `aspect-[4/3] sm:aspect-[16/10] lg:aspect-[16/9]`, and the hero band uses,
+  below `lg`, the crop ratios stated under **Hero canvas** and, from `lg`, the
+  hero section's own box — the canvas fills it with `size-full`, and the drawing buffer is set from
   `getBoundingClientRect()` times `devicePixelRatio`, capped at 2, on mount
   and on resize. Nothing reads `window.innerWidth` to decide a layout.
 - **Cheap.** Target 60 frames per second on integrated graphics: no more than
