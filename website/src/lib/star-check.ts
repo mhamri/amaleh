@@ -7,7 +7,8 @@ export type StarCheckState =
   | 'ask'
   | 'checking'
   | 'verified'
-  | 'already'
+  | 'confirmed'
+  | 'partial'
   | 'not-found'
   | 'no-user'
   | 'busy'
@@ -18,6 +19,8 @@ export const firstStarClickKey = 'amaleh_first_star_click';
 export const starVerificationWindowMs = 5 * 60 * 1000;
 export const starListApi = 'https://api.github.com/users/';
 export const starListAccept = 'application/vnd.github.star+json';
+export const starListPageSize = 100;
+export const starListRequestBound = 10;
 
 export const [starCheckOpen, setStarCheckOpen] = createSignal(false);
 
@@ -77,28 +80,46 @@ function starredEntry(value: unknown): StarredEntry | undefined {
   return { fullName, starredAt: typeof entry.starred_at === 'string' ? entry.starred_at : '' };
 }
 
+function nextPageUrl(link: string | null): string | undefined {
+  if (link === null) return undefined;
+  for (const part of link.split(',')) {
+    const match = /<([^>]+)>\s*;\s*rel="?next"?/.exec(part.trim());
+    if (match) return match[1];
+  }
+  return undefined;
+}
+
 export async function checkStar(name: string, firstClickAt: number): Promise<StarCheckState> {
+  const wanted = repositoryFullName().toLowerCase();
+  let url: string | undefined = `${starListApi}${encodeURIComponent(name)}/starred?per_page=${starListPageSize}`;
+  let requests = 0;
   try {
-    const response = await fetch(`${starListApi}${encodeURIComponent(name)}/starred?per_page=100`, {
-      headers: { Accept: starListAccept },
-    });
-    if (response.status === 404) return 'no-user';
-    if (response.status === 403 || response.status === 429) return 'busy';
-    if (!response.ok) return 'error';
+    while (url !== undefined && requests < starListRequestBound) {
+      const current: string = url;
+      requests += 1;
+      const response = await fetch(current, {
+        headers: { Accept: starListAccept },
+        cache: 'no-store',
+      });
+      if (response.status === 404) return 'no-user';
+      if (response.status === 403 || response.status === 429) return 'busy';
+      if (!response.ok) return 'error';
 
-    const body: unknown = await response.json();
-    if (!Array.isArray(body)) return 'error';
+      const body: unknown = await response.json();
+      if (!Array.isArray(body)) return 'error';
 
-    const wanted = repositoryFullName().toLowerCase();
-    const entry = (body as unknown[])
-      .map(starredEntry)
-      .find((item) => item !== undefined && item.fullName.toLowerCase() === wanted);
-    if (entry === undefined) return 'not-found';
+      const entry = (body as unknown[])
+        .map(starredEntry)
+        .find((item) => item !== undefined && item.fullName.toLowerCase() === wanted);
+      if (entry !== undefined) {
+        const starredAt = Date.parse(entry.starredAt);
+        if (!Number.isFinite(starredAt)) return 'error';
+        return starredAt >= firstClickAt - starVerificationWindowMs ? 'verified' : 'confirmed';
+      }
 
-    const starredAt = Date.parse(entry.starredAt);
-    if (!Number.isFinite(starredAt)) return 'error';
-
-    return starredAt >= firstClickAt - starVerificationWindowMs ? 'verified' : 'already';
+      url = nextPageUrl(response.headers.get('Link'));
+    }
+    return url === undefined ? 'not-found' : 'partial';
   } catch {
     return 'error';
   }

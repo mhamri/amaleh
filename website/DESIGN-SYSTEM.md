@@ -726,9 +726,9 @@ once by the shell in `app.tsx` beside `ConsentBanner`. Only a Star click shows
 it: `StarButton` and the header mobile menu link open it from their own click
 handler, so no route carries the panel on
 load. Its root carries `data-star-check` and `data-star-check-state` — one of
-`ask`, `checking`, `verified`, `already`, `not-found`, `no-user`, `busy`,
-`invalid`, `error` — so the flow is inspectable from the attribute instead of
-read out of the copy. The pattern, copy the class strings:
+`ask`, `checking`, `verified`, `confirmed`, `partial`, `not-found`, `no-user`,
+`busy`, `invalid`, `error` — so the flow is inspectable from the attribute
+instead of read out of the copy. The pattern, copy the class strings:
 
 ```html
 <div data-star-check data-star-check-state={state()}
@@ -765,10 +765,23 @@ page behind it stays readable.
 sentence into a single polite live region (`role="status"` with
 `aria-live="polite"`), so the outcome is announced and never carried by colour
 alone. The panel's own action is the secondary button; its dismissal is a ghost
-button beside it, and Escape closes the panel too. The verified state is the
-only state that adds a second action, and it renders the existing
-`SponsorButton` rather than a hand-written link, so the panel adds no second
-primary button to the view.
+button beside it, and Escape closes the panel too. The `verified` and
+`confirmed` states are the only states that add a second action, and both
+render the existing `SponsorButton` rather than a hand-written link, so the
+panel adds no second primary button to the view.
+
+**Every real star is confirmed.** `checkStar` in
+`src/lib/star-check.ts` reads the visitor's public starred list from
+`api.github.com`, newest first, with `cache: 'no-store'` so a check made seconds
+after an earlier one never reads a cached list, and with the
+`application/vnd.github.star+json` media type so each entry carries its
+`starred_at` time. It follows the `rel="next"` URL of GitHub's `Link` header
+page by page, 100 entries a page, and stops after 10 requests. A star made
+after the first Star click on this device (less a five-minute allowance) is
+`verified`; a star made before it is `confirmed`, thanked in the same words and
+offered the same Sponsor button. When the 10 requests end before the list does,
+the state is `partial` and the sentence says the whole list could not be read —
+never that the account has no star, because the star may sit further down.
 
 ### Copy button
 
