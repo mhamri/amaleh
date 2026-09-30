@@ -25,13 +25,10 @@ export default function Problem() {
           </div>
         </div>
       </div>
-      <div class="relative mt-8 aspect-[13/20] w-full overflow-hidden sm:aspect-[4/3] lg:absolute lg:inset-0 lg:-z-10 lg:mt-0 lg:aspect-auto">
+      <div class="relative mt-8 aspect-[3/4] w-full overflow-hidden sm:aspect-[4/3] lg:absolute lg:inset-0 lg:-z-10 lg:mt-0 lg:aspect-auto">
         <div
-          class="absolute left-1/2 top-1/2 aspect-[16/9] w-[300%] [transform:translate(calc(-1*var(--hero-focus-x)),calc(-1*var(--hero-focus-y)))] sm:aspect-[8/3] sm:w-[225%] sm:[transform:translate(-71.6667%,calc(-1*var(--hero-focus-y)))] lg:inset-0 lg:aspect-auto lg:w-auto lg:[transform:none]"
-          style={{
-            '--hero-focus-x': `${(HERO_FOCUS.x / 16) * 100}%`,
-            '--hero-focus-y': `${(HERO_FOCUS.y / 9) * 100}%`,
-          }}
+          class="absolute left-1/2 top-1/2 aspect-[2/1] w-[300%] [transform:translate(-78.8889%,calc(-1*var(--hero-focus-y)))] sm:aspect-[8/3] sm:w-[225%] sm:[transform:translate(-71.6667%,calc(-1*var(--hero-focus-y)))] lg:inset-0 lg:aspect-auto lg:w-auto lg:[transform:none]"
+          style={{ '--hero-focus-y': `${(HERO_FOCUS.y / 9) * 100}%` }}
         >
           <HeroCanvas />
         </div>

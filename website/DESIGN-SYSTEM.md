@@ -225,7 +225,7 @@ Four widths are the contract. Every page is checked at all four.
 | Width | Target | What must be true |
 | --- | --- | --- |
 | 320–389 px | Small phone | One column. Nothing overflows horizontally. Diagrams switch to their stacked form. |
-| 390–767 px | Phone | One column. Cards full width. The hero scene is its own full-width band under the copy, cropped to the tile grid at `aspect-[13/20]` under 640 px and at `sm:aspect-[4/3]` from 640 px. |
+| 390–767 px | Phone | One column. Cards full width. The hero scene is its own full-width band under the copy, cropped to the tile grid at `aspect-[3/4]` under 640 px and at `sm:aspect-[4/3]` from 640 px. |
 | 768–1023 px | Tablet | Two-column card grids (`md:grid-cols-2`). Docs sidebar still stacked above the article. The hero scene stays a full-width band at `sm:aspect-[4/3]`. |
 | 1024 px and up | Desktop | The prose column is paired with a second column of real content. Docs use the three-column shell. Card grids reach three columns at `xl`. |
 
@@ -316,32 +316,36 @@ labelled model tile in the scene stays right of the prose measure. **Below
 1024 CSS pixels the scene leaves the background** and becomes its own
 full-width band under the buttons, and that band crops the design box to the
 tile grid in two steps, each with its own aspect ratio and zoom. Under 640 CSS
-pixels the band is `aspect-[13/20]` with the canvas at `w-[300%]`: the canvas
-is the 16 × 9 design box itself at three times the band's width, so the crop is
-5.33 by 8.2 design units, x 10.53 to 15.87 and y 0.08 to 8.28. From 640 CSS
-pixels the band is `sm:aspect-[4/3]` with the canvas at `sm:aspect-[8/3]
-sm:w-[225%]`, so the design box is fitted inside a canvas box 2.25 band widths
-wide and 0.84 tall and the crop widens to 10.67 by 8 design units, x 7.87 to
-18.53 and y 0.18 to 8.18. Both crops are centred on `HERO_FOCUS`, the focus
-point `hero-scene.ts` exports: the phone offset is that point's own fraction of
-the design box, 82.5% across and 46.4444% down, while the tablet canvas box is
-wider than the design box it holds, so landing the same focus point at the
-centre of the band takes 71.6667% across it and the same 46.4444% down it. Both
-crops hold every labelled tile and its label with at least 0.15 design units to
-spare, and both canvas boxes reach past every edge of their band, so no part of
-the band shows bare page. The phone crop holds no part of the coordinator hub:
-the hub sits at x 7.5, left of the x 10.5 the labelled tiles start at, so the
-phone band shows the tile grid and the links that join tiles to the decision
-node, while the lines that run to the hub leave its left edge. The tablet crop
-starts at x 7.87, inside that hub circle, so there the hub runs off the left
-edge of the band, and it reaches x 18.53, past the right edge of the design box
-at x 16, so the last quarter of the tablet band is bare grid. The band is full
+pixels the band is `aspect-[3/4]` with the canvas at `aspect-[2/1] w-[300%]`,
+so the design box is fitted inside a canvas box 3 band widths wide and 1.5
+tall, one design unit is a sixth of the band's width, and the crop is 6 by 8
+design units, x 10.2 to 16.2 and y 0.18 to 8.18. From 640 CSS pixels the band
+is `sm:aspect-[4/3]` with the canvas at `sm:aspect-[8/3] sm:w-[225%]`, so the
+design box is fitted inside a canvas box 2.25 band widths wide and 0.84 tall
+and the crop widens to 10.67 by 8 design units, x 7.87 to 18.53 and y 0.18 to
+8.18. Both crops are centred on `HERO_FOCUS`, the focus point `hero-scene.ts`
+exports. Both canvas boxes are wider than the design box they hold, so landing
+that point at the centre of the band takes 78.8889% across the phone canvas box
+and 71.6667% across the tablet one, and 46.4444% down both. Both crops hold
+every labelled tile and its label with at least 0.15 design units to spare, and
+both canvas boxes reach past every edge of their band, so no part of the band
+shows bare page. The phone crop holds no part of the coordinator hub: the hub's
+circle ends at x 8.4, left of the crop's x 10.2, so the phone band shows the
+tile grid and the links that join tiles to the decision node, while the lines
+that run to the hub leave its left edge. The tablet crop starts at x 7.87,
+inside that hub circle, so there the hub runs off the left edge of the band.
+Both crops reach past the right edge of the design box at x 16 — the phone crop
+to x 16.2 and the tablet crop to x 18.53 — so the last thirtieth of the phone
+band and the last quarter of the tablet band are bare grid. The band is full
 width, not a centred box: the strip of bare canvas between the crop's left edge
 and the first tile belongs to the scene, and no edge of the band is a hard
 panel edge. Model name
 labels under a tile are supporting label copy: below body scale, and in the
 sans stack, because a model name is a topic rather than a string a reader could
-type or search.
+type or search. Each crop's zoom keeps the label below the 16 pixel body size
+across its whole width range: a design unit reaches at most 640 ÷ 6 = 106.7 CSS
+pixels in the phone band and 1024 × 0.09375 = 96 in the tablet band, so the
+0.15 unit label stays under 16 and 14.4 CSS pixels.
 
 **Benefit figures.** Every figure on the landing page comes from
 `CASE-STUDY.md` — the two runs (`website-visuals` and `website-polish`) that
@@ -951,28 +955,35 @@ once after mount through `getComputedStyle`, which keeps the daisyUI theme in
 `style.css` the single source of truth for both renderers. A model node glows
 in its own routed hue from `models.ts`; the coordinator hub and the review
 links keep their role hues. Labels under the tiles are supporting label copy at
-0.15 of a design unit — at most 13.5 CSS pixels in the widest fit — set in the
-sans stack, because a model name is a topic rather than a string a reader could
-type or search. Every labelled tile sits at x ≥ 10.5 of the 16 design units,
-clear of the hero copy at `lg` and wider; below `lg`, `Problem.tsx` crops the
-band onto that region twice, at `aspect-[13/20]` with the canvas at `w-[300%]`
-under 640 CSS pixels — a 5.33 by 8.2 design unit window, x 10.53 to 15.87 and
-y 0.08 to 8.28 — and at `sm:aspect-[4/3]` with the canvas at `sm:aspect-[8/3]
-sm:w-[225%]` from 640 CSS pixels — a 10.67 by 8 window, x 7.87 to 18.53 and
-y 0.18 to 8.18. At both steps the window holds every labelled tile and its
-label, and the phone window holds none of the coordinator hub, which sits left
-of the crop at x 7.5. Both windows are centred on `HERO_FOCUS`, the focus
-point `hero-scene.ts` exports: the phone canvas box is the design box itself, so
-the offset is that point's own fraction of it, while the tablet canvas box is
-`8/3` and 225% of the band width, so the design box sits inside it with 0.375
-of a band width of bare canvas on each side and the offset that lands the same
-focus point at the centre of the band is 71.6667% across and 46.4444% down it.
-`website/scripts/pool-checks/hero.mjs` reads both bands and both canvas boxes
-out of `Problem.tsx` and fails when a band states no aspect ratio of its own,
-when its canvas box states no width, aspect ratio or offset of its own, when
-that offset does not land `HERO_FOCUS` at the centre of the band, when the
-canvas box does not reach every edge of the band, or when a tile or label
-leaves that band's window.
+0.15 of a design unit, set in the sans stack, because a model name is a topic
+rather than a string a reader could type or search. Measured on the built page,
+a label is 8 CSS pixels at 320 and grows to just under 16 at 639 in the phone
+band, is 9 to 14.4 CSS pixels from 640 to 1023 in the tablet band, and is 9.6
+from 1024 CSS pixels up, where the 36rem hero height sets the fit — below the
+16 pixel body size at every width. Every labelled tile sits at x ≥ 10.5 of the
+16 design units, clear of the hero copy at `lg` and wider; below `lg`,
+`Problem.tsx` crops the band onto that region twice, at `aspect-[3/4]` with the
+canvas at `aspect-[2/1] w-[300%]` under 640 CSS pixels — a 6 by 8 design unit
+window, x 10.2 to 16.2 and y 0.18 to 8.18 — and at `sm:aspect-[4/3]` with the
+canvas at `sm:aspect-[8/3] sm:w-[225%]` from 640 CSS pixels — a 10.67 by 8
+window, x 7.87 to 18.53 and y 0.18 to 8.18. At both steps the window holds
+every labelled tile and its label, and the phone window holds none of the
+coordinator hub, whose circle ends at x 8.4. Both windows are centred on
+`HERO_FOCUS`, the focus point `hero-scene.ts` exports. Neither canvas box is the
+design box itself: the phone canvas box is `2/1` and 300% of the band width, so
+the design box sits inside it with a sixth of a band width of bare canvas on
+each side, and the tablet canvas box is `8/3` and 225% of the band width, so the
+design box sits inside it with 0.375 of a band width of bare canvas on each
+side. The offset that lands the focus point at the centre of the band is
+therefore 78.8889% across the phone canvas box and 71.6667% across the tablet
+one, and 46.4444% down both. `website/scripts/pool-checks/hero.mjs` reads both
+bands and both canvas boxes out of `Problem.tsx` and fails when a band states
+no aspect ratio of its own, when its canvas box states no width, aspect ratio
+or offset of its own, when that offset does not land `HERO_FOCUS` at the centre
+of the band, when the canvas box does not reach every edge of the band, when a
+tile or label leaves that band's window, or when the band's zoom would set a
+label at 16 CSS pixels or more before the next breakpoint (640 for the phone
+band, 1024 for the tablet band).
 From `lg` the band is the whole hero section again, the canvas fills it, and
 the 16 × 9 design box is fitted inside that canvas. The fallback
 group ships at `opacity="0.25"`, the quiet background weight of the live
