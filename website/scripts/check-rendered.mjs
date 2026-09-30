@@ -100,21 +100,32 @@ const inspectLabelOverlaps = () => {
   const problems = [];
   const hero = [...document.querySelectorAll('svg')].filter((svg) => svg.querySelector('[data-model]'));
   const targets = [
-    ...hero.map((svg) => ({ svg, which: 'the hero SVG' })),
+    ...hero.map((svg) => ({ svg, which: `the ${svg.dataset.heroLayout ?? 'wide'} hero SVG` })),
     ...[...document.querySelectorAll('svg[data-topo-svg]')].map((svg) => ({
       svg,
       which: `the topology SVG (${svg.dataset.topoVariant ?? 'variant'})`,
     })),
   ];
   const tolerance = 0.5;
+  const reveal = (element) => {
+    const shown = [];
+    for (let node = element; node && node !== document.body; node = node.parentElement) {
+      if (getComputedStyle(node).display === 'none') {
+        shown.push(node);
+        node.style.display = 'block';
+      }
+    }
+    return () => {
+      for (const node of shown) node.style.display = '';
+    };
+  };
   for (const { svg, which } of targets) {
     const view = svg.viewBox.baseVal;
     if (!view || view.width === 0) continue;
-    const declaredDisplay = svg.style.display;
-    if (svg.getBoundingClientRect().width === 0) svg.style.display = 'block';
+    const hide = reveal(svg);
     const drawn = svg.getBoundingClientRect();
     if (drawn.width === 0) {
-      svg.style.display = declaredDisplay;
+      hide();
       problems.push({ which, text: 'the SVG has no drawn width even when shown, so its labels could not be measured' });
       continue;
     }
@@ -137,7 +148,7 @@ const inspectLabelOverlaps = () => {
         }
       }
     }
-    svg.style.display = declaredDisplay;
+    hide();
   }
   return problems;
 };
