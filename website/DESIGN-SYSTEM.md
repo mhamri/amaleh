@@ -225,8 +225,8 @@ Four widths are the contract. Every page is checked at all four.
 | Width | Target | What must be true |
 | --- | --- | --- |
 | 320–389 px | Small phone | One column. Nothing overflows horizontally. Diagrams switch to their stacked form. |
-| 390–767 px | Phone | One column. Cards full width. The hero scene is its own band under the copy, zoomed onto the model tiles. |
-| 768–1023 px | Tablet | Two-column card grids (`md:grid-cols-2`). Docs sidebar still stacked above the article. |
+| 390–767 px | Phone | One column. Cards full width. The hero scene is its own full-width band under the copy, cropped to the tile grid at `aspect-[13/20]` under 640 px and at `sm:aspect-[4/3]` from 640 px. |
+| 768–1023 px | Tablet | Two-column card grids (`md:grid-cols-2`). Docs sidebar still stacked above the article. The hero scene stays a full-width band at `sm:aspect-[4/3]`. |
 | 1024 px and up | Desktop | The prose column is paired with a second column of real content. Docs use the three-column shell. Card grids reach three columns at `xl`. |
 
 Rules that produce that:
@@ -313,9 +313,32 @@ hero. The scene is never covered by the copy: **at 1024 CSS pixels and wider no
 headline, paragraph or button may overlap any model tile.** The copy therefore
 sits in one compact block on the left (about a third of the band) and every
 labelled model tile in the scene stays right of the prose measure. **Below
-1024 CSS pixels the scene leaves the background** and becomes its own band
-under the buttons — 8:9 on a phone, 16:10 from `sm` — zoomed onto the model
-tiles so they read at phone width. Model name
+1024 CSS pixels the scene leaves the background** and becomes its own
+full-width band under the buttons, and that band crops the design box to the
+tile grid in two steps, each with its own aspect ratio and zoom. Under 640 CSS
+pixels the band is `aspect-[13/20]` with the canvas at `w-[300%]`: the canvas
+is the 16 × 9 design box itself at three times the band's width, so the crop is
+5.33 by 8.2 design units, x 10.53 to 15.87 and y 0.08 to 8.28. From 640 CSS
+pixels the band is `sm:aspect-[4/3]` with the canvas at `sm:aspect-[8/3]
+sm:w-[225%]`, so the design box is fitted inside a canvas box 2.25 band widths
+wide and 0.84 tall and the crop widens to 10.67 by 8 design units, x 7.87 to
+18.53 and y 0.18 to 8.18. Both crops are centred on `HERO_FOCUS`, the focus
+point `hero-scene.ts` exports: the phone offset is that point's own fraction of
+the design box, 82.5% across and 46.4444% down, while the tablet canvas box is
+wider than the design box it holds, so landing the same focus point at the
+centre of the band takes 71.6667% across it and the same 46.4444% down it. Both
+crops hold every labelled tile and its label with at least 0.15 design units to
+spare, and both canvas boxes reach past every edge of their band, so no part of
+the band shows bare page. The phone crop holds no part of the coordinator hub:
+the hub sits at x 7.5, left of the x 10.5 the labelled tiles start at, so the
+phone band shows the tile grid and the links that join tiles to the decision
+node, while the lines that run to the hub leave its left edge. The tablet crop
+starts at x 7.87, inside that hub circle, so there the hub runs off the left
+edge of the band, and it reaches x 18.53, past the right edge of the design box
+at x 16, so the last quarter of the tablet band is bare grid. The band is full
+width, not a centred box: the strip of bare canvas between the crop's left edge
+and the first tile belongs to the scene, and no edge of the band is a hard
+panel edge. Model name
 labels under a tile are supporting label copy: below body scale, and in the
 sans stack, because a model name is a topic rather than a string a reader could
 type or search.
@@ -826,19 +849,28 @@ and decision identities that `website/src/lib/pool.ts` resolves from
 `amaleh/scripts/family.ts` and the identity table in
 `website/src/lib/models.ts`, so the tiles, the links and the `aria-label`
 follow the pool by themselves. `hero-scene.ts` holds the whole layout rule:
-the workers fill one row above the decision node and spill into a second row
-below it when the pool no longer fits in one, each row centred on the decision
-node's column and running left to right in pool order; the repair node sits in
-the decision node's row to its right, and the host tiles sit above the top
-worker row. Every worker keeps its own line to the decision node, review lines
-join neighbours in the same row, the hosts reach the coordinator hub, and the
-escalation runs from a worker to the repair node. `heroScene` takes every name
-from its argument and never looks one up, so the scene is placed for whatever
-the pool holds, and the geometry is proved on synthetic pools by
-`website/scripts/pool-checks/hero.mjs`.
+up to three workers fill one row above the decision node and the rest spill
+into a second row below it, each row centred on the decision node's column and
+running left to right in pool order; the repair node sits 2 design units in
+the decision node's row to its right, and the two host tiles sit above the top
+worker row. Neighbours in a row stand 1.8 design units apart and the rows
+stand 2.15 apart, which is more than a 0.72 tile and its label need, so no
+line ever runs short. Every worker keeps its own line to the decision node,
+review lines join neighbours in the same row, the hosts reach the coordinator
+hub, and the escalation runs from a worker to the repair node. `heroScene`
+takes every name from its argument and never looks one up, so the scene is
+placed for whatever the pool holds, and the geometry is proved on synthetic
+pools of two to six workers by `website/scripts/pool-checks/hero.mjs`, which
+fails the layout when a link is shorter than 0.8 design units, passes within
+0.3 of a tile or label it does not connect, runs alongside another link for
+longer than 0.3, meets a node anywhere but the port on the side it arrives
+from, or crosses another link that meets the same node.
 
 The hero canvas is a **full-bleed background**, not a panel beside the copy.
-It spans the whole hero band edge to edge, sits behind the headline at low
+It spans the whole hero band edge to edge, and below 1024 CSS pixels that band
+is the page's own width edge to edge as well, never a centred box: a narrower
+box would read as a panel with empty page on either side. It sits behind the
+headline at low
 enough contrast that the type stays at its documented ratios, and carries no
 `figcaption` — a caption under a background is a panel again. Whatever the
 scene needs explaining goes in body copy further down the page, next to the
@@ -861,9 +893,29 @@ luminance that would cost the copy its contrast ratios: a packet, its rail and
 a node ring together stay under half the AA threshold for `dim` body copy.
 
 A straight line between two node centres would run through the model-name label
-under a tile, so `hero-scene.ts` gives every link an explicit exit and entry
-point instead — on the tile edge where the link leaves sideways, and below the
-tile's own label where it leaves downwards — and the canvas clamps edge glow
+under a tile, so every node carries exactly four connection ports and a link
+never meets a tile anywhere else: a tile's top, right and left ports are the
+middle of its own top, right and left edge, 0.36 of a design unit from its
+centre, and its bottom port sits on its vertical axis 0.93 below the centre —
+the same distance for every tile, clear of the label that ends at 0.813. The
+coordinator hub is a circle, so its four ports sit on its edge, 0.9 from the
+centre, above, right of, below and left of it. `port(node, side)` in
+`hero-scene.ts` returns the one point for a side and every link is drawn
+between two of them, so two lines that meet a node on one side share that
+side's single port instead of entering the tile at scattered points, and every
+link runs away from the side it leaves: a left-port link runs left, a top-port
+link runs up. A link meets each node on the side it arrives from. Measured from
+the node's centre to the link's other end, a link whose run across is more than
+1.1 times its run up or down uses the left or right port facing that end, one
+whose run up or down is more than 1.1 times its run across uses the top or
+bottom port, and a link between those two ratios may use either. `join(a, b)`
+in `hero-scene.ts` draws every link: it tries the ports each node faces most,
+giving way first at `a`, and keeps the first pair where both ends meet the side
+they arrive from. So a line from the far left enters a tile's left port rather
+than its top one. `join` looks at one link at a time, so it cannot stop two
+links from crossing; `website/scripts/pool-checks/hero.mjs` fails any layout in
+which two lines that meet the same node cross.
+The canvas clamps edge glow
 below the higher of the two tiles, so no glowing line and no glow reaches a
 label box — the same "no label is crossed" rule the diagrams obey. A link that
 runs down a column starts below the upper tile's own label, so the name it
@@ -898,9 +950,27 @@ links keep their role hues. Labels under the tiles are supporting label copy at
 0.15 of a design unit — at most 13.5 CSS pixels in the widest fit — set in the
 sans stack, because a model name is a topic rather than a string a reader could
 type or search. Every labelled tile sits at x ≥ 10.5 of the 16 design units,
-clear of the hero copy at `lg` and wider; `Problem.tsx` crops the band onto
-that region below `lg`, centring it on `HERO_FOCUS`, the focus point
-`hero-scene.ts` exports, rather than on hand-written fractions. The fallback
+clear of the hero copy at `lg` and wider; below `lg`, `Problem.tsx` crops the
+band onto that region twice, at `aspect-[13/20]` with the canvas at `w-[300%]`
+under 640 CSS pixels — a 5.33 by 8.2 design unit window, x 10.53 to 15.87 and
+y 0.08 to 8.28 — and at `sm:aspect-[4/3]` with the canvas at `sm:aspect-[8/3]
+sm:w-[225%]` from 640 CSS pixels — a 10.67 by 8 window, x 7.87 to 18.53 and
+y 0.18 to 8.18. At both steps the window holds every labelled tile and its
+label, and the phone window holds none of the coordinator hub, which sits left
+of the crop at x 7.5. Both windows are centred on `HERO_FOCUS`, the focus
+point `hero-scene.ts` exports: the phone canvas box is the design box itself, so
+the offset is that point's own fraction of it, while the tablet canvas box is
+`8/3` and 225% of the band width, so the design box sits inside it with 0.375
+of a band width of bare canvas on each side and the offset that lands the same
+focus point at the centre of the band is 71.6667% across and 46.4444% down it.
+`website/scripts/pool-checks/hero.mjs` reads both bands and both canvas boxes
+out of `Problem.tsx` and fails when a band states no aspect ratio of its own,
+when its canvas box states no width, aspect ratio or offset of its own, when
+that offset does not land `HERO_FOCUS` at the centre of the band, when the
+canvas box does not reach every edge of the band, or when a tile or label
+leaves that band's window.
+From `lg` the band is the whole hero section again, the canvas fills it, and
+the 16 × 9 design box is fitted inside that canvas. The fallback
 group ships at `opacity="0.25"`, the quiet background weight of the live
 frame, and the identity tiles sit outside it, so they never fade.
 
