@@ -862,7 +862,12 @@ lines meeting a node on one side all share that side's single point instead of
 entering the tile at scattered places, and no line ever runs into a tile or a
 label. A tile's label box sits under the tile, centred on it, at least
 `scene.labelSize` tall, and the label is part of the box ELK lays out, so ELK
-keeps every line clear of it.
+keeps every line clear of it. `labelWidth()` in `hero-layout.ts` sizes that box
+from the per-character advance table `LABEL_ADVANCE` plus `LABEL_PADDING`:
+these advances are the widest a character takes in the common system UI fonts,
+so the box is an upper bound on the width the browser draws, and both the box
+ELK reserves and the `rect[data-label-patch]` drawn from it contain the text;
+the box is never smaller than half an em per character (`HALF_EM`).
 
 **Two layouts, one box each, no crop.** `website/vite.config.ts` resolves the
 module id `virtual:hero-scene` and loads it as
@@ -880,7 +885,14 @@ a `polyline[data-link][data-kind]` through its points, every non-hub node is a
 and the label text, and the hub is a `circle[data-role="coordinator"]`. The
 label patch is filled with the page background `var(--color-base-100)` at full
 opacity, so a label reads as text on a patch of the page rather than on the
-graph. The wrapper sets `aspect-ratio: scene.width / scene.height`, so the box
+graph: it is the label box widened by `PATCH_SIDE` in `HeroGraph.tsx` — a tenth
+of the tile width on each side — and reaching up to the tile's bottom edge, so
+the label and the gap above it are page background. The label text itself is
+the plain model name at its natural glyph width: centred on its tile with
+`text-anchor="middle"` and `letter-spacing="normal"`, with no forced text
+length and no glyph scaling, so the browser sets the name in the platform's own
+system font instead of stretching it to a measured width. The wrapper sets
+`aspect-ratio: scene.width / scene.height`, so the box
 is the scene's own shape and nothing is cropped, and caps its width at
 `15.5 × scene.width / scene.labelSize` pixels so a label never reaches the 16
 pixel body size.
