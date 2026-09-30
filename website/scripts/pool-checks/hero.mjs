@@ -22,6 +22,9 @@ const DESIGN_HEIGHT = 9;
 const PORT_EPS = 1e-6;
 const DIAGONAL_BAND = 1.1;
 const LABEL_BOTTOM = TILE.half + LABEL.gap + LABEL.size * 0.22;
+const BODY_TEXT_PX = 16;
+const BREAKPOINT_PX = { '': 0, 'sm:': 640, 'md:': 768 };
+const BAND_LEAVES_AT_PX = 1024;
 
 const tileBox = (node) => ({ x0: node.x - TILE.half, y0: node.y - TILE.half, x1: node.x + TILE.half, y1: node.y + TILE.half });
 
@@ -216,16 +219,20 @@ function offsetsOf(classes) {
 }
 
 function percent(term, focus) {
-  if (term.includes('var(--hero-focus-x)')) return focus / DESIGN_WIDTH;
   if (term.includes('var(--hero-focus-y)')) return focus / DESIGN_HEIGHT;
   return -Number(/^(-?[\d.]+)%$/.exec(term)?.[1]) / 100;
+}
+
+function bandEndPx(variant, variants) {
+  const start = BREAKPOINT_PX[variant];
+  return Math.min(BAND_LEAVES_AT_PX, ...variants.map((other) => BREAKPOINT_PX[other]).filter((px) => px > start));
 }
 
 function bands(failures) {
   const file = join(here, 'website/src/components/landing/Problem.tsx');
   const source = readFileSync(file, 'utf8');
   const bandClasses = classAttribute(source, ['overflow-hidden', 'aspect-[']);
-  const canvasClasses = classAttribute(source, ['--hero-focus-x', 'w-[']);
+  const canvasClasses = classAttribute(source, ['--hero-focus-y', 'w-[']);
   if (!bandClasses || !canvasClasses) {
     failures.push('website/src/components/landing/Problem.tsx no longer states the hero band aspect ratio of every breakpoint and the canvas box it crops with');
     return [];
@@ -244,6 +251,10 @@ function bands(failures) {
     }
   }
   return [...bandAspects].map(([variant, bandAspect]) => {
+    if (BREAKPOINT_PX[variant] === undefined) {
+      failures.push(`the hero band states an aspect ratio at ${variant}, a breakpoint whose width range this check does not know`);
+      return null;
+    }
     const canvasAspect = forVariant(canvasAspects, variant);
     const canvasWidth = forVariant(canvasWidths, variant);
     const offset = forVariant(offsets, variant);
@@ -265,6 +276,7 @@ function bands(failures) {
       at: variant ? `the ${variant} band` : 'the base band',
       aspect,
       scale,
+      endPx: bandEndPx(variant, [...bandAspects.keys()]),
       window: {
         x0: HERO_FOCUS.x - 0.5 / scale,
         x1: HERO_FOCUS.x + 0.5 / scale,
@@ -295,7 +307,11 @@ function bands(failures) {
 function geometry(failures) {
   const crops = bands(failures);
   if (!crops.length) return;
-  for (const { at: where, aspect, window, cover } of crops) {
+  for (const { at: where, aspect, scale, endPx, window, cover } of crops) {
+    const labelPx = LABEL.size * scale * endPx;
+    if (labelPx > BODY_TEXT_PX) {
+      failures.push(`${where} makes a design unit ${scale.toFixed(4)} band widths, so the ${LABEL.size} unit tile label reaches ${labelPx.toFixed(2)} CSS pixels as the band nears ${endPx} px, not below the ${BODY_TEXT_PX} pixel body size`);
+    }
     if (window.y0 < -EPS || window.y1 > DESIGN_HEIGHT + EPS) {
       failures.push(`${where} crops y ${window.y0.toFixed(2)} to ${window.y1.toFixed(2)}, outside the ${DESIGN_HEIGHT} unit design box, so the canvas cannot cover it`);
     }
