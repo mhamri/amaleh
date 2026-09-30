@@ -8,7 +8,7 @@ const TILE_RADIUS = 0.25;
 const TILE_EDGE = 0.045;
 const HUB_EDGE = 0.07;
 const MONOGRAM = 0.36;
-const PATCH_SIDE = 0.06;
+const PATCH_SIDE = 0.1;
 const LABEL_BASELINE = 0.63;
 const LINK_STROKE = 1.7;
 const REVIEW_STROKE = 1.1;
@@ -118,8 +118,7 @@ export default function HeroGraph(props: { scene: HeroScene; fallbackRef: (eleme
                   x={centre(tile).x}
                   y={label.y + label.height * LABEL_BASELINE}
                   font-size={`${scene().labelSize}`}
-                  textLength={label.width}
-                  lengthAdjust="spacingAndGlyphs"
+                  letter-spacing="normal"
                   text-anchor="middle"
                   fill="var(--color-dim)"
                 >

@@ -37,7 +37,6 @@ const HUB_TILE = 30;
 const LABEL_SIZE = 10;
 const LABEL_GAP = 5;
 const LABEL_HEIGHT = 12;
-const LABEL_ADVANCE = 0.55;
 const PADDING = 10;
 
 const HUB_ID = 'hub';
@@ -70,8 +69,27 @@ const ROOT_OPTIONS: Record<string, string> = {
   'elk.randomSeed': '1',
 };
 
+const LABEL_DEFAULT_ADVANCE = 0.6;
+const HALF_EM = 0.5;
+const LABEL_PADDING = 0.16;
+const LABEL_ADVANCE: Record<string, number> = {
+  ' ': 0.28,
+  A: 0.7, B: 0.68, C: 0.72, D: 0.75, E: 0.67, F: 0.62, G: 0.8, H: 0.75, I: 0.3, J: 0.4, K: 0.7, L: 0.58,
+  M: 0.95, N: 0.75, O: 0.8, P: 0.67, Q: 0.8, R: 0.72, S: 0.67, T: 0.62, U: 0.75, V: 0.68, W: 1, X: 0.68, Y: 0.67,
+  Z: 0.62,
+  a: 0.56, b: 0.57, c: 0.5, d: 0.57, e: 0.57, f: 0.3, g: 0.57, h: 0.57, i: 0.24, j: 0.24, k: 0.52, l: 0.24,
+  m: 0.86, n: 0.57, o: 0.57, p: 0.57, q: 0.57, r: 0.36, s: 0.5, t: 0.3, u: 0.57, v: 0.52, w: 0.76, x: 0.52, y: 0.52,
+  z: 0.48,
+};
+
+function labelAdvance(character: string): number {
+  return LABEL_ADVANCE[character] ?? LABEL_DEFAULT_ADVANCE;
+}
+
 function labelWidth(label: string): number {
-  return Math.ceil([...label].length * LABEL_SIZE * LABEL_ADVANCE);
+  const characters = [...label];
+  const ems = LABEL_PADDING + characters.reduce((total, character) => total + labelAdvance(character), 0);
+  return Math.max(Math.ceil(ems * LABEL_SIZE), Math.ceil(characters.length * LABEL_SIZE * HALF_EM));
 }
 
 function tileWidth(spec: Spec): number {
