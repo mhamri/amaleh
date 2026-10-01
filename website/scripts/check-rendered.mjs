@@ -185,19 +185,31 @@ const inspectHeroFit = () => {
     });
   const drawn = [];
   const add = (what, left, top, right, bottom) => drawn.push({ what, box: { left, top, right, bottom } });
-  for (const line of svg.querySelectorAll('[data-link]')) {
-    const matrix = line.getScreenCTM();
+  const curves = svg.querySelectorAll('path[data-link]');
+  if (curves.length === 0) problems.push('the visible hero layout draws no link curve');
+  for (const curve of curves) {
+    const matrix = curve.getScreenCTM();
     if (!matrix) continue;
-    const at = (x, y) => ({ x: matrix.a * x + matrix.c * y + matrix.e, y: matrix.b * x + matrix.d * y + matrix.f });
-    const start = at(line.x1.baseVal.value, line.y1.baseVal.value);
-    const end = at(line.x2.baseVal.value, line.y2.baseVal.value);
+    const length = curve.getTotalLength();
+    const points = Array.from({ length: 17 }, (_, step) => {
+      const { x, y } = curve.getPointAtLength((length * step) / 16);
+      return { x: matrix.a * x + matrix.c * y + matrix.e, y: matrix.b * x + matrix.d * y + matrix.f };
+    });
     add(
-      `the ${line.getAttribute('data-kind')} line ${line.getAttribute('data-link')}`,
-      Math.min(start.x, end.x),
-      Math.min(start.y, end.y),
-      Math.max(start.x, end.x),
-      Math.max(start.y, end.y),
+      `the ${curve.getAttribute('data-kind')} curve ${curve.getAttribute('data-link')}`,
+      Math.min(...points.map((point) => point.x)),
+      Math.min(...points.map((point) => point.y)),
+      Math.max(...points.map((point) => point.x)),
+      Math.max(...points.map((point) => point.y)),
     );
+  }
+  if (svg.querySelector('[data-label-patch]')) problems.push('the visible hero layout draws a box behind a label');
+  const mark = svg.querySelector('image[data-hero-mark]');
+  if (!mark) {
+    problems.push('the visible hero layout draws no Amaleh mark inside the coordinator ring');
+  } else {
+    const rect = mark.getBoundingClientRect();
+    add('the Amaleh mark', rect.left, rect.top, rect.right, rect.bottom);
   }
   for (const group of svg.querySelectorAll('g[data-model]')) {
     const name = group.querySelector('text[data-label]')?.textContent.trim() ?? group.dataset.model;
@@ -228,6 +240,37 @@ const inspectHeroFit = () => {
   }
   return problems;
 };
+
+const RING_GLOW_OUTSIDE = 6;
+const RING_GLOW_INSIDE = 12;
+const RING_GLOW_MIN_RED = 8;
+
+async function redAt(page, x, y) {
+  const shot = await page.screenshot({ clip: { x, y, width: 1, height: 1 }, encoding: 'base64' });
+  return page.evaluate(async (data) => {
+    const image = new Image();
+    image.src = `data:image/png;base64,${data}`;
+    await image.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 1;
+    const context = canvas.getContext('2d');
+    context.drawImage(image, 0, 0, 1, 1);
+    return context.getImageData(0, 0, 1, 1).data[0];
+  }, shot);
+}
+
+async function stillRingGlow(page) {
+  const ring = await page.evaluate(() => {
+    const shown = [...document.querySelectorAll('svg[data-hero-layout]')].find((svg) => svg.getBoundingClientRect().width > 0);
+    const rect = shown?.querySelector('[data-role="coordinator"]')?.getBoundingClientRect();
+    return rect ? { right: rect.right, middle: rect.top + rect.height / 2 } : null;
+  });
+  if (!ring) return null;
+  const outside = await redAt(page, Math.round(ring.right + RING_GLOW_OUTSIDE), Math.round(ring.middle));
+  const inside = await redAt(page, Math.round(ring.right - RING_GLOW_INSIDE), Math.round(ring.middle));
+  return outside - inside;
+}
 
 const site = await startSite();
 const origin = site.origin;
@@ -411,6 +454,16 @@ try {
           `${route} keeps animating under prefers-reduced-motion: ${moving.scheduled} animation frames scheduled, ${moving.running} running animations`,
         );
       }
+      if (route === '/') {
+        const glow = await withinStep(stillRingGlow(page), `${route} reduced-motion ring glow inspection`);
+        if (glow === null) {
+          failures.push(`${route} under prefers-reduced-motion shows no coordinator ring to measure the still canvas frame against`);
+        } else if (glow < RING_GLOW_MIN_RED) {
+          failures.push(
+            `${route} under prefers-reduced-motion draws no ring glow on the canvas: the red channel ${RING_GLOW_OUTSIDE} CSS pixels outside the ring is ${glow} above the ring's own fill, expected at least ${RING_GLOW_MIN_RED}`,
+          );
+        }
+      }
     } catch (error) {
       failures.push(`${route} under prefers-reduced-motion could not be inspected: ${error.message}`);
     } finally {
@@ -454,7 +507,7 @@ if (failures.length > 0) {
 console.log(
   `Rendered inspection passed: ${routes.length} routes at ${widths.join('/')} CSS pixels ` +
     `(${checkedPages} page loads); no horizontal overflow, exactly one h1 per route, no console or page errors, ` +
-    'no SVG label escaping its viewBox or straddling a card edge, no two labels crossing inside the visible hero or a topology SVG, the visible hero layout inside the viewport and away from the copy at every width and after a 1440 to 390 to 1440 resize, no animation under prefers-reduced-motion, ' +
+    'no SVG label escaping its viewBox or straddling a card edge, no two labels crossing inside the visible hero or a topology SVG, the visible hero layout inside the viewport and away from the copy at every width and after a 1440 to 390 to 1440 resize, no animation under prefers-reduced-motion and the ring glow on the still hero canvas, ' +
     'every route still readable with JavaScript disabled, and the consent banner visible at 320 CSS pixels ' +
     'with timezone Europe/Berlin on every route without overflow or errors.',
 );

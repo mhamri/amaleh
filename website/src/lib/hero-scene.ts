@@ -22,21 +22,21 @@ export type SceneNode = {
   ports: Record<SceneSide, ScenePoint>;
 };
 
-export type SceneLinkKind = 'coordinator' | 'worker' | 'review' | 'decision';
+export type SceneLinkKind = 'host' | 'dispatch' | 'review' | 'decision' | 'escalation';
 
 export type SceneLink = {
   from: number;
   to: number;
   x1: number;
   y1: number;
+  cx: number;
+  cy: number;
   x2: number;
   y2: number;
   kind: SceneLinkKind;
-  phase: number;
   weight: number;
   near: boolean;
   hueFamily?: string;
-  returnPhase?: number;
 };
 
 export type ScenePool = { workers: SceneModel[]; deep: SceneModel[]; decision: SceneModel };
@@ -78,6 +78,14 @@ const DECISION_GAP = 0.9;
 const FULL_WEIGHT = 1;
 const THIN_WEIGHT = 0.7;
 
+const WIDE_HOST_DEGREES = { claude: -70, codex: -20 };
+const WIDE_FAN_DEGREES = { first: 8, last: 50, step: 10 };
+const NARROW_FAN_DEGREES = { spread: 60, step: 16 };
+const RING_BOTTOM_DEGREES = 90;
+const NARROW_DISPATCH_DROP = 0.3;
+const REVIEW_RISE = 0.24;
+const DECISION_RISE = 0.16;
+
 const HOSTS: [SceneModel, SceneModel] = [
   { family: 'claude', name: 'Claude Code' },
   { family: 'openai', name: 'Codex' },
@@ -88,17 +96,13 @@ const CLAUDE_INDEX = 1;
 const CODEX_INDEX = 2;
 const FIRST_WORKER_INDEX = 3;
 
-const CLAUDE_PHASE = 0;
-const CODEX_PHASE = 0.5;
-const ESCALATION_PHASE = 0.3;
-const DECISION_PHASE = 0.12;
-const DECISION_PHASE_STEP = 0.11;
-const REVIEW_PHASE = 0.2;
-const REVIEW_PHASE_STEP = 0.13;
-const DISPATCH_PHASE = 0.08;
-const DISPATCH_PHASE_STEP = 0.07;
-const RETURN_PHASE = 0.6;
-const RETURN_PHASE_STEP = 0.06;
+export function linkPoint(link: SceneLink, t: number): ScenePoint {
+  const u = 1 - t;
+  return [
+    u * u * link.x1 + 2 * u * t * link.cx + t * t * link.x2,
+    u * u * link.y1 + 2 * u * t * link.cy + t * t * link.y2,
+  ];
+}
 
 function labelWidth(text: string, size: number): number {
   return text.length * size * LABEL_GLYPH + size * LABEL_PAD;
@@ -170,6 +174,8 @@ function narrowRow(count: number, spacing: number, centre: number, size: number,
   return { xs, rowY };
 }
 
+const midpoint = (a: ScenePoint, b: ScenePoint): ScenePoint => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+
 export function heroScene(pool: ScenePool, direction: SceneDirection): Scene {
   const size = LABEL_SIZE[direction];
   const count = pool.workers.length;
@@ -232,60 +238,87 @@ export function heroScene(pool: ScenePool, direction: SceneDirection): Scene {
 
   const links: SceneLink[] = [];
   const wide = direction === 'wide';
-  const hubOut: SceneSide = wide ? 'right' : 'bottom';
-  const claudeSide: SceneSide = wide ? 'bottom' : 'right';
-  const codexSide: SceneSide = wide ? 'bottom' : 'left';
-  const ringSide: SceneSide = wide ? 'right' : 'left';
+  const hub = nodes[HUB_INDEX];
+  const claude = nodes[CLAUDE_INDEX];
+  const codex = nodes[CODEX_INDEX];
+
+  const ringPoint = (degrees: number): ScenePoint => {
+    const angle = (degrees * Math.PI) / 180;
+    return [hub.x + HUB_RADIUS * Math.cos(angle), hub.y + HUB_RADIUS * Math.sin(angle)];
+  };
 
   const link = (
-    from: number,
-    fromSide: SceneSide,
-    to: number,
-    toSide: SceneSide,
     kind: SceneLinkKind,
-    phase: number,
+    from: number,
+    start: ScenePoint,
+    to: number,
+    end: ScenePoint,
+    control: ScenePoint,
     weight: number,
     near: boolean,
     hueFamily?: string,
-    returnPhase?: number,
   ) => {
-    const [x1, y1] = nodes[from].ports[fromSide];
-    const [x2, y2] = nodes[to].ports[toSide];
-    links.push({ from, to, x1, y1, x2, y2, kind, phase, weight, near, hueFamily, returnPhase });
+    links.push({
+      from,
+      to,
+      x1: start[0],
+      y1: start[1],
+      cx: control[0],
+      cy: control[1],
+      x2: end[0],
+      y2: end[1],
+      kind,
+      weight,
+      near,
+      hueFamily,
+    });
   };
 
-  link(CLAUDE_INDEX, claudeSide, HUB_INDEX, ringSide, 'coordinator', CLAUDE_PHASE, FULL_WEIGHT, false, HOSTS[0].family);
-  link(CODEX_INDEX, codexSide, HUB_INDEX, 'right', 'coordinator', CODEX_PHASE, FULL_WEIGHT, false, HOSTS[1].family);
+  if (wide) {
+    const claudeEnd = ringPoint(WIDE_HOST_DEGREES.claude);
+    const codexEnd = ringPoint(WIDE_HOST_DEGREES.codex);
+    link('host', CLAUDE_INDEX, claude.ports.left, HUB_INDEX, claudeEnd, [claudeEnd[0], claude.ports.left[1]], FULL_WEIGHT, false, HOSTS[0].family);
+    link('host', CODEX_INDEX, codex.ports.bottom, HUB_INDEX, codexEnd, [codex.ports.bottom[0], codexEnd[1]], FULL_WEIGHT, false, HOSTS[1].family);
+  } else {
+    const claudeControl: ScenePoint = [(claude.ports.right[0] + hub.ports.left[0]) / 2, claude.ports.right[1]];
+    const codexControl: ScenePoint = [(codex.ports.left[0] + hub.ports.right[0]) / 2, codex.ports.left[1]];
+    link('host', CLAUDE_INDEX, claude.ports.right, HUB_INDEX, hub.ports.left, claudeControl, FULL_WEIGHT, false, HOSTS[0].family);
+    link('host', CODEX_INDEX, codex.ports.left, HUB_INDEX, hub.ports.right, codexControl, FULL_WEIGHT, false, HOSTS[1].family);
+  }
+
+  const wideStep = Math.min(
+    WIDE_FAN_DEGREES.step,
+    (WIDE_FAN_DEGREES.last - WIDE_FAN_DEGREES.first) / (count - 1),
+  );
+  const narrowStep = Math.min(NARROW_FAN_DEGREES.step, NARROW_FAN_DEGREES.spread / (count - 1));
 
   for (let i = 0; i < count; i += 1) {
     const worker = FIRST_WORKER_INDEX + i;
-    link(
-      HUB_INDEX,
-      hubOut,
-      worker,
-      'top',
-      'coordinator',
-      DISPATCH_PHASE + i * DISPATCH_PHASE_STEP,
-      THIN_WEIGHT,
-      false,
-      nodes[worker].family,
-      RETURN_PHASE + i * RETURN_PHASE_STEP,
-    );
-    link(worker, 'bottom', decisionIndex, 'top', 'decision', DECISION_PHASE + i * DECISION_PHASE_STEP, FULL_WEIGHT, false);
-    if (i > 0) link(worker - 1, 'right', worker, 'left', 'review', REVIEW_PHASE + i * REVIEW_PHASE_STEP, FULL_WEIGHT, true);
+    const top = nodes[worker].ports.top;
+    const bottom = nodes[worker].ports.bottom;
+    if (wide) {
+      const start = ringPoint(WIDE_FAN_DEGREES.first + (count - 1 - i) * wideStep);
+      link('dispatch', HUB_INDEX, start, worker, top, [top[0], start[1]], THIN_WEIGHT, false, nodes[worker].family);
+    } else {
+      const start = ringPoint(RING_BOTTOM_DEGREES - (i - (count - 1) / 2) * narrowStep);
+      const control: ScenePoint = [start[0], start[1] + NARROW_DISPATCH_DROP * (top[1] - start[1])];
+      link('dispatch', HUB_INDEX, start, worker, top, control, THIN_WEIGHT, false, nodes[worker].family);
+    }
+    const decisionTop = nodes[decisionIndex].ports.top;
+    const bow = midpoint(bottom, decisionTop);
+    link('decision', worker, bottom, decisionIndex, decisionTop, [bow[0], bow[1] - DECISION_RISE], FULL_WEIGHT, false);
+    if (i > 0) {
+      const start = nodes[worker - 1].ports.right;
+      const end = nodes[worker].ports.left;
+      const arc = midpoint(start, end);
+      link('review', worker - 1, start, worker, end, [arc[0], arc[1] - REVIEW_RISE], FULL_WEIGHT, true);
+    }
   }
 
-  link(
-    FIRST_WORKER_INDEX + count - 1,
-    'bottom',
-    deepIndex,
-    'top',
-    'worker',
-    ESCALATION_PHASE,
-    FULL_WEIGHT,
-    true,
-    deep.family,
-  );
+  const last = FIRST_WORKER_INDEX + count - 1;
+  const escalationStart = nodes[last].ports.bottom;
+  const escalationEnd = nodes[deepIndex].ports.top;
+  link('escalation', last, escalationStart, deepIndex, escalationEnd, midpoint(escalationStart, escalationEnd), FULL_WEIGHT, true, deep.family);
 
   let width = 0;
   let height = 0;

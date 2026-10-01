@@ -3,7 +3,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { family } from '../../../amaleh/scripts/family.ts';
 import { MODELS } from '../../src/lib/models.ts';
-import { heroScene } from '../../src/lib/hero-scene.ts';
+import { heroScene, linkPoint } from '../../src/lib/hero-scene.ts';
+import { emptyFrame, fillFrame, heroStory, NO_HEAD, STILL_SECONDS } from '../../src/lib/hero-story.ts';
 import { WORKERS, REPAIR, DECISION } from '../../src/lib/pool.ts';
 
 const here = fileURLToPath(new URL('../../../', import.meta.url));
@@ -13,6 +14,8 @@ const EPS = 1e-6;
 const RING_SIDES = 2.5;
 const CLEARANCE_SIDES = 0.15;
 const OVERLAP_CROSS = 0.025;
+const CURVE_SAMPLES = 48;
+const STORY_STEP_SECONDS = 0.05;
 const LABEL_MIN_RATIO = { wide: 0.0186, narrow: 0.0382 };
 const HOST_MODELS = [
   { family: 'claude', name: 'Claude Code' },
@@ -21,7 +24,7 @@ const HOST_MODELS = [
 const DISPATCH_WEIGHT = 0.7;
 const FIRST_WORKER_INDEX = 3;
 const LABEL_DRAWN_GLYPH = 0.62;
-const LABEL_PATCH_SLACK = 1.1;
+const LABEL_BOX_SLACK = 1.1;
 const IDENTITY_FAMILY = new Map(Object.entries(MODELS).map(([key, value]) => [value, key]));
 
 const distance = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
@@ -67,22 +70,31 @@ function segmentBox(a, b, box) {
   return best;
 }
 
-function entersBox(a, b, box, from) {
-  for (let step = 1; step < 400; step += 1) {
-    const t = step / 400;
-    const p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-    if (from && distance(p, from) < 1e-3) continue;
-    if (insideBox(p, box, 1e-6)) return true;
-  }
-  return false;
+const curveOf = (link) => Array.from({ length: CURVE_SAMPLES + 1 }, (_, step) => linkPoint(link, step / CURVE_SAMPLES));
+
+function curveBox(curve, box) {
+  let best = Infinity;
+  for (let i = 1; i < curve.length; i += 1) best = Math.min(best, segmentBox(curve[i - 1], curve[i], box));
+  return best;
 }
 
-function entersCircle(a, b, centre, radius, from) {
-  for (let step = 1; step < 400; step += 1) {
-    const t = step / 400;
-    const p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-    if (from && distance(p, from) < 1e-3) continue;
-    if (distance(p, centre) < radius - 1e-6) return true;
+function curvePoint(curve, point) {
+  let best = Infinity;
+  for (let i = 1; i < curve.length; i += 1) best = Math.min(best, pointSegment(point, curve[i - 1], curve[i]));
+  return best;
+}
+
+function curveCurve(a, b) {
+  let best = Infinity;
+  for (let i = 1; i < a.length; i += 1) {
+    for (let j = 1; j < b.length; j += 1) best = Math.min(best, segmentSegment(a[i - 1], a[i], b[j - 1], b[j]));
+  }
+  return best;
+}
+
+function curvesCross(a, b) {
+  for (let i = 1; i < a.length; i += 1) {
+    for (let j = 1; j < b.length; j += 1) if (segmentsCross(a[i - 1], a[i], b[j - 1], b[j])) return true;
   }
   return false;
 }
@@ -215,10 +227,11 @@ function linksOf(failures, scene, direction, models, at) {
   const { hub, hosts, workers, jev, kimi } = models;
   const side = scene.nodes.find((node) => node.family).tile.width;
   const clearance = CLEARANCE_SIDES * side;
-  const named = (index) => scene.nodes[index]?.label ?? scene.nodes[index]?.role;
+  const named = (node) => node.label ?? node.role;
+  const centre = [hub.x, hub.y];
+  const onRing = (point) => Math.abs(distance(point, centre) - hub.r) < EPS;
   const ends = [];
-  const seen = new Map();
-  const phases = new Set();
+  const seen = new Set();
 
   for (const link of scene.links) {
     const from = scene.nodes[link.from];
@@ -227,24 +240,27 @@ function linksOf(failures, scene, direction, models, at) {
       failures.push(`${at}: a link names a missing node`);
       continue;
     }
-    const name = `${from.label ?? from.role} to ${to.label ?? to.role}`;
+    const name = `${named(from)} to ${named(to)}`;
     const start = [link.x1, link.y1];
     const end = [link.x2, link.y2];
-    const startSide = sideOf(from, start);
-    const endSide = sideOf(to, end);
-    if (!startSide || !endSide) {
-      failures.push(`${at}: the link ${name} does not start and end on side points of its two nodes`);
+    const control = [link.cx, link.cy];
+    if (![...start, ...end, ...control].every(Number.isFinite)) {
+      failures.push(`${at}: the link ${name} carries no finite start, control and end point`);
       continue;
     }
-    if (phases.has(link.phase)) failures.push(`${at}: the link ${name} shares its phase ${link.phase} with another link`);
-    phases.add(link.phase);
+    const startSide = from === hub ? (onRing(start) ? 'ring' : undefined) : sideOf(from, start);
+    const endSide = to === hub ? (onRing(end) ? 'ring' : undefined) : sideOf(to, end);
+    if (!startSide || !endSide) {
+      failures.push(`${at}: the link ${name} does not start and end on a side point of a tile or on the coordinator ring`);
+      continue;
+    }
     const key = [link.from, link.to].sort((a, b) => a - b).join('-');
     if (seen.has(key)) {
-      if (seen.get(key) !== `${start}|${end}`) failures.push(`${at}: two links join ${named(link.from)} and ${named(link.to)} along different segments`);
+      failures.push(`${at}: two links join ${named(from)} and ${named(to)}`);
       continue;
     }
-    seen.set(key, `${start}|${end}`);
-    ends.push({ from, to, start, end, startSide, endSide, name });
+    seen.add(key);
+    ends.push({ link, from, to, start, end, control, startSide, endSide, name, curve: curveOf(link) });
   }
 
   if (ends.length !== 3 * workers.length + 2) {
@@ -252,46 +268,47 @@ function linksOf(failures, scene, direction, models, at) {
   }
 
   const wanted = [
-    ...hosts.map((host) => ({ a: host, b: hub, kind: 'coordinator', hueFamily: host.family, weight: 1, dispatch: false })),
-    ...workers.map((worker) => ({ a: worker, b: hub, kind: 'coordinator', hueFamily: worker.family, weight: DISPATCH_WEIGHT, dispatch: true })),
-    ...workers.map((worker) => ({ a: worker, b: jev, kind: 'decision', hueFamily: undefined, weight: 1, dispatch: false })),
-    ...workers.slice(1).map((worker, index) => ({ a: workers[index], b: worker, kind: 'review', hueFamily: undefined, weight: 1, dispatch: false })),
-    { a: workers.at(-1), b: kimi, kind: 'worker', hueFamily: kimi.family, weight: 1, dispatch: false },
+    ...hosts.map((host) => ({ a: host, b: hub, kind: 'host', hueFamily: host.family, weight: 1 })),
+    ...workers.map((worker) => ({ a: worker, b: hub, kind: 'dispatch', hueFamily: worker.family, weight: DISPATCH_WEIGHT })),
+    ...workers.map((worker) => ({ a: worker, b: jev, kind: 'decision', hueFamily: undefined, weight: 1 })),
+    ...workers.slice(1).map((worker, index) => ({ a: workers[index], b: worker, kind: 'review', hueFamily: undefined, weight: 1 })),
+    { a: workers.at(-1), b: kimi, kind: 'escalation', hueFamily: kimi.family, weight: 1 },
   ];
-  for (const { a, b, kind, hueFamily, weight, dispatch } of wanted) {
-    const key = [a, b].map((node) => scene.nodes.indexOf(node)).sort((x, y) => x - y).join('-');
-    const link = scene.links.find((candidate) => {
-      const other = [candidate.from, candidate.to].sort((x, y) => x - y).join('-');
-      return other === key;
-    });
-    if (!link) {
-      failures.push(`${at}: no link joins ${a.label ?? a.role} and ${b.label ?? b.role}`);
+  for (const { a, b, kind, hueFamily, weight } of wanted) {
+    const end = ends.find((candidate) => (candidate.from === a && candidate.to === b) || (candidate.from === b && candidate.to === a));
+    if (!end) {
+      failures.push(`${at}: no link joins ${named(a)} and ${named(b)}`);
       continue;
     }
-    if (link.kind !== kind) failures.push(`${at}: the link ${a.label ?? a.role} to ${b.label ?? b.role} has kind ${link.kind}, expected ${kind}`);
-    if (Math.abs(link.weight - weight) > EPS) failures.push(`${at}: the link ${a.label ?? a.role} to ${b.label ?? b.role} has weight ${link.weight}, expected ${weight}`);
-    if (link.hueFamily !== hueFamily) failures.push(`${at}: the link ${a.label ?? a.role} to ${b.label ?? b.role} has hue family ${link.hueFamily}, expected ${hueFamily}`);
-    if (dispatch && typeof link.returnPhase !== 'number') {
-      failures.push(`${at}: the dispatch link to ${a.label} carries no returnPhase for an accepted chunk`);
-    }
+    if (end.link.kind !== kind) failures.push(`${at}: the link ${named(a)} to ${named(b)} has kind ${end.link.kind}, expected ${kind}`);
+    if (Math.abs(end.link.weight - weight) > EPS) failures.push(`${at}: the link ${named(a)} to ${named(b)} has weight ${end.link.weight}, expected ${weight}`);
+    if (end.link.hueFamily !== hueFamily) failures.push(`${at}: the link ${named(a)} to ${named(b)} has hue family ${end.link.hueFamily}, expected ${hueFamily}`);
   }
 
   const sideAt = (end, node) => (end.from === node ? end.startSide : end.endSide);
+  const pointAt = (end, node) => (end.from === node ? end.start : end.end);
   for (const end of ends) {
     const roles = [end.from.role, end.to.role];
     if (roles.includes('coordinator') && roles.includes('worker')) {
       const worker = end.from.role === 'worker' ? end.from : end.to;
-      const wanted = direction === 'wide' ? 'right' : 'bottom';
-      if (sideAt(end, hub) !== wanted) failures.push(`${at}: the dispatch line to ${worker.label} leaves the ring from its ${sideAt(end, hub)} point, expected its ${wanted} point`);
+      const point = pointAt(end, hub);
+      if (direction === 'wide' && !(point[0] > hub.x && point[1] > hub.y)) {
+        failures.push(`${at}: the dispatch line to ${worker.label} does not leave the ring from its lower right arc`);
+      }
+      if (direction === 'narrow' && !(point[1] > hub.y)) {
+        failures.push(`${at}: the dispatch line to ${worker.label} does not leave the ring from its lower arc`);
+      }
       if (sideAt(end, worker) !== 'top') failures.push(`${at}: the dispatch line reaches ${worker.label} at its ${sideAt(end, worker)} point, expected its top point`);
     }
     if (roles.includes('coordinator') && roles.includes('host')) {
       const host = end.from.role === 'host' ? end.from : end.to;
-      if (direction === 'wide' && sideAt(end, hub) !== 'right') {
-        failures.push(`${at}: the line from ${host.label} meets the ring at its ${sideAt(end, hub)} point, expected its right point`);
+      const point = pointAt(end, hub);
+      const expected = direction === 'wide' ? (host === hosts[0] ? 'left' : 'bottom') : host === hosts[0] ? 'right' : 'left';
+      if (sideAt(end, host) !== expected) {
+        failures.push(`${at}: the line from ${host.label} leaves its ${sideAt(end, host)} point, expected its ${expected} point`);
       }
-      if (direction === 'narrow' && sideAt(end, host) !== (host === hosts[0] ? 'right' : 'left')) {
-        failures.push(`${at}: the line from ${host.label} leaves its ${sideAt(end, host)} point, expected its ${host === hosts[0] ? 'right' : 'left'} point`);
+      if (direction === 'wide' && !(point[0] > hub.x && point[1] < hub.y)) {
+        failures.push(`${at}: the line from ${host.label} does not meet the ring on its upper right arc`);
       }
     }
     if (roles[0] === 'worker' && roles[1] === 'worker') {
@@ -314,51 +331,147 @@ function linksOf(failures, scene, direction, models, at) {
     }
   }
 
+  const ringEnds = ends.filter((end) => end.from === hub || end.to === hub);
+  for (let i = 0; i < ringEnds.length; i += 1) {
+    for (let j = i + 1; j < ringEnds.length; j += 1) {
+      const gap = distance(pointAt(ringEnds[i], hub), pointAt(ringEnds[j], hub));
+      if (gap < clearance) {
+        failures.push(`${at}: the lines ${ringEnds[i].name} and ${ringEnds[j].name} meet the ring ${gap.toFixed(3)} apart, below ${clearance.toFixed(3)}`);
+      }
+    }
+  }
+
   const boxes = boxesOf(scene, hub);
   for (const end of ends) {
+    const inner = end.curve.slice(1, -1);
+    if (end.curve.some((point) => point[0] < -EPS || point[1] < -EPS || point[0] > scene.width + EPS || point[1] > scene.height + EPS)) {
+      failures.push(`${at}: the line ${end.name} leaves the ${scene.width.toFixed(2)} by ${scene.height.toFixed(2)} scene box`);
+    }
     for (const { name, box, node } of boxes) {
       if (node === end.from || node === end.to) continue;
       if (node === hub) {
-        if (pointSegment([hub.x, hub.y], end.start, end.end) < hub.r + clearance) {
+        if (curvePoint(end.curve, centre) < hub.r + clearance) {
           failures.push(`${at}: the line ${end.name} passes within ${clearance.toFixed(3)} of the coordinator ring`);
         }
         continue;
       }
-      if (segmentBox(end.start, end.end, box) < clearance) {
+      if (curveBox(end.curve, box) < clearance) {
         failures.push(`${at}: the line ${end.name} passes within ${clearance.toFixed(3)} of ${name}`);
       }
     }
-    for (const [node, from] of [[end.from, end.start], [end.to, end.end]]) {
+    for (const node of [end.from, end.to]) {
       if (node === hub) {
-        if (entersCircle(end.start, end.end, [hub.x, hub.y], hub.r, from)) failures.push(`${at}: the line ${end.name} runs through the coordinator ring`);
+        if (inner.some((point) => distance(point, centre) < hub.r - EPS)) failures.push(`${at}: the line ${end.name} runs through the coordinator ring`);
         continue;
       }
-      if (entersBox(end.start, end.end, node.tile, from) || entersBox(end.start, end.end, node.labelBox, from)) {
+      if (inner.some((point) => insideBox(point, node.tile, EPS) || insideBox(point, node.labelBox, EPS))) {
         failures.push(`${at}: the line ${end.name} runs through the tile or label of ${node.label}`);
       }
     }
   }
 
+  const leaving = (end, point) => {
+    const away = same(end.control, point) ? (same(end.start, point) ? end.end : end.start) : end.control;
+    return [away[0] - point[0], away[1] - point[1]];
+  };
   for (let i = 0; i < ends.length; i += 1) {
     for (let j = i + 1; j < ends.length; j += 1) {
       const a = ends[i];
       const b = ends[j];
-      const shared = [a.start, a.end].find((point) => same(point, b.start) || same(point, b.end));
-      if (shared) {
-        const away = (end) => (same(end.start, shared) ? end.end : end.start);
-        const u = [away(a)[0] - shared[0], away(a)[1] - shared[1]];
-        const v = [away(b)[0] - shared[0], away(b)[1] - shared[1]];
-        const cross = Math.abs(u[0] * v[1] - u[1] * v[0]) / (Math.hypot(...u) * Math.hypot(...v));
-        if (cross < OVERLAP_CROSS && u[0] * v[0] + u[1] * v[1] > 0) {
-          failures.push(`${at}: the lines ${a.name} and ${b.name} leave one point along the same direction and overlap`);
+      const sharesNode = a.from === b.from || a.from === b.to || a.to === b.from || a.to === b.to;
+      if (!sharesNode) {
+        const gap = curveCurve(a.curve, b.curve);
+        if (gap < clearance) {
+          failures.push(`${at}: the lines ${a.name} and ${b.name} ${gap < EPS ? 'cross' : `come within ${gap.toFixed(3)}`}, below ${clearance.toFixed(3)}`);
         }
         continue;
       }
-      const gap = segmentSegment(a.start, a.end, b.start, b.end);
-      if (gap < clearance) {
-        failures.push(`${at}: the lines ${a.name} and ${b.name} ${gap < EPS ? 'cross' : `come within ${gap.toFixed(3)}`}, below ${clearance.toFixed(3)}`);
+      if (curvesCross(a.curve, b.curve)) failures.push(`${at}: the lines ${a.name} and ${b.name} share a node and cross`);
+      const shared = [a.start, a.end].find((point) => same(point, b.start) || same(point, b.end));
+      if (!shared) continue;
+      const u = leaving(a, shared);
+      const v = leaving(b, shared);
+      const cross = Math.abs(u[0] * v[1] - u[1] * v[0]) / (Math.hypot(...u) * Math.hypot(...v));
+      if (cross < OVERLAP_CROSS && u[0] * v[0] + u[1] * v[1] > 0) {
+        failures.push(`${at}: the lines ${a.name} and ${b.name} leave one point along the same direction and overlap`);
       }
     }
+  }
+}
+
+function story(failures, scene, models, at) {
+  const { workers, jev, kimi } = models;
+  let told;
+  try {
+    told = heroStory(scene);
+  } catch (error) {
+    failures.push(`${at}: heroStory threw ${error.message}`);
+    return;
+  }
+  if (!(told.length > 0)) {
+    failures.push(`${at}: the story has no positive length`);
+    return;
+  }
+  const indexOf = (node) => scene.nodes.indexOf(node);
+  const travels = told.beats.filter((beat) => beat.kind === 'travel');
+  for (const beat of told.beats) {
+    const end = beat.end ?? beat.start;
+    if (!(beat.start >= 0 && end >= beat.start && end <= told.length)) {
+      failures.push(`${at}: a ${beat.kind} beat runs from ${beat.start} to ${end}, outside the ${told.length.toFixed(2)} second story`);
+    }
+    if (beat.kind === 'travel' && !scene.links[beat.link]) failures.push(`${at}: a travel beat names the missing link ${beat.link}`);
+    if ('node' in beat && !scene.nodes[beat.node]) failures.push(`${at}: a ${beat.kind} beat names the missing node ${beat.node}`);
+  }
+  for (let i = 0; i < travels.length; i += 1) {
+    for (let j = i + 1; j < travels.length; j += 1) {
+      if (travels[i].link === travels[j].link && travels[i].start < travels[j].end && travels[j].start < travels[i].end) {
+        failures.push(`${at}: two packets travel link ${travels[i].link} at the same time`);
+      }
+    }
+  }
+
+  const builds = workers.map((worker) =>
+    travels.filter((beat) => scene.links[beat.link].kind === 'dispatch' && scene.links[beat.link].to === indexOf(worker) && beat.direction === 1).length,
+  );
+  if (builds.some((value) => value !== 1)) {
+    failures.push(`${at}: the story dispatches a chunk to each worker [${builds.join(', ')}] times, expected once each`);
+  }
+  const accepted = told.beats.filter((beat) => beat.kind === 'accept').map((beat) => beat.segment).sort((a, b) => a - b);
+  if (accepted.length !== workers.length || accepted.some((segment, position) => segment !== position)) {
+    failures.push(`${at}: the story accepts the ring segments [${accepted.join(', ')}], expected one for each of the ${workers.length} workers`);
+  }
+  const returns = travels.filter((beat) => scene.links[beat.link].kind === 'dispatch' && beat.direction === -1).length;
+  if (returns !== workers.length) failures.push(`${at}: ${returns} chunks return to the ring, expected ${workers.length}`);
+  const reviews = travels.filter((beat) => scene.links[beat.link].kind === 'review').length;
+  if (reviews !== workers.length) failures.push(`${at}: ${reviews} chunks cross to a reviewer, expected ${workers.length}`);
+  const questions = travels.filter((beat) => scene.links[beat.link].kind === 'decision' && scene.links[beat.link].to === indexOf(jev));
+  if (questions.length !== 2 * workers.length) failures.push(`${at}: ${questions.length} question trips to Jev, expected one out and one back for each of the ${workers.length} workers`);
+  const failed = told.beats.filter((beat) => beat.kind === 'verdict' && !beat.passed);
+  const repairs = told.beats.filter((beat) => beat.kind === 'work' && beat.node === indexOf(kimi));
+  const escalations = travels.filter((beat) => scene.links[beat.link].kind === 'escalation');
+  if (failed.length !== 1 || repairs.length !== 1 || escalations.length !== 2) {
+    failures.push(`${at}: the story holds ${failed.length} failed reviews, ${repairs.length} repairs by Kimi and ${escalations.length} escalation trips, expected 1, 1 and 2`);
+  } else if (!(failed[0].start <= escalations[0].start && escalations[0].end <= repairs[0].start && repairs[0].end <= escalations[1].start)) {
+    failures.push(`${at}: the failed review, the trip to Kimi, the repair and the trip back are not in that order`);
+  }
+
+  const frame = emptyFrame(scene);
+  const inRange = (values) => [...values].every((value) => value >= -EPS && value <= 1 + EPS);
+  for (let seconds = 0; seconds < told.length; seconds += STORY_STEP_SECONDS) {
+    fillFrame(told, seconds, frame);
+    const heads = [...frame.linkHead].filter((head) => head !== NO_HEAD);
+    const levels = [heads, frame.linkLevel, frame.nodeLevel, frame.nodeVerdict, frame.segments, [frame.pulse]];
+    if (!levels.every(inRange)) {
+      failures.push(`${at}: the story frame at ${seconds.toFixed(2)} seconds holds a value outside 0 to 1`);
+      break;
+    }
+  }
+  const still = fillFrame(told, STILL_SECONDS, emptyFrame(scene));
+  const flying = [...still.linkHead].filter((head) => head > 0.2 && head < 0.8).length;
+  if (flying !== 1) failures.push(`${at}: the still frame at ${STILL_SECONDS} seconds shows ${flying} chunks in mid-flight, expected 1`);
+  const again = fillFrame(told, STILL_SECONDS + told.length, emptyFrame(scene));
+  if ([...still.linkHead].some((head, index) => Math.abs(head - again.linkHead[index]) > 1e-3)) {
+    failures.push(`${at}: the story does not repeat after its ${told.length.toFixed(2)} second length`);
   }
 }
 
@@ -388,8 +501,8 @@ function labelSize(failures, direction, scene) {
   for (const node of scene.nodes) {
     if (!node.labelBox) continue;
     const drawn = node.label.length * scene.labelSize * LABEL_DRAWN_GLYPH;
-    if (node.labelBox.width < drawn * LABEL_PATCH_SLACK) {
-      failures.push(`the label patch of ${node.label} in the ${direction} layout is ${node.labelBox.width.toFixed(3)} wide, below 10% more than the ${drawn.toFixed(3)} its glyphs need`);
+    if (node.labelBox.width < drawn * LABEL_BOX_SLACK) {
+      failures.push(`the label box of ${node.label} in the ${direction} layout is ${node.labelBox.width.toFixed(3)} wide, below 10% more than the ${drawn.toFixed(3)} its glyphs need`);
       break;
     }
   }
@@ -436,6 +549,7 @@ function geometry(failures) {
       ports(failures, scene, models.hub, at);
       arrangement(failures, scene, direction, models, at);
       linksOf(failures, scene, direction, models, at);
+      story(failures, scene, models, at);
     }
   }
 
@@ -490,6 +604,17 @@ function built(failures, publicDir) {
         failures.push(`the built ${hero.layout} hero tile ${worker.family} is labelled [${labels.join(', ')}], expected [${worker.name}]`);
       }
     }
+    const curves = [...hero.svg.matchAll(/<path\b[^>]*\bdata-link="[^"]+"[^>]*>/g)].length;
+    const segments = [...hero.svg.matchAll(/<path\b[^>]*\bdata-segment="[^"]+"[^>]*>/g)].length;
+    const packets = [...hero.svg.matchAll(/<circle\b[^>]*\bdata-packet\b[^>]*>/g)].length;
+    if (curves !== 3 * expected.length + 2) {
+      failures.push(`the built ${hero.layout} hero draws ${curves} link curves, expected ${3 * expected.length + 2}`);
+    }
+    if (segments !== expected.length) {
+      failures.push(`the built ${hero.layout} hero draws ${segments} ring segments, expected one for each of the ${expected.length} workers`);
+    }
+    if (packets !== 1) failures.push(`the built ${hero.layout} hero draws ${packets} still chunks, expected 1`);
+    if (/data-label-patch/.test(hero.svg)) failures.push(`the built ${hero.layout} hero still draws a box behind a label`);
   }
 }
 

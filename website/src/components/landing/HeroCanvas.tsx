@@ -1,9 +1,11 @@
 import { createContext, useContext, onCleanup, onMount, type JSX } from 'solid-js';
+import { HERO_MARK } from '../../lib/brand';
 import { MODELS, type ModelId, type ModelIdentity } from '../../lib/models';
 import { asset } from '../../lib/paths';
 import { WORKERS, WORKER_NAMES, REPAIR, DECISION, joinNames } from '../../lib/pool';
 import {
   heroScene,
+  linkPoint,
   TILE,
   type Scene,
   type SceneDirection,
@@ -12,6 +14,15 @@ import {
   type SceneNode,
   type ScenePool,
 } from '../../lib/hero-scene';
+import {
+  emptyFrame,
+  fillFrame,
+  heroStory,
+  NO_HEAD,
+  STILL_SECONDS,
+  type SceneFrame,
+  type Story,
+} from '../../lib/hero-story';
 
 const FAMILY_BY_IDENTITY = new Map<ModelIdentity, ModelId>(
   Object.entries(MODELS).map(([key, value]) => [value, key as ModelId]),
@@ -39,108 +50,126 @@ const SCENES: Record<SceneDirection, Scene> = {
   narrow: heroScene(POOL, 'narrow'),
 };
 
-const LINK_STROKE = { near: 0.032, far: 0.018 };
-const RETURN_PACKET_HEAD = 0.26;
-const RETURN_PACKET_TAIL = 0.11;
-const RETURN_PACKET_CORE = 0.05;
-const RETURN_PACKET_SPREAD = 0.18;
-const RETURN_PACKET_RAIL = 0.028;
-const RETURN_PACKET_TRAIL = 0.15;
-const NO_RETURN = -1;
-const LINK_GLOW_FADE = { above: 0.1, width: 0.06 };
+const STORIES: Record<SceneDirection, Story> = {
+  wide: heroStory(SCENES.wide),
+  narrow: heroStory(SCENES.narrow),
+};
+
+const STILL_FRAMES: Record<SceneDirection, SceneFrame> = {
+  wide: fillFrame(STORIES.wide, STILL_SECONDS, emptyFrame(SCENES.wide)),
+  narrow: fillFrame(STORIES.narrow, STILL_SECONDS, emptyFrame(SCENES.narrow)),
+};
+
+const LINK_STROKE = { near: 0.032, far: 0.022 };
+const LINK_OPACITY = { near: 0.3, far: 0.18, active: 0.7 };
+const PACKET_RADIUS = 0.07;
 const TILE_EDGE = 0.04;
 const RING_EDGE = 0.05;
+const RING_REST_OPACITY = 0.5;
+const SEGMENT_GAP_TURNS = 0.008;
+const SEGMENT_OFFSET = 0.5;
+const MARK_SIDE = 1;
 const MONOGRAM_SIZE = 0.26;
-const FRAME_OPACITY = 0.25;
+const LABEL_OUTLINE = 0.35;
+const CURVE_STEPS = 8;
+const LINK_REACH = 0.55;
+const TILE_REACH = 0.9;
+const PACKET_TAIL = 0.35;
+const PASS_VARIABLE = '--color-secondary';
+const FAIL_VARIABLE = '--color-error';
 
 const tileClipId = (direction: SceneDirection, index: number) =>
   `hero-tile-clip-${direction}-${index}`;
 
-const ROLE_VARIABLE: Record<SceneLinkKind, string> = {
-  coordinator: '--color-primary',
-  worker: '--color-secondary',
+const KIND_VARIABLE: Record<SceneLinkKind, string> = {
+  host: '--color-primary',
+  dispatch: '--color-primary',
   review: '--color-secondary',
   decision: '--color-accent',
+  escalation: '--color-warning',
 };
 
 const bareVar = (value: string) => value.replace(/^var\(/, '').replace(/\)$/, '');
 
-const edgeHue = (link: SceneLink): string => {
-  if (link.kind === 'review') return '--color-secondary';
-  if (link.hueFamily) {
-    const identity = MODELS[link.hueFamily as ModelId];
-    if (identity) return bareVar(identity.hue);
-  }
-  return ROLE_VARIABLE[link.kind];
-};
+const edgeHue = (link: SceneLink): string =>
+  link.hueFamily ? bareVar(MODELS[link.hueFamily as ModelId].hue) : KIND_VARIABLE[link.kind];
 
 const nodeHue = (node: SceneNode): string =>
   node.family ? bareVar(MODELS[node.family as ModelId].hue) : '--color-primary';
 
-const HUE_VARIABLES = [
+const SCENE_VARIABLES = [
   ...new Set([
-    '--color-primary',
-    '--color-secondary',
-    '--color-accent',
+    '--color-base-100',
+    '--color-line',
+    PASS_VARIABLE,
+    FAIL_VARIABLE,
+    ...Object.values(KIND_VARIABLE),
     ...Object.values(MODELS).map((identity) => bareVar(identity.hue)),
   ]),
 ];
-const SCENE_VARIABLES = ['--color-base-100', '--color-line', ...HUE_VARIABLES];
 
 const ARIA_LABEL =
   `Claude Code or Codex runs the coordinator, which hands chunks of work to the Flash worker families ${joinNames(WORKER_NAMES)}. ` +
   `Workers put bounded questions to ${DECISION.name}. A model from another Flash family reviews each finished chunk, ` +
   `a chunk that keeps failing its repairs escalates to ${REPAIR.name}, and accepted chunks travel back to the coordinator.`;
 
-const NODE_COUNT = SCENES.wide.nodes.length;
+const HUB_INDEX = SCENES.wide.nodes.findIndex((node) => node.role === 'coordinator');
+const TILE_INDICES = SCENES.wide.nodes.flatMap((node, index) => (node.role === 'coordinator' ? [] : [index]));
+const TILE_COUNT = TILE_INDICES.length;
 const LINK_COUNT = SCENES.wide.links.length;
+const WORKER_COUNT = POOL.workers.length;
+
+const rounded = (value: number) => Number(value.toFixed(3));
+
+const linkPath = (link: SceneLink) =>
+  `M${rounded(link.x1)} ${rounded(link.y1)}Q${rounded(link.cx)} ${rounded(link.cy)} ${rounded(link.x2)} ${rounded(link.y2)}`;
+
+function segmentPath(hub: SceneNode, segment: number): string {
+  const point = (turn: number) => {
+    const angle = turn * 2 * Math.PI - Math.PI / 2;
+    return `${rounded(hub.x + hub.r * Math.cos(angle))} ${rounded(hub.y + hub.r * Math.sin(angle))}`;
+  };
+  const start = (segment - SEGMENT_OFFSET) / WORKER_COUNT + SEGMENT_GAP_TURNS;
+  const end = (segment + 1 - SEGMENT_OFFSET) / WORKER_COUNT - SEGMENT_GAP_TURNS;
+  return `M${point(start)}A${hub.r} ${hub.r} 0 ${end - start > 0.5 ? 1 : 0} 1 ${point(end)}`;
+}
 
 type Palette = Record<string, [number, number, number]>;
 
 type SceneArrays = {
-  nodePositions: Float32Array;
-  nodeRadii: Float32Array;
-  nodeColors: Float32Array;
+  hub: Float32Array;
+  hubColor: Float32Array;
+  tilePositions: Float32Array;
+  tileColors: Float32Array;
   linkEnds: Float32Array;
+  linkControls: Float32Array;
   linkColors: Float32Array;
-  linkPhases: Float32Array;
-  linkReturns: Float32Array;
-  linkNear: Float32Array;
-  linkClamp: Float32Array;
-  linkWeight: Float32Array;
+  linkShapes: Float32Array;
 };
 
 function sceneArrays(scene: Scene, palette: Palette): SceneArrays {
+  const hub = scene.nodes[HUB_INDEX];
   const arrays: SceneArrays = {
-    nodePositions: new Float32Array(NODE_COUNT * 2),
-    nodeRadii: new Float32Array(NODE_COUNT),
-    nodeColors: new Float32Array(NODE_COUNT * 3),
+    hub: new Float32Array([hub.x, hub.y, hub.r]),
+    hubColor: new Float32Array(palette[nodeHue(hub)]),
+    tilePositions: new Float32Array(TILE_COUNT * 2),
+    tileColors: new Float32Array(TILE_COUNT * 3),
     linkEnds: new Float32Array(LINK_COUNT * 4),
+    linkControls: new Float32Array(LINK_COUNT * 2),
     linkColors: new Float32Array(LINK_COUNT * 3),
-    linkPhases: new Float32Array(LINK_COUNT),
-    linkReturns: new Float32Array(LINK_COUNT),
-    linkNear: new Float32Array(LINK_COUNT),
-    linkClamp: new Float32Array(LINK_COUNT),
-    linkWeight: new Float32Array(LINK_COUNT),
+    linkShapes: new Float32Array(LINK_COUNT * 2),
   };
-  scene.nodes.forEach((node, i) => {
-    arrays.nodePositions[i * 2] = node.x;
-    arrays.nodePositions[i * 2 + 1] = node.y;
-    arrays.nodeRadii[i] = node.r;
-    arrays.nodeColors.set(palette[nodeHue(node)], i * 3);
+  TILE_INDICES.forEach((nodeIndex, i) => {
+    const node = scene.nodes[nodeIndex];
+    arrays.tilePositions[i * 2] = node.x;
+    arrays.tilePositions[i * 2 + 1] = node.y;
+    arrays.tileColors.set(palette[nodeHue(node)], i * 3);
   });
   scene.links.forEach((link, i) => {
-    arrays.linkEnds[i * 4] = link.x1;
-    arrays.linkEnds[i * 4 + 1] = link.y1;
-    arrays.linkEnds[i * 4 + 2] = link.x2;
-    arrays.linkEnds[i * 4 + 3] = link.y2;
+    arrays.linkEnds.set([link.x1, link.y1, link.x2, link.y2], i * 4);
+    arrays.linkControls.set([link.cx, link.cy], i * 2);
     arrays.linkColors.set(palette[edgeHue(link)], i * 3);
-    arrays.linkPhases[i] = link.phase;
-    arrays.linkReturns[i] = link.returnPhase ?? NO_RETURN;
-    arrays.linkNear[i] = link.near ? 1.0 : 0.6;
-    arrays.linkWeight[i] = link.weight;
-    const lower = Math.max(scene.nodes[link.from].y, scene.nodes[link.to].y);
-    arrays.linkClamp[i] = lower + TILE.half + LINK_GLOW_FADE.above;
+    arrays.linkShapes.set([link.weight, link.near ? 1 : 0.6], i * 2);
   });
   return arrays;
 }
@@ -150,33 +179,45 @@ attribute vec2 aPos;
 void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }`;
 
 const FRAGMENT_SOURCE = `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
 precision mediump float;
-uniform vec2 uRes;
+#endif
 uniform vec2 uOrigin;
 uniform float uScale;
 uniform float uHeight;
 uniform float uTime;
 uniform vec3 uBase;
 uniform vec3 uLine;
-uniform vec2 uNode[${NODE_COUNT}];
-uniform float uNodeRadius[${NODE_COUNT}];
-uniform vec3 uNodeColor[${NODE_COUNT}];
-uniform vec4 uLink[${LINK_COUNT}];
+uniform vec3 uPass;
+uniform vec3 uFail;
+uniform vec3 uHub;
+uniform vec3 uHubColor;
+uniform float uPulse;
+uniform float uSegment[${WORKER_COUNT}];
+uniform vec2 uTile[${TILE_COUNT}];
+uniform vec3 uTileColor[${TILE_COUNT}];
+uniform vec4 uTileState[${TILE_COUNT}];
+uniform vec4 uLinkEnds[${LINK_COUNT}];
+uniform vec2 uLinkControl[${LINK_COUNT}];
 uniform vec3 uLinkColor[${LINK_COUNT}];
-uniform float uLinkPhase[${LINK_COUNT}];
-uniform float uLinkReturn[${LINK_COUNT}];
-uniform float uLinkNear[${LINK_COUNT}];
-uniform float uLinkClamp[${LINK_COUNT}];
-uniform float uLinkWeight[${LINK_COUNT}];
+uniform vec2 uLinkShape[${LINK_COUNT}];
+uniform vec3 uLinkState[${LINK_COUNT}];
 
-float segmentDistance(vec2 p, vec2 a, vec2 b){
-  vec2 ab = b - a;
-  float t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
-  return length(p - (a + ab * t));
-}
+const float TAU = 6.2831853;
 
 float glow(float d, float sigma){
   return exp(-(d * d) / (2.0 * sigma * sigma));
+}
+
+vec2 bezier(vec2 a, vec2 c, vec2 b, float t){
+  return mix(mix(a, c, t), mix(c, b, t), t);
+}
+
+float roundedBox(vec2 q, float halfSide, float corner){
+  vec2 d = abs(q) - (halfSide - corner);
+  return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - corner;
 }
 
 void main(){
@@ -190,44 +231,93 @@ void main(){
   color += uLine * 0.03 * glow(min(cell.x, cell.y), 0.015);
 
   for (int i = 0; i < ${LINK_COUNT}; i++){
-    vec2 a = uLink[i].xy;
-    vec2 b = uLink[i].zw;
-    float weight = uLinkWeight[i];
-    float rail = segmentDistance(p, a, b);
-    float near = uLinkNear[i];
-    float glowClamp = 1.0 - smoothstep(uLinkClamp[i] - ${LINK_GLOW_FADE.width.toFixed(2)}, uLinkClamp[i] + ${LINK_GLOW_FADE.width.toFixed(2)}, p.y);
+    vec2 a = uLinkEnds[i].xy;
+    vec2 b = uLinkEnds[i].zw;
+    vec2 c = uLinkControl[i];
+    vec2 lowest = min(a, min(b, c)) - ${LINK_REACH.toFixed(2)};
+    vec2 highest = max(a, max(b, c)) + ${LINK_REACH.toFixed(2)};
+    if (p.x < lowest.x || p.y < lowest.y || p.x > highest.x || p.y > highest.y) continue;
 
-    color += uLinkColor[i] * weight * (0.22 + 0.18 * near) * glow(rail, weight * (0.048 + 0.042 * (1.0 - near))) * glowClamp;
-    color += uLinkColor[i] * weight * (0.38 + 0.30 * near) * glow(rail, weight * (0.027 + 0.024 * (1.0 - near))) * glowClamp;
+    float nearest = 100.0;
+    float along = 0.0;
+    vec2 previous = a;
+    for (int j = 1; j <= ${CURVE_STEPS}; j++){
+      vec2 next = bezier(a, c, b, float(j) / ${CURVE_STEPS.toFixed(1)});
+      vec2 edge = next - previous;
+      vec2 toPixel = p - previous;
+      float h = clamp(dot(toPixel, edge) / max(dot(edge, edge), 1e-5), 0.0, 1.0);
+      vec2 offset = toPixel - edge * h;
+      float squared = dot(offset, offset);
+      if (squared < nearest){
+        nearest = squared;
+        along = (float(j) - 1.0 + h) / ${CURVE_STEPS.toFixed(1)};
+      }
+      previous = next;
+    }
+    float rail = sqrt(nearest);
 
-    float travel = fract(uTime * 0.2 + uLinkPhase[i]);
-    float eased = travel * travel * (3.0 - 2.0 * travel);
-    vec2 packet = a + (b - a) * eased;
-    float alive = sin(travel * 3.1415926);
-    float toPacket = length(p - packet);
-    float nearBoost = 1.0 + 0.2 * near;
-    color += uLinkColor[i] * alive * nearBoost * (0.32 * glow(toPacket, 0.055) + 0.14 * glow(toPacket, 0.20)) * glowClamp;
-    color += uLinkColor[i] * weight * alive * nearBoost * 0.18 * glow(rail, 0.032) * smoothstep(0.5, 0.0, toPacket) * glowClamp;
+    vec3 hue = uLinkColor[i];
+    float weight = uLinkShape[i].x;
+    float near = uLinkShape[i].y;
+    float level = uLinkState[i].x;
+    float head = uLinkState[i].y;
+    float direction = uLinkState[i].z;
+    float core = glow(rail, 0.014 + 0.012 * weight);
+    float halo = glow(rail, 0.075);
 
-    if (uLinkReturn[i] >= 0.0) {
-      float back = fract(uTime * 0.2 + uLinkReturn[i]);
-      float backEased = back * back * (3.0 - 2.0 * back);
-      vec2 backPacket = b + (a - b) * backEased;
-      float backAlive = sin(back * 3.1415926);
-      float toBack = length(p - backPacket);
-      color += uLinkColor[i] * backAlive * nearBoost * (${RETURN_PACKET_HEAD.toFixed(2)} * glow(toBack, ${RETURN_PACKET_CORE.toFixed(2)}) + ${RETURN_PACKET_TAIL.toFixed(2)} * glow(toBack, ${RETURN_PACKET_SPREAD.toFixed(2)})) * glowClamp;
-      color += uLinkColor[i] * weight * backAlive * nearBoost * ${RETURN_PACKET_TRAIL.toFixed(2)} * glow(rail, ${RETURN_PACKET_RAIL.toFixed(2)}) * smoothstep(0.5, 0.0, toBack) * glowClamp;
+    color += hue * weight * near * 0.24 * core;
+    color += hue * level * (0.40 * core + 0.14 * halo);
+
+    if (head >= 0.0){
+      float behind = (head - along) * direction;
+      float tail = step(0.0, behind) * (1.0 - smoothstep(0.0, ${PACKET_TAIL.toFixed(2)}, behind));
+      float present = smoothstep(0.0, 0.06, head) * (1.0 - smoothstep(0.94, 1.0, head));
+      float toHead = length(p - bezier(a, c, b, head));
+      color += hue * tail * (0.70 * core + 0.28 * halo);
+      color += present * (mix(hue, vec3(1.0), 0.55) * 0.95 * glow(toHead, 0.05) + hue * 0.30 * glow(toHead, 0.17));
     }
   }
 
-  for (int i = 0; i < ${NODE_COUNT}; i++){
-    float toNode = length(p - uNode[i]);
-    float radius = uNodeRadius[i];
-    float breathe = 0.86 + 0.14 * sin(uTime * 1.1 + float(i) * 1.7);
-    color += uNodeColor[i] * 0.24 * glow(toNode, radius * 0.95) * breathe;
-    color += uNodeColor[i] * 0.30 * glow(abs(toNode - radius), radius * 0.10);
-    color += uNodeColor[i] * 0.36 * glow(abs(toNode - radius), radius * 0.05);
-    color = mix(color, uBase, 0.62 * smoothstep(radius * 0.95, radius * 0.72, toNode));
+  vec2 fromHub = p - uHub.xy;
+  float hubDistance = length(fromHub);
+  if (hubDistance < uHub.z + 1.2){
+    float edge = abs(hubDistance - uHub.z);
+    float turn = fract(atan(fromHub.y, fromHub.x) / TAU + 0.25);
+    float slot = mod(turn * ${WORKER_COUNT.toFixed(1)} + ${SEGMENT_OFFSET.toFixed(1)}, ${WORKER_COUNT.toFixed(1)});
+    float index = floor(slot);
+    float within = fract(slot);
+    float filled = 0.0;
+    for (int i = 0; i < ${WORKER_COUNT}; i++){
+      if (abs(float(i) - index) < 0.5) filled = uSegment[i];
+    }
+    float gap = ${(SEGMENT_GAP_TURNS * WORKER_COUNT).toFixed(4)};
+    float body = smoothstep(0.0, gap, within) * (1.0 - smoothstep(1.0 - gap, 1.0, within));
+    float lit = ${RING_REST_OPACITY.toFixed(2)} + 0.50 * filled + 0.45 * uPulse;
+    color += uHubColor * lit * (0.60 * body * glow(edge, 0.030) + 0.24 * glow(edge, 0.085));
+    color += uHubColor * (0.05 + 0.02 * sin(uTime * 1.1) + 0.10 * uPulse) * glow(hubDistance, uHub.z * 0.8);
+    color += uHubColor * uPulse * 0.35 * glow(hubDistance - uHub.z - (1.0 - uPulse) * 0.35, 0.05);
+  }
+
+  for (int i = 0; i < ${TILE_COUNT}; i++){
+    vec2 q = p - uTile[i];
+    float edge = roundedBox(q, ${TILE.half.toFixed(2)}, ${TILE.radius.toFixed(2)});
+    if (edge > ${TILE_REACH.toFixed(2)}) continue;
+    float outside = max(edge, 0.0);
+    vec3 hue = uTileColor[i];
+    float level = uTileState[i].x;
+    float work = uTileState[i].y;
+    float verdict = uTileState[i].z;
+    float breathe = 0.85 + 0.15 * sin(uTime * 1.1 + float(i) * 1.7);
+    color += hue * (0.16 * breathe + 0.36 * level) * glow(outside, 0.07 + 0.05 * level);
+
+    if (work >= 0.0){
+      float lag = fract(work - atan(q.y, q.x) / TAU);
+      color += mix(hue, vec3(1.0), 0.35) * level * 0.9 * exp(-lag * 4.0) * glow(edge - 0.07, 0.022);
+    }
+    if (verdict > 0.0){
+      vec3 verdictHue = mix(uPass, uFail, uTileState[i].w);
+      color += verdictHue * verdict * (0.55 * glow(edge - (1.0 - verdict) * 0.30, 0.045) + 0.25 * glow(outside, 0.16));
+    }
   }
 
   gl_FragColor = vec4(color, 1.0);
@@ -275,6 +365,8 @@ function readPalette(host: HTMLElement, variables: string[]) {
   const probe = document.createElement('span');
   probe.style.position = 'absolute';
   probe.style.visibility = 'hidden';
+  // The reduced-motion rule in style.css gives every element a 0.01ms transition, and a colour read mid-transition returns the previous colour.
+  probe.style.transitionProperty = 'none';
   host.appendChild(probe);
   const read = (variable: string): [number, number, number] => {
     probe.style.color = `var(${variable})`;
@@ -324,6 +416,8 @@ function SceneSvg(props: {
   onMountFrame: (element: SVGGElement) => void;
 }) {
   const scene = props.scene;
+  const still = STILL_FRAMES[scene.direction];
+  const hub = scene.nodes[HUB_INDEX];
   return (
     <svg
       ref={(element) => props.onMountBox(element)}
@@ -352,39 +446,57 @@ function SceneSvg(props: {
         ref={(element) => props.onMountFrame(element)}
         data-hero-frame={scene.direction}
         class="transition-opacity duration-500 ease-out-soft"
-        opacity={FRAME_OPACITY}
       >
-        {scene.links.map((link) => (
-          <line
+        {scene.links.map((link, index) => (
+          <path
             data-link={`${link.from}-${link.to}`}
             data-kind={link.kind}
-            x1={link.x1}
-            y1={link.y1}
-            x2={link.x2}
-            y2={link.y2}
+            d={linkPath(link)}
+            fill="none"
             stroke={`var(${edgeHue(link)})`}
             stroke-width={(link.near ? LINK_STROKE.near : LINK_STROKE.far) * link.weight}
-            opacity={link.near ? 0.7 : 0.3}
+            stroke-linecap="round"
+            opacity={rounded(
+              (link.near ? LINK_OPACITY.near : LINK_OPACITY.far) + LINK_OPACITY.active * still.linkLevel[index],
+            )}
           />
         ))}
-        {scene.nodes.map((node) =>
-          node.family ? null : (
-            <circle
-              data-role="coordinator"
-              cx={node.x}
-              cy={node.y}
-              r={node.r}
-              fill="var(--color-base-100)"
-              stroke={`var(${nodeHue(node)})`}
-              stroke-width={RING_EDGE}
-            />
-          ),
-        )}
+        <circle
+          data-role="coordinator"
+          cx={hub.x}
+          cy={hub.y}
+          r={hub.r}
+          fill="var(--color-base-100)"
+        />
+        {Array.from({ length: WORKER_COUNT }, (_, segment) => (
+          <path
+            data-segment={segment}
+            d={segmentPath(hub, segment)}
+            fill="none"
+            stroke={`var(${nodeHue(hub)})`}
+            stroke-width={RING_EDGE}
+            stroke-linecap="round"
+            opacity={rounded(RING_REST_OPACITY + (1 - RING_REST_OPACITY) * still.segments[segment])}
+          />
+        ))}
+        {scene.links.map((link, index) => {
+          if (still.linkHead[index] === NO_HEAD) return null;
+          const [x, y] = linkPoint(link, still.linkHead[index]);
+          return <circle data-packet cx={rounded(x)} cy={rounded(y)} r={PACKET_RADIUS} fill={`var(${edgeHue(link)})`} />;
+        })}
       </g>
+      <image
+        data-hero-mark
+        href={asset(HERO_MARK.publicPath)}
+        x={hub.x - MARK_SIDE / 2}
+        y={hub.y - MARK_SIDE / 2}
+        width={MARK_SIDE}
+        height={MARK_SIDE}
+      />
       {scene.nodes.map((node, index) => {
         if (!node.family || !node.labelBox) return null;
         const identity = MODELS[node.family as ModelId];
-        const patch = node.labelBox;
+        const box = node.labelBox;
         return (
           <g data-model={node.family} data-role={node.role}>
             <rect
@@ -431,19 +543,15 @@ function SceneSvg(props: {
               stroke={identity.hue}
               stroke-width={TILE_EDGE}
             />
-            <rect
-              data-label-patch
-              x={patch.x}
-              y={patch.y}
-              width={patch.width}
-              height={patch.height}
-              fill="var(--color-base-100)"
-            />
             <text
               data-label
-              x={patch.x + patch.width / 2}
-              y={patch.y + patch.height / 2}
+              x={box.x + box.width / 2}
+              y={box.y + box.height / 2}
               fill="var(--color-dim)"
+              stroke="var(--color-base-100)"
+              stroke-width={scene.labelSize * LABEL_OUTLINE}
+              stroke-linejoin="round"
+              paint-order="stroke"
               font-size={`${scene.labelSize}`}
               text-anchor="middle"
               dominant-baseline="central"
@@ -476,11 +584,11 @@ export default function HeroCanvas(props: { children?: JSX.Element }) {
     const program = gl ? buildProgram(gl) : null;
     const buffer = gl && program ? gl.createBuffer() : null;
 
-    let frame = 0;
+    let animation = 0;
     let onScreen = false;
     let contextLost = false;
     let origin = 0;
-    let seconds = 0;
+    let seconds = STILL_SECONDS;
     let active: SceneDirection = 'wide';
     let scale = 0;
     let offsetX = 0;
@@ -492,8 +600,8 @@ export default function HeroCanvas(props: { children?: JSX.Element }) {
     };
 
     const stop = () => {
-      if (frame) cancelAnimationFrame(frame);
-      frame = 0;
+      if (animation) cancelAnimationFrame(animation);
+      animation = 0;
     };
 
     const onContextLost = (event: Event) => {
@@ -542,6 +650,9 @@ export default function HeroCanvas(props: { children?: JSX.Element }) {
       wide: sceneArrays(SCENES.wide, palette),
       narrow: sceneArrays(SCENES.narrow, palette),
     };
+    const frame = emptyFrame(SCENES.wide);
+    const linkState = new Float32Array(LINK_COUNT * 3);
+    const tileState = new Float32Array(TILE_COUNT * 4);
 
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
@@ -551,36 +662,57 @@ export default function HeroCanvas(props: { children?: JSX.Element }) {
     gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
 
     const uniform = (name: string) => gl.getUniformLocation(program, name);
-    const resolution = uniform('uRes');
     const originUniform = uniform('uOrigin');
     const scaleUniform = uniform('uScale');
     const heightUniform = uniform('uHeight');
     const elapsed = uniform('uTime');
+    const pulseUniform = uniform('uPulse');
+    const segmentUniform = uniform('uSegment');
+    const tileStateUniform = uniform('uTileState');
+    const linkStateUniform = uniform('uLinkState');
     gl.uniform3fv(uniform('uBase'), palette['--color-base-100']);
     gl.uniform3fv(uniform('uLine'), palette['--color-line']);
-    const upload = (data: SceneArrays) => {
-      gl.uniform2fv(uniform('uNode'), data.nodePositions);
-      gl.uniform1fv(uniform('uNodeRadius'), data.nodeRadii);
-      gl.uniform3fv(uniform('uNodeColor'), data.nodeColors);
-      gl.uniform4fv(uniform('uLink'), data.linkEnds);
+    gl.uniform3fv(uniform('uPass'), palette[PASS_VARIABLE]);
+    gl.uniform3fv(uniform('uFail'), palette[FAIL_VARIABLE]);
+    const uploadScene = (data: SceneArrays) => {
+      gl.uniform3fv(uniform('uHub'), data.hub);
+      gl.uniform3fv(uniform('uHubColor'), data.hubColor);
+      gl.uniform2fv(uniform('uTile'), data.tilePositions);
+      gl.uniform3fv(uniform('uTileColor'), data.tileColors);
+      gl.uniform4fv(uniform('uLinkEnds'), data.linkEnds);
+      gl.uniform2fv(uniform('uLinkControl'), data.linkControls);
       gl.uniform3fv(uniform('uLinkColor'), data.linkColors);
-      gl.uniform1fv(uniform('uLinkPhase'), data.linkPhases);
-      gl.uniform1fv(uniform('uLinkReturn'), data.linkReturns);
-      gl.uniform1fv(uniform('uLinkNear'), data.linkNear);
-      gl.uniform1fv(uniform('uLinkClamp'), data.linkClamp);
-      gl.uniform1fv(uniform('uLinkWeight'), data.linkWeight);
+      gl.uniform2fv(uniform('uLinkShape'), data.linkShapes);
+    };
+    const uploadFrame = () => {
+      fillFrame(STORIES[active], seconds, frame);
+      for (let i = 0; i < LINK_COUNT; i += 1) {
+        linkState[i * 3] = frame.linkLevel[i];
+        linkState[i * 3 + 1] = frame.linkHead[i];
+        linkState[i * 3 + 2] = frame.linkDirection[i];
+      }
+      TILE_INDICES.forEach((nodeIndex, i) => {
+        tileState[i * 4] = frame.nodeLevel[nodeIndex];
+        tileState[i * 4 + 1] = frame.nodeWork[nodeIndex];
+        tileState[i * 4 + 2] = frame.nodeVerdict[nodeIndex];
+        tileState[i * 4 + 3] = frame.nodeFailed[nodeIndex];
+      });
+      gl.uniform3fv(linkStateUniform, linkState);
+      gl.uniform4fv(tileStateUniform, tileState);
+      gl.uniform1fv(segmentUniform, frame.segments);
+      gl.uniform1f(pulseUniform, frame.pulse);
     };
     let uploaded: SceneDirection | null = null;
 
     const draw = () => {
       if (contextLost || canvas.width < 1 || canvas.height < 1 || scale <= 0) return;
       if (uploaded !== active) {
-        upload(arrays[active]);
+        uploadScene(arrays[active]);
         gl.uniform1f(heightUniform, SCENES[active].height);
         uploaded = active;
       }
+      uploadFrame();
       gl.viewport(0, 0, canvas.width, canvas.height);
-      gl.uniform2f(resolution, canvas.width, canvas.height);
       const density = Math.min(window.devicePixelRatio || 1, MAX_DEVICE_PIXEL_RATIO);
       gl.uniform2f(originUniform, offsetX * density, offsetY * density);
       gl.uniform1f(scaleUniform, scale * density);
@@ -623,23 +755,26 @@ export default function HeroCanvas(props: { children?: JSX.Element }) {
 
     const tick = (now: number) => {
       if (!shouldAnimate()) {
-        frame = 0;
+        animation = 0;
         return;
       }
       if (!origin) origin = now;
       seconds = (now - origin) / 1000;
       draw();
-      frame = requestAnimationFrame(tick);
+      animation = requestAnimationFrame(tick);
     };
 
     function sync() {
       if (shouldAnimate()) {
         for (const group of everyFrame()) group.classList.add('opacity-0');
-        if (!frame) frame = requestAnimationFrame(tick);
+        if (!animation) animation = requestAnimationFrame(tick);
         return;
       }
       stop();
-      if (reduceQuery.matches || contextLost) stillFrame();
+      if (reduceQuery.matches || contextLost) {
+        seconds = STILL_SECONDS;
+        stillFrame();
+      }
       draw();
     }
 
