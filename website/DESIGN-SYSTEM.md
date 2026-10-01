@@ -316,17 +316,22 @@ coordinator ring may come within 4 CSS pixels of them.** `heroScene` in
 `website/src/lib/hero-scene.ts` returns two complete scenes from the pool —
 `wide` and `narrow` — and the page draws both:
 
-- **Wide** puts the coordinator ring at the far left with every tile and label
-  to its right. Claude Code and Codex sit on one host row above the workers,
-  every worker sits in one row, evenly spaced, in pool order, Jev sits on a row
-  below the workers between the first and last of them, and Kimi sits on that
-  row to the right of Jev. Every line that meets the ring meets it at a point
-  of its own on the ring's right half, and every dispatch reaches its worker at
+- **Wide** puts the coordinator ring at the far left. Claude Code and Codex sit
+  on one host row above the workers, every worker sits in one row, evenly
+  spaced, in pool order, and Jev sits on a row below the workers between the
+  first and last of them; all of those are right of the ring. Kimi sits
+  straight below the ring, on Jev's row, joined to the ring's bottom point and
+  to nothing else. Every host and dispatch line meets the ring at a point of
+  its own on the ring's right half, and every dispatch reaches its worker at
   the top point, so the host and dispatch curves fan out without stacking.
-- **Narrow** puts the ring at the top with every model node below its centre:
-  the hosts just under it, the worker row below that, and Jev and Kimi below
-  the row by the same rules. Every dispatch leaves the ring from a point of its
-  own on the ring's lower arc.
+- **Narrow** puts Claude Code and Codex on a row at the top, mirrored about the
+  ring, with the ring below them. Kimi sits left of the ring at the height of
+  its centre, joined to the ring's left point. The worker row sits below the
+  ring and below Kimi, and Jev sits below the worker row. Every dispatch leaves
+  the ring from a point of its own on the ring's lower arc.
+
+Kimi is joined to the coordinator ring and never to a worker, because the
+coordinator is what sends a failing chunk to the repair model.
 
 Both scenes are server-rendered as `svg[data-hero-layout="wide"]` and
 `svg[data-hero-layout="narrow"]`, each in a box that takes its own scene's
@@ -832,10 +837,13 @@ kinds carry that, and all are subject to the rules here.
 **Hero canvas** — one per site, on the landing page only. A WebGL scene whose
 subject is the workflow itself: Claude Code or Codex running the coordinator,
 the coordinator handing chunks to the Flash workers, workers asking the
-decision model bounded questions, another Flash family reviewing each chunk, a
-chunk that keeps failing repair escalating to the repair model, and accepted
-chunks travelling back. The scene must match what the skill does: Anthropic
-and OpenAI are the coordinator hosts, never the reviewers. It reads as an instrument on the night-ledger console, drawn
+decision model bounded questions, another Flash family reviewing each chunk,
+the coordinator sending a chunk that keeps failing repair to the repair model,
+and accepted chunks travelling back. The scene must match what the skill does:
+Anthropic and OpenAI are the coordinator hosts, never the reviewers; a run has
+one host, either Claude Code or Codex, so the two host lines always act
+together and never take turns; and the repair model takes work from the
+coordinator, never from a worker. It reads as an instrument on the night-ledger console, drawn
 in palette hues (brass for the coordinator and action, teal for accepted or
 verified, violet for orchestration and routing) on the `base-100` background.
 No photographic texture, no lens flare, no particle confetti.
@@ -854,10 +862,12 @@ member. `hero-scene.ts` holds the whole layout rule: the
 coordinator ring is a 0.9 radius circle, 1.8 design units across, which is 2.5
 of the 0.72 tile side; Claude Code and Codex sit on one host row above the
 workers; every worker sits in one row, evenly spaced, in pool order; the decision
-model sits on the row below, centred between the first and the last worker; the
-repair model sits on that row to the right of the decision model. `wide` puts
-the ring at the far left with every tile and label to its right and `narrow`
-puts it at the top with every model node below its centre.
+model sits on the row below, centred between the first and the last worker.
+`wide` puts the ring at the far left, the repair model straight below the ring
+on the decision model's row, and every other tile and label right of the ring.
+`narrow` puts the host row at the top, mirrored about the ring, the ring below
+it, the repair model left of the ring at the height of its centre, and the
+worker row below both.
 
 **Every line that meets the ring meets it at a point of its own.** No two ring
 lines share a point, so the ring never carries a white-hot knot of stacked
@@ -867,22 +877,25 @@ from 8 degrees below its right point, at most 10 degrees apart and never past
 lowest, so the lines nest instead of crossing. Claude Code's line leaves its
 tile's left point and meets the ring 70 degrees above its right point; Codex's
 line leaves below its label and meets the ring 20 degrees above its right
-point. In `narrow` the dispatch lines leave the ring's lower arc, spread around
-its bottom point at most 16 degrees apart inside a 60 degree span, Claude
-Code's line leaves its own right point and meets the ring's left point, and
-Codex's line leaves its own left point and meets the ring's right point.
+point. The escalation line leaves the ring's bottom point. In `narrow` the
+dispatch lines leave the ring's lower arc, spread around its bottom point at
+most 16 degrees apart inside a 60 degree span, each host's line leaves below
+its label and meets the ring's upper arc on the host's own side, 35 degrees
+from the ring's top point, and the escalation line leaves the ring's left
+point.
 
 The links are the workflow's own: each host reaches the ring; the ring
 dispatches to every worker; every worker puts a bounded question to the
 decision model; a review line joins each worker to its right-hand neighbour;
-and the last worker escalates to the repair model. That is `3n + 2` links for
+and the ring escalates to the repair model. That is `3n + 2` links for
 `n` workers, and each is one quadratic curve: a start point, one control point
 and an end point, which `linkPoint` in `website/src/lib/hero-scene.ts`
 evaluates for both renderers and for the checks. A `wide` dispatch leaves the
 ring level and turns down into its worker's top point; a `narrow` dispatch
 drops from the ring and splays out to its worker; a review line arcs 0.12 of a
 design unit above the straight path between two neighbours; a question to the
-decision model bows 0.08 upward; the escalation runs straight down.
+decision model bows 0.08 upward; the escalation runs straight from the ring to
+the repair model, down in `wide` and to the left in `narrow`.
 `heroScene` takes the worker, decision and repair names from its argument and
 adds the fixed hosts from its own `HOSTS` constant, so the scene is placed for
 whatever worker pool the argument holds, and the geometry is proved on
@@ -906,8 +919,8 @@ The story is data, never a runtime random, and both renderers draw from it.
 One round gives every worker one chunk to build, in pool order, and each
 chunk's beats run in the order the skill works:
 
-1. the host line glows from Claude Code or Codex to the ring, the two hosts
-   taking turns, and the ring pulses;
+1. both host lines glow at the same time, from Claude Code and from Codex to
+   the ring, and the ring pulses;
 2. the chunk travels the dispatch line to its builder;
 3. the builder's tile lights and a bright arc runs round it while it builds,
    and during the build a short pulse goes down to the decision model and back
@@ -919,19 +932,27 @@ chunk's beats run in the order the skill works:
 6. the chunk travels back to the ring along the reviewer's dispatch line, and
    one ring segment fills.
 
-Once in every round the reviewer is the last worker, and that review fails:
-the tile flashes `error`, the chunk goes down the escalation line to the
-repair model, the repair model's tile works, and the chunk comes back up before
-the passing flash and the return. The ring carries one segment for each worker,
+Once in every round, on the second worker's chunk, the review fails and the
+chunk climbs the skill's repair ladder: the reviewer's tile flashes `error`,
+the chunk goes back along the review line to its builder for a Flash repair,
+crosses to the reviewer again and fails again. The reviewer then returns the
+chunk to the ring along its dispatch line, the ring sends it along the
+escalation line to the repair model, the repair model's tile works, and the
+chunk comes back to the ring. The ring dispatches the repaired chunk to the
+same reviewer, which is a different family from the repair model, and the
+passing flash and the return follow. The story shows one Flash repair where the
+skill allows two. The ring carries one segment for each worker,
 so a full round fills the whole ring, and the segments fade together before the
 next round starts. A link that carries no packet stays at its quiet rest weight,
 so at any moment the eye has one path to follow.
 `website/scripts/pool-checks/hero.mjs` fails the story when a beat names a
 missing link or node or leaves the story's length, when two packets share a
-link at one time, when a worker is not dispatched to exactly once, when the
-accepted segments are not one for each worker, when a round does not hold
-exactly one failed review followed by the trip to the repair model, its repair
-and the trip back in that order, when a frame value leaves the range 0 to 1,
+link at one time, when the two hosts do not send together once for each chunk,
+when a worker is never dispatched to or the round does not hold one dispatch
+for each worker plus one for the repaired chunk, when the accepted segments are
+not one for each worker, when a round does not hold exactly two failed reviews
+followed by the trip from the ring to the repair model, its repair and the trip
+back to the ring in that order, when a frame value leaves the range 0 to 1,
 when the still frame does not show exactly one chunk in mid-flight, or when the
 story does not repeat after its own length.
 
@@ -969,8 +990,10 @@ tile has exactly one bottom point and every line that meets a tile on one side
 meets it at that side's single point. The coordinator hub is a circle, and a
 link may meet it anywhere on its edge, 0.9 from the centre. A dispatch from the
 ring reaches its worker's top point, a review runs from the right point of the
-left worker to the left point of the right one, and a query or an escalation
-runs from a worker's bottom point to the top point of the row below.
+left worker to the left point of the right one, a query runs from a worker's
+bottom point to the decision model's top point, and the escalation runs from
+the ring's bottom point to the repair model's top point in `wide` and from the
+ring's left point to the repair model's right point in `narrow`.
 `website/scripts/pool-checks/hero.mjs` fails any scene in which two links that
 share a point leave it along the same direction. No curve passes within 0.15
 tile sides of a label it does not end at — the same "no label is crossed" rule
@@ -998,8 +1021,8 @@ label in the same place: the SVG uses `viewBox="0 0 width height"` and fills its
 box, and the shader scales by the visible box's width over its scene's width
 and offsets by the box's position inside the hero section. For the pool the
 site ships today the wide scene is 8.83 by 6.90 design units and the narrow one
-5.61 by 6.86, so the wide box is 1.28 times as wide as it is tall and the
-narrow box 0.82 times. No hex value is ever
+5.40 by 8.60, so the wide box is 1.28 times as wide as it is tall and the
+narrow box 0.63 times. No hex value is ever
 written into the component: the canvas resolves each palette custom property
 once after mount through `getComputedStyle`, on a probe element that sets
 `transition-property: none` so the reduced-motion rule's 0.01ms transition
@@ -1012,7 +1035,7 @@ Labels under the tiles are supporting label copy set in the sans stack, because
 a model name is a topic rather than a string a reader could type or search.
 Their size is scene data: `scene.labelSize` is 0.18 of a design unit in the wide
 scene and 0.22 in the narrow one, so on the built page a label renders from
-11.3 CSS pixels in the narrow box at 320 up to 15.3 in it at its 390 cap, and
+11.7 CSS pixels in the narrow box at 320 up to 15.9 in it at its 390 cap, and
 from 12.1 in the wide box at 640 up to 15.5 at its 760 cap — always at least 11
 and always below the 16 pixel body size. Each label is a `text[data-label]`
 drawn at its natural glyph width, with no forced text length and no box behind

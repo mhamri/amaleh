@@ -201,25 +201,28 @@ function arrangement(failures, scene, direction, models, at) {
     if (!(host.labelBox.y + host.labelBox.height < rowTop - EPS)) failures.push(`${at}: ${host.label} does not sit above the worker row`);
   }
   if (!(hosts[0].x < hosts[1].x)) failures.push(`${at}: Claude Code is not left of Codex`);
-  for (const node of [jev, kimi]) {
-    if (!(node.tile.y > rowBottom + EPS)) failures.push(`${at}: ${node.label} does not sit below the worker row`);
-    if (Math.abs(node.y - jev.y) > EPS) failures.push(`${at}: ${node.label} does not share Jev's row`);
-  }
+  if (!(jev.tile.y > rowBottom + EPS)) failures.push(`${at}: Jev does not sit below the worker row`);
   if (!(jev.x >= workers[0].x - EPS && jev.x <= workers.at(-1).x + EPS)) failures.push(`${at}: Jev is not between the first and last worker`);
-  if (!(kimi.x > jev.x + EPS)) failures.push(`${at}: Kimi is not to the right of Jev`);
 
   if (direction === 'wide') {
-    for (const node of scene.nodes.filter((candidate) => candidate !== hub)) {
+    for (const node of scene.nodes.filter((candidate) => candidate !== hub && candidate !== kimi)) {
       if (!(node.tile.x > hub.x + hub.r + EPS) || !(node.labelBox.x > hub.x + hub.r + EPS)) {
         failures.push(`${at}: ${node.label} is not entirely right of the coordinator ring`);
       }
     }
+    if (Math.abs(kimi.x - hub.x) > EPS || !(kimi.tile.y > hub.y + hub.r + EPS)) {
+      failures.push(`${at}: Kimi is not centred below the coordinator ring`);
+    }
   } else {
-    for (const node of scene.nodes.filter((candidate) => candidate !== hub)) {
-      if (!(node.y > hub.y + EPS)) failures.push(`${at}: ${node.label} is not below the centre of the coordinator ring`);
-      if (!(node.tile.y > hub.y - hub.r + EPS)) failures.push(`${at}: ${node.label} reaches above the top of the coordinator ring`);
+    for (const host of hosts) {
+      if (!(host.labelBox.y + host.labelBox.height < hub.y - hub.r - EPS)) failures.push(`${at}: ${host.label} does not sit above the coordinator ring`);
+    }
+    if (Math.abs(hosts[0].x + hosts[1].x - 2 * hub.x) > EPS) failures.push(`${at}: Claude Code and Codex are not mirrored about the coordinator ring`);
+    if (Math.abs(kimi.y - hub.y) > EPS || !(kimi.tile.x + kimi.tile.width < hub.x - hub.r - EPS)) {
+      failures.push(`${at}: Kimi is not left of the coordinator ring at the height of its centre`);
     }
     if (!(rowTop > hub.y + hub.r + EPS)) failures.push(`${at}: the worker row is not below the coordinator ring`);
+    if (!(rowTop > kimi.labelBox.y + kimi.labelBox.height + EPS)) failures.push(`${at}: the worker row is not below Kimi`);
   }
 }
 
@@ -272,7 +275,7 @@ function linksOf(failures, scene, direction, models, at) {
     ...workers.map((worker) => ({ a: worker, b: hub, kind: 'dispatch', hueFamily: worker.family, weight: DISPATCH_WEIGHT })),
     ...workers.map((worker) => ({ a: worker, b: jev, kind: 'decision', hueFamily: undefined, weight: 1 })),
     ...workers.slice(1).map((worker, index) => ({ a: workers[index], b: worker, kind: 'review', hueFamily: undefined, weight: 1 })),
-    { a: workers.at(-1), b: kimi, kind: 'escalation', hueFamily: kimi.family, weight: 1 },
+    { a: hub, b: kimi, kind: 'escalation', hueFamily: kimi.family, weight: 1 },
   ];
   for (const { a, b, kind, hueFamily, weight } of wanted) {
     const end = ends.find((candidate) => (candidate.from === a && candidate.to === b) || (candidate.from === b && candidate.to === a));
@@ -303,12 +306,15 @@ function linksOf(failures, scene, direction, models, at) {
     if (roles.includes('coordinator') && roles.includes('host')) {
       const host = end.from.role === 'host' ? end.from : end.to;
       const point = pointAt(end, hub);
-      const expected = direction === 'wide' ? (host === hosts[0] ? 'left' : 'bottom') : host === hosts[0] ? 'right' : 'left';
+      const expected = direction === 'wide' && host === hosts[0] ? 'left' : 'bottom';
       if (sideAt(end, host) !== expected) {
         failures.push(`${at}: the line from ${host.label} leaves its ${sideAt(end, host)} point, expected its ${expected} point`);
       }
       if (direction === 'wide' && !(point[0] > hub.x && point[1] < hub.y)) {
         failures.push(`${at}: the line from ${host.label} does not meet the ring on its upper right arc`);
+      }
+      if (direction === 'narrow' && !(point[1] < hub.y && (host === hosts[0] ? point[0] < hub.x : point[0] > hub.x))) {
+        failures.push(`${at}: the line from ${host.label} does not meet the ring on the upper arc at the side of ${host.label}`);
       }
     }
     if (roles[0] === 'worker' && roles[1] === 'worker') {
@@ -323,11 +329,16 @@ function linksOf(failures, scene, direction, models, at) {
         failures.push(`${at}: the decision line ${worker.label} to Jev does not run from the bottom point of ${worker.label} to the top point of Jev`);
       }
     }
+    if (roles.includes('coordinator') && roles.includes('deep')) {
+      const ringSide = direction === 'wide' ? 'bottom' : 'left';
+      const kimiSide = direction === 'wide' ? 'top' : 'right';
+      if (!same(pointAt(end, hub), hub.ports[ringSide]) || sideAt(end, kimi) !== kimiSide) {
+        failures.push(`${at}: the escalation line does not run from the ${ringSide} point of the coordinator ring to the ${kimiSide} point of Kimi`);
+      }
+    }
     if (roles.includes('worker') && roles.includes('deep')) {
       const worker = end.from.role === 'worker' ? end.from : end.to;
-      if (sideAt(end, worker) !== 'bottom' || sideAt(end, kimi) !== 'top') {
-        failures.push(`${at}: the escalation line ${worker.label} to Kimi does not run from the bottom point of ${worker.label} to the top point of Kimi`);
-      }
+      failures.push(`${at}: a line joins ${worker.label} and Kimi, and Kimi takes work only from the coordinator ring`);
     }
   }
 
@@ -433,26 +444,34 @@ function story(failures, scene, models, at) {
   const builds = workers.map((worker) =>
     travels.filter((beat) => scene.links[beat.link].kind === 'dispatch' && scene.links[beat.link].to === indexOf(worker) && beat.direction === 1).length,
   );
-  if (builds.some((value) => value !== 1)) {
-    failures.push(`${at}: the story dispatches a chunk to each worker [${builds.join(', ')}] times, expected once each`);
+  const forward = builds.reduce((sum, value) => sum + value, 0);
+  if (builds.some((value) => value < 1) || forward !== workers.length + 1) {
+    failures.push(`${at}: the story dispatches a chunk to each worker [${builds.join(', ')}] times, expected each worker at least once and ${workers.length + 1} in total, the extra one being the chunk Kimi repaired`);
+  }
+  const hostTrips = travels.filter((beat) => scene.links[beat.link].kind === 'host');
+  const together = hostTrips.every((beat) => hostTrips.filter((other) => other.start === beat.start && other.link !== beat.link).length === 1);
+  if (hostTrips.length !== 2 * workers.length || !together) {
+    failures.push(`${at}: the story holds ${hostTrips.length} host trips, expected Claude Code and Codex to send together once for each of the ${workers.length} chunks`);
   }
   const accepted = told.beats.filter((beat) => beat.kind === 'accept').map((beat) => beat.segment).sort((a, b) => a - b);
   if (accepted.length !== workers.length || accepted.some((segment, position) => segment !== position)) {
     failures.push(`${at}: the story accepts the ring segments [${accepted.join(', ')}], expected one for each of the ${workers.length} workers`);
   }
   const returns = travels.filter((beat) => scene.links[beat.link].kind === 'dispatch' && beat.direction === -1).length;
-  if (returns !== workers.length) failures.push(`${at}: ${returns} chunks return to the ring, expected ${workers.length}`);
+  if (returns !== workers.length + 1) failures.push(`${at}: ${returns} trips return to the ring, expected ${workers.length + 1}: one for each chunk and one for the chunk that goes to Kimi`);
   const reviews = travels.filter((beat) => scene.links[beat.link].kind === 'review').length;
-  if (reviews !== workers.length) failures.push(`${at}: ${reviews} chunks cross to a reviewer, expected ${workers.length}`);
+  if (reviews !== workers.length + 2) failures.push(`${at}: ${reviews} trips cross between a builder and its reviewer, expected ${workers.length + 2}: one for each chunk, and one back and one out again for the Flash repair`);
   const questions = travels.filter((beat) => scene.links[beat.link].kind === 'decision' && scene.links[beat.link].to === indexOf(jev));
   if (questions.length !== 2 * workers.length) failures.push(`${at}: ${questions.length} question trips to Jev, expected one out and one back for each of the ${workers.length} workers`);
   const failed = told.beats.filter((beat) => beat.kind === 'verdict' && !beat.passed);
   const repairs = told.beats.filter((beat) => beat.kind === 'work' && beat.node === indexOf(kimi));
   const escalations = travels.filter((beat) => scene.links[beat.link].kind === 'escalation');
-  if (failed.length !== 1 || repairs.length !== 1 || escalations.length !== 2) {
-    failures.push(`${at}: the story holds ${failed.length} failed reviews, ${repairs.length} repairs by Kimi and ${escalations.length} escalation trips, expected 1, 1 and 2`);
-  } else if (!(failed[0].start <= escalations[0].start && escalations[0].end <= repairs[0].start && repairs[0].end <= escalations[1].start)) {
-    failures.push(`${at}: the failed review, the trip to Kimi, the repair and the trip back are not in that order`);
+  if (failed.length !== 2 || repairs.length !== 1 || escalations.length !== 2) {
+    failures.push(`${at}: the story holds ${failed.length} failed reviews, ${repairs.length} repairs by Kimi and ${escalations.length} escalation trips, expected 2, 1 and 2`);
+  } else if (!(failed[0].start < failed[1].start && failed[1].start <= escalations[0].start && escalations[0].end <= repairs[0].start && repairs[0].end <= escalations[1].start)) {
+    failures.push(`${at}: the two failed reviews, the trip to Kimi, the repair and the trip back are not in that order`);
+  } else if (escalations[0].direction !== 1 || escalations[1].direction !== -1) {
+    failures.push(`${at}: the escalation trips do not run from the coordinator ring to Kimi and then back`);
   }
 
   const frame = emptyFrame(scene);

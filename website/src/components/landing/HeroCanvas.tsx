@@ -111,7 +111,7 @@ const SCENE_VARIABLES = [
 const ARIA_LABEL =
   `Claude Code or Codex runs the coordinator, which hands chunks of work to the Flash worker families ${joinNames(WORKER_NAMES)}. ` +
   `Workers put bounded questions to ${DECISION.name}. A model from another Flash family reviews each finished chunk, ` +
-  `a chunk that keeps failing its repairs escalates to ${REPAIR.name}, and accepted chunks travel back to the coordinator.`;
+  `the coordinator sends a chunk that keeps failing its repairs to ${REPAIR.name}, and accepted chunks travel back to the coordinator.`;
 
 const HUB_INDEX = SCENES.wide.nodes.findIndex((node) => node.role === 'coordinator');
 const TILE_INDICES = SCENES.wide.nodes.flatMap((node, index) => (node.role === 'coordinator' ? [] : [index]));

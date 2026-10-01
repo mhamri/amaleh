@@ -34,7 +34,9 @@ const QUESTION_THINK = 0.25;
 const REVIEW_HOP = 0.6;
 const REVIEW = 0.7;
 const ESCALATION_TRAVEL = 0.6;
+const FLASH_REPAIR = 0.8;
 const REPAIR = 1.2;
+const FAILING_TURN = 1;
 const RETURN_TRAVEL = 1.1;
 const SETTLE = 0.6;
 const REST = 0.8;
@@ -83,39 +85,51 @@ export function heroStory(scene: Scene): Story {
   };
 
   const count = workers.length;
-  const lastWorker = workers[count - 1];
   let at = 0;
 
+  const work = (node: number, duration: number) => {
+    beats.push({ kind: 'work', start: at, end: at + duration, node });
+    at += duration;
+  };
+  const review = (from: number, reviewer: number, passed: boolean) => {
+    at = travel(from === hub ? 'dispatch' : 'review', from, reviewer, at, from === hub ? DISPATCH_TRAVEL : REVIEW_HOP);
+    work(reviewer, REVIEW);
+    beats.push({ kind: 'verdict', start: at, node: reviewer, passed });
+  };
+
   for (let turn = 0; turn < count; turn += 1) {
-    const host = hosts[turn % hosts.length];
     const builder = workers[turn];
     const reviewer = turn < count - 1 ? workers[turn + 1] : workers[turn - 1];
-    const escalates = reviewer === lastWorker;
 
-    beats.push({ kind: 'glow', start: at, end: at + HOST_TRAVEL, node: host });
-    at = travel('host', host, hub, at, HOST_TRAVEL);
+    for (const host of hosts) {
+      beats.push({ kind: 'glow', start: at, end: at + HOST_TRAVEL, node: host });
+      travel('host', host, hub, at, HOST_TRAVEL);
+    }
+    at += HOST_TRAVEL;
     beats.push({ kind: 'pulse', start: at });
     at = travel('dispatch', hub, builder, at, DISPATCH_TRAVEL);
 
-    beats.push({ kind: 'work', start: at, end: at + BUILD, node: builder });
     const asked = travel('decision', builder, decision, at + QUESTION_DELAY, QUESTION_TRAVEL);
     beats.push({ kind: 'work', start: asked, end: asked + QUESTION_THINK, node: decision });
     travel('decision', decision, builder, asked + QUESTION_THINK, QUESTION_TRAVEL);
-    at += BUILD;
+    work(builder, BUILD);
 
-    at = travel('review', builder, reviewer, at, REVIEW_HOP);
-    beats.push({ kind: 'work', start: at, end: at + REVIEW, node: reviewer });
-    at += REVIEW;
-
-    if (escalates) {
-      beats.push({ kind: 'verdict', start: at, node: reviewer, passed: false });
-      at = travel('escalation', reviewer, deep, at, ESCALATION_TRAVEL);
-      beats.push({ kind: 'work', start: at, end: at + REPAIR, node: deep });
-      at += REPAIR;
-      at = travel('escalation', deep, reviewer, at, ESCALATION_TRAVEL);
+    if (turn === FAILING_TURN) {
+      review(builder, reviewer, false);
+      at = travel('review', reviewer, builder, at, REVIEW_HOP);
+      work(builder, FLASH_REPAIR);
+      review(builder, reviewer, false);
+      at = travel('dispatch', reviewer, hub, at, RETURN_TRAVEL);
+      beats.push({ kind: 'pulse', start: at });
+      at = travel('escalation', hub, deep, at, ESCALATION_TRAVEL);
+      work(deep, REPAIR);
+      at = travel('escalation', deep, hub, at, ESCALATION_TRAVEL);
+      beats.push({ kind: 'pulse', start: at });
+      review(hub, reviewer, true);
+    } else {
+      review(builder, reviewer, true);
     }
 
-    beats.push({ kind: 'verdict', start: at, node: reviewer, passed: true });
     at = travel('dispatch', reviewer, hub, at, RETURN_TRAVEL);
     beats.push({ kind: 'accept', start: at, segment: turn });
     beats.push({ kind: 'pulse', start: at });

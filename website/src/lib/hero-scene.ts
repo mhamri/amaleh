@@ -68,17 +68,17 @@ const HOST_MIN_GAP = 2.6;
 const HOST_LEFT_GAP = 0.35;
 const FAN_GAP = 1;
 const FAN_GAP_PER_EXTRA_WORKER = 0.15;
-const NARROW_HOST_DROP = 0.2;
-const NARROW_HOST_GAP = 0.15;
-const NARROW_HOST_FAN = 0.4;
+const NARROW_HOST_SPREAD = 0.36;
+const NARROW_HOST_ROW_GAP = 0.4;
+const NARROW_DEEP_GAP = 0.45;
 const NARROW_ROW_GAP = 0.9;
-const NARROW_ROW_LABEL_CLEAR = 0.3;
-const NARROW_LABEL_CLEAR = 0.25;
+const NARROW_ROW_SLOPE = 0.4;
 const DECISION_GAP = 0.9;
 const FULL_WEIGHT = 1;
 const THIN_WEIGHT = 0.7;
 
 const WIDE_HOST_DEGREES = { claude: -70, codex: -20 };
+const NARROW_HOST_DEGREES = { claude: -125, codex: -55 };
 const WIDE_FAN_DEGREES = { first: 8, last: 50, step: 10 };
 const NARROW_FAN_DEGREES = { spread: 60, step: 16 };
 const RING_BOTTOM_DEGREES = 90;
@@ -160,17 +160,10 @@ function wideRow(spacing: number, widths: number[], ringRight: number, fanGap: n
   return { xs, rowY: hubY + fanGap + TILE.half };
 }
 
-function narrowRow(count: number, spacing: number, centre: number, size: number, hubY: number) {
+function narrowRow(count: number, spacing: number, centre: number, hubY: number) {
   const xs = Array.from({ length: count }, (_, index) => centre + (index - (count - 1) / 2) * spacing);
-  const ringBottom = hubY + HUB_RADIUS;
-  const hostBottom = hubY + NARROW_HOST_DROP + portDrop(size);
-  const corner = centre - HUB_RADIUS - NARROW_HOST_GAP;
   const outer = centre - xs[0];
-  const cleared =
-    outer > centre - corner
-      ? ringBottom + ((hostBottom + NARROW_LABEL_CLEAR - ringBottom) * outer) / (centre - corner)
-      : 0;
-  const rowY = Math.max(ringBottom + NARROW_ROW_GAP, hostBottom + NARROW_ROW_LABEL_CLEAR, cleared) + TILE.half;
+  const rowY = hubY + HUB_RADIUS + Math.max(NARROW_ROW_GAP, outer * NARROW_ROW_SLOPE) + TILE.half;
   return { xs, rowY };
 }
 
@@ -189,6 +182,7 @@ export function heroScene(pool: ScenePool, direction: SceneDirection): Scene {
 
   let workerXs: number[];
   let rowY: number;
+  let deepBesideRing: ScenePoint | undefined;
 
   if (direction === 'wide') {
     const hostY = MARGIN + TILE.half;
@@ -208,20 +202,23 @@ export function heroScene(pool: ScenePool, direction: SceneDirection): Scene {
     nodes.push(tileNode(codexX, hostY, 'host', HOSTS[1], size));
   } else {
     const claudeWidth = labelWidth(HOSTS[0].name, size);
+    const hostOffset = claudeWidth / 2 + NARROW_HOST_SPREAD;
+    const deepOffset = HUB_RADIUS + NARROW_DEEP_GAP + TILE.half;
     const reach = Math.max(
-      HUB_RADIUS + NARROW_HOST_GAP + claudeWidth / 2 + TILE.half + NARROW_HOST_FAN,
+      hostOffset + claudeWidth / 2,
+      deepOffset + Math.max(TILE.half, labelWidth(deep.name, size) / 2),
       ((count - 1) * spacing) / 2 + widths[0] / 2,
     );
     const centre = MARGIN + reach;
-    const hubY = MARGIN + HUB_RADIUS;
-    const hostY = hubY + NARROW_HOST_DROP;
-    const offset = HUB_RADIUS + NARROW_HOST_GAP + claudeWidth / 2;
-    const row = narrowRow(count, spacing, centre, size, hubY);
+    const hostY = MARGIN + TILE.half;
+    const hubY = hostY + portDrop(size) + NARROW_HOST_ROW_GAP + HUB_RADIUS;
+    const row = narrowRow(count, spacing, centre, hubY);
     workerXs = row.xs;
     rowY = row.rowY;
+    deepBesideRing = [centre - deepOffset, hubY];
     nodes.push(hubNode(centre, hubY));
-    nodes.push(tileNode(centre - offset, hostY, 'host', HOSTS[0], size));
-    nodes.push(tileNode(centre + offset, hostY, 'host', HOSTS[1], size));
+    nodes.push(tileNode(centre - hostOffset, hostY, 'host', HOSTS[0], size));
+    nodes.push(tileNode(centre + hostOffset, hostY, 'host', HOSTS[1], size));
   }
 
   pool.workers.forEach((worker, index) => {
@@ -233,8 +230,8 @@ export function heroScene(pool: ScenePool, direction: SceneDirection): Scene {
   const decisionY = rowY + portDrop(size) + DECISION_GAP + TILE.half;
   nodes.push(tileNode(decisionX, decisionY, 'decision', pool.decision, size));
   const deepIndex = nodes.length;
-  const deepX = Math.max(workerXs[count - 1], decisionX + spacing);
-  nodes.push(tileNode(deepX, decisionY, 'deep', deep, size));
+  const [deepX, deepY] = deepBesideRing ?? [nodes[HUB_INDEX].x, decisionY];
+  nodes.push(tileNode(deepX, deepY, 'deep', deep, size));
 
   const links: SceneLink[] = [];
   const wide = direction === 'wide';
@@ -280,10 +277,10 @@ export function heroScene(pool: ScenePool, direction: SceneDirection): Scene {
     link('host', CLAUDE_INDEX, claude.ports.left, HUB_INDEX, claudeEnd, [claudeEnd[0], claude.ports.left[1]], FULL_WEIGHT, false, HOSTS[0].family);
     link('host', CODEX_INDEX, codex.ports.bottom, HUB_INDEX, codexEnd, [codex.ports.bottom[0], codexEnd[1]], FULL_WEIGHT, false, HOSTS[1].family);
   } else {
-    const claudeControl: ScenePoint = [(claude.ports.right[0] + hub.ports.left[0]) / 2, claude.ports.right[1]];
-    const codexControl: ScenePoint = [(codex.ports.left[0] + hub.ports.right[0]) / 2, codex.ports.left[1]];
-    link('host', CLAUDE_INDEX, claude.ports.right, HUB_INDEX, hub.ports.left, claudeControl, FULL_WEIGHT, false, HOSTS[0].family);
-    link('host', CODEX_INDEX, codex.ports.left, HUB_INDEX, hub.ports.right, codexControl, FULL_WEIGHT, false, HOSTS[1].family);
+    const claudeEnd = ringPoint(NARROW_HOST_DEGREES.claude);
+    const codexEnd = ringPoint(NARROW_HOST_DEGREES.codex);
+    link('host', CLAUDE_INDEX, claude.ports.bottom, HUB_INDEX, claudeEnd, [claude.ports.bottom[0], claudeEnd[1]], FULL_WEIGHT, false, HOSTS[0].family);
+    link('host', CODEX_INDEX, codex.ports.bottom, HUB_INDEX, codexEnd, [codex.ports.bottom[0], codexEnd[1]], FULL_WEIGHT, false, HOSTS[1].family);
   }
 
   const wideStep = Math.min(
@@ -315,10 +312,9 @@ export function heroScene(pool: ScenePool, direction: SceneDirection): Scene {
     }
   }
 
-  const last = FIRST_WORKER_INDEX + count - 1;
-  const escalationStart = nodes[last].ports.bottom;
-  const escalationEnd = nodes[deepIndex].ports.top;
-  link('escalation', last, escalationStart, deepIndex, escalationEnd, midpoint(escalationStart, escalationEnd), FULL_WEIGHT, true, deep.family);
+  const escalationStart = wide ? hub.ports.bottom : hub.ports.left;
+  const escalationEnd = wide ? nodes[deepIndex].ports.top : nodes[deepIndex].ports.right;
+  link('escalation', HUB_INDEX, escalationStart, deepIndex, escalationEnd, midpoint(escalationStart, escalationEnd), FULL_WEIGHT, true, deep.family);
 
   let width = 0;
   let height = 0;
