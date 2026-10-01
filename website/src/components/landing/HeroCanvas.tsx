@@ -1,14 +1,16 @@
-import { onCleanup, onMount } from 'solid-js';
+import { createContext, useContext, onCleanup, onMount, type JSX } from 'solid-js';
 import { MODELS, type ModelId, type ModelIdentity } from '../../lib/models';
 import { asset } from '../../lib/paths';
 import { WORKERS, WORKER_NAMES, REPAIR, DECISION, joinNames } from '../../lib/pool';
 import {
   heroScene,
   TILE,
-  LABEL,
+  type Scene,
+  type SceneDirection,
   type SceneLink,
   type SceneLinkKind,
   type SceneNode,
+  type ScenePool,
 } from '../../lib/hero-scene';
 
 const FAMILY_BY_IDENTITY = new Map<ModelIdentity, ModelId>(
@@ -26,19 +28,33 @@ function familyOf(identity: ModelIdentity): ModelId {
   return key;
 }
 
-const SCENE = heroScene({
+const POOL: ScenePool = {
   workers: WORKERS.map((identity) => ({ family: familyOf(identity), name: identity.name })),
   deep: [{ family: familyOf(REPAIR), name: REPAIR.name }],
   decision: { family: familyOf(DECISION), name: DECISION.name },
-}, 'wide');
+};
 
-const NODES = SCENE.nodes;
-const LINKS = SCENE.links;
-
-const DESIGN_WIDTH = 16;
-const DESIGN_HEIGHT = 9;
+const SCENES: Record<SceneDirection, Scene> = {
+  wide: heroScene(POOL, 'wide'),
+  narrow: heroScene(POOL, 'narrow'),
+};
 
 const LINK_STROKE = { near: 0.032, far: 0.018 };
+const RETURN_PACKET_HEAD = 0.26;
+const RETURN_PACKET_TAIL = 0.11;
+const RETURN_PACKET_CORE = 0.05;
+const RETURN_PACKET_SPREAD = 0.18;
+const RETURN_PACKET_RAIL = 0.028;
+const RETURN_PACKET_TRAIL = 0.15;
+const NO_RETURN = -1;
+const LINK_GLOW_FADE = { above: 0.1, width: 0.06 };
+const TILE_EDGE = 0.04;
+const RING_EDGE = 0.05;
+const MONOGRAM_SIZE = 0.26;
+const FRAME_OPACITY = 0.25;
+
+const tileClipId = (direction: SceneDirection, index: number) =>
+  `hero-tile-clip-${direction}-${index}`;
 
 const ROLE_VARIABLE: Record<SceneLinkKind, string> = {
   coordinator: '--color-primary',
@@ -76,8 +92,58 @@ const ARIA_LABEL =
   `Workers put bounded questions to ${DECISION.name}. A model from another Flash family reviews each finished chunk, ` +
   `a chunk that keeps failing its repairs escalates to ${REPAIR.name}, and accepted chunks travel back to the coordinator.`;
 
-const NODE_COUNT = NODES.length;
-const LINK_COUNT = LINKS.length;
+const NODE_COUNT = SCENES.wide.nodes.length;
+const LINK_COUNT = SCENES.wide.links.length;
+
+type Palette = Record<string, [number, number, number]>;
+
+type SceneArrays = {
+  nodePositions: Float32Array;
+  nodeRadii: Float32Array;
+  nodeColors: Float32Array;
+  linkEnds: Float32Array;
+  linkColors: Float32Array;
+  linkPhases: Float32Array;
+  linkReturns: Float32Array;
+  linkNear: Float32Array;
+  linkClamp: Float32Array;
+  linkWeight: Float32Array;
+};
+
+function sceneArrays(scene: Scene, palette: Palette): SceneArrays {
+  const arrays: SceneArrays = {
+    nodePositions: new Float32Array(NODE_COUNT * 2),
+    nodeRadii: new Float32Array(NODE_COUNT),
+    nodeColors: new Float32Array(NODE_COUNT * 3),
+    linkEnds: new Float32Array(LINK_COUNT * 4),
+    linkColors: new Float32Array(LINK_COUNT * 3),
+    linkPhases: new Float32Array(LINK_COUNT),
+    linkReturns: new Float32Array(LINK_COUNT),
+    linkNear: new Float32Array(LINK_COUNT),
+    linkClamp: new Float32Array(LINK_COUNT),
+    linkWeight: new Float32Array(LINK_COUNT),
+  };
+  scene.nodes.forEach((node, i) => {
+    arrays.nodePositions[i * 2] = node.x;
+    arrays.nodePositions[i * 2 + 1] = node.y;
+    arrays.nodeRadii[i] = node.r;
+    arrays.nodeColors.set(palette[nodeHue(node)], i * 3);
+  });
+  scene.links.forEach((link, i) => {
+    arrays.linkEnds[i * 4] = link.x1;
+    arrays.linkEnds[i * 4 + 1] = link.y1;
+    arrays.linkEnds[i * 4 + 2] = link.x2;
+    arrays.linkEnds[i * 4 + 3] = link.y2;
+    arrays.linkColors.set(palette[edgeHue(link)], i * 3);
+    arrays.linkPhases[i] = link.phase;
+    arrays.linkReturns[i] = link.returnPhase ?? NO_RETURN;
+    arrays.linkNear[i] = link.near ? 1.0 : 0.6;
+    arrays.linkWeight[i] = link.weight;
+    const lower = Math.max(scene.nodes[link.from].y, scene.nodes[link.to].y);
+    arrays.linkClamp[i] = lower + TILE.half + LINK_GLOW_FADE.above;
+  });
+  return arrays;
+}
 
 const VERTEX_SOURCE = `
 attribute vec2 aPos;
@@ -86,6 +152,9 @@ void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }`;
 const FRAGMENT_SOURCE = `
 precision mediump float;
 uniform vec2 uRes;
+uniform vec2 uOrigin;
+uniform float uScale;
+uniform float uHeight;
 uniform float uTime;
 uniform vec3 uBase;
 uniform vec3 uLine;
@@ -95,6 +164,7 @@ uniform vec3 uNodeColor[${NODE_COUNT}];
 uniform vec4 uLink[${LINK_COUNT}];
 uniform vec3 uLinkColor[${LINK_COUNT}];
 uniform float uLinkPhase[${LINK_COUNT}];
+uniform float uLinkReturn[${LINK_COUNT}];
 uniform float uLinkNear[${LINK_COUNT}];
 uniform float uLinkClamp[${LINK_COUNT}];
 uniform float uLinkWeight[${LINK_COUNT}];
@@ -110,10 +180,8 @@ float glow(float d, float sigma){
 }
 
 void main(){
-  float scale = min(uRes.x / ${DESIGN_WIDTH}.0, uRes.y / ${DESIGN_HEIGHT}.0);
-  vec2 inset = (uRes - vec2(${DESIGN_WIDTH}.0, ${DESIGN_HEIGHT}.0) * scale) * 0.5;
-  vec2 p = (gl_FragCoord.xy - inset) / scale;
-  p.y = ${DESIGN_HEIGHT}.0 - p.y;
+  vec2 p = (gl_FragCoord.xy - uOrigin) / uScale;
+  p.y = uHeight - p.y;
 
   vec3 color = uBase;
 
@@ -127,7 +195,7 @@ void main(){
     float weight = uLinkWeight[i];
     float rail = segmentDistance(p, a, b);
     float near = uLinkNear[i];
-    float glowClamp = 1.0 - smoothstep(uLinkClamp[i] - 0.06, uLinkClamp[i] + 0.06, p.y);
+    float glowClamp = 1.0 - smoothstep(uLinkClamp[i] - ${LINK_GLOW_FADE.width.toFixed(2)}, uLinkClamp[i] + ${LINK_GLOW_FADE.width.toFixed(2)}, p.y);
 
     color += uLinkColor[i] * weight * (0.22 + 0.18 * near) * glow(rail, weight * (0.048 + 0.042 * (1.0 - near))) * glowClamp;
     color += uLinkColor[i] * weight * (0.38 + 0.30 * near) * glow(rail, weight * (0.027 + 0.024 * (1.0 - near))) * glowClamp;
@@ -140,6 +208,16 @@ void main(){
     float nearBoost = 1.0 + 0.2 * near;
     color += uLinkColor[i] * alive * nearBoost * (0.32 * glow(toPacket, 0.055) + 0.14 * glow(toPacket, 0.20)) * glowClamp;
     color += uLinkColor[i] * weight * alive * nearBoost * 0.18 * glow(rail, 0.032) * smoothstep(0.5, 0.0, toPacket) * glowClamp;
+
+    if (uLinkReturn[i] >= 0.0) {
+      float back = fract(uTime * 0.2 + uLinkReturn[i]);
+      float backEased = back * back * (3.0 - 2.0 * back);
+      vec2 backPacket = b + (a - b) * backEased;
+      float backAlive = sin(back * 3.1415926);
+      float toBack = length(p - backPacket);
+      color += uLinkColor[i] * backAlive * nearBoost * (${RETURN_PACKET_HEAD.toFixed(2)} * glow(toBack, ${RETURN_PACKET_CORE.toFixed(2)}) + ${RETURN_PACKET_TAIL.toFixed(2)} * glow(toBack, ${RETURN_PACKET_SPREAD.toFixed(2)})) * glowClamp;
+      color += uLinkColor[i] * weight * backAlive * nearBoost * ${RETURN_PACKET_TRAIL.toFixed(2)} * glow(rail, ${RETURN_PACKET_RAIL.toFixed(2)}) * smoothstep(0.5, 0.0, toBack) * glowClamp;
+    }
   }
 
   for (int i = 0; i < ${NODE_COUNT}; i++){
@@ -208,7 +286,7 @@ function readPalette(host: HTMLElement, variables: string[]) {
       ? [channels[0] / 255, channels[1] / 255, channels[2] / 255]
       : [0.5, 0.5, 0.5];
   };
-  const palette: Record<string, [number, number, number]> = {};
+  const palette: Palette = {};
   for (const variable of variables) palette[variable] = read(variable);
   probe.remove();
   return palette;
@@ -216,9 +294,181 @@ function readPalette(host: HTMLElement, variables: string[]) {
 
 const MAX_DEVICE_PIXEL_RATIO = 2;
 
-export default function HeroCanvas() {
+type HeroParts = {
+  registerBox: (direction: SceneDirection, element: SVGSVGElement) => void;
+  registerFrame: (direction: SceneDirection, element: SVGGElement) => void;
+};
+
+const HeroPartsContext = createContext<HeroParts>();
+
+export function HeroSceneBox(props: { direction: SceneDirection; class?: string }) {
+  const parts = useContext(HeroPartsContext);
+  const scene = SCENES[props.direction];
+  return (
+    <div
+      class={`relative ${props.class ?? ''}`}
+      style={{ 'aspect-ratio': `${scene.width} / ${scene.height}` }}
+    >
+      <SceneSvg
+        scene={scene}
+        onMountBox={(element) => parts?.registerBox(scene.direction, element)}
+        onMountFrame={(element) => parts?.registerFrame(scene.direction, element)}
+      />
+    </div>
+  );
+}
+
+function SceneSvg(props: {
+  scene: Scene;
+  onMountBox: (element: SVGSVGElement) => void;
+  onMountFrame: (element: SVGGElement) => void;
+}) {
+  const scene = props.scene;
+  return (
+    <svg
+      ref={(element) => props.onMountBox(element)}
+      data-hero-layout={scene.direction}
+      viewBox={`0 0 ${scene.width} ${scene.height}`}
+      class="absolute inset-0 size-full"
+      role="img"
+      aria-label={ARIA_LABEL}
+    >
+      <defs>
+        {scene.nodes.map((node, index) =>
+          node.family && node.labelBox ? (
+            <clipPath id={tileClipId(scene.direction, index)} clipPathUnits="userSpaceOnUse">
+              <rect
+                x={node.tile.x}
+                y={node.tile.y}
+                width={node.tile.width}
+                height={node.tile.height}
+                rx={TILE.radius}
+              />
+            </clipPath>
+          ) : null,
+        )}
+      </defs>
+      <g
+        ref={(element) => props.onMountFrame(element)}
+        data-hero-frame={scene.direction}
+        class="transition-opacity duration-500 ease-out-soft"
+        opacity={FRAME_OPACITY}
+      >
+        {scene.links.map((link) => (
+          <line
+            data-link={`${link.from}-${link.to}`}
+            data-kind={link.kind}
+            x1={link.x1}
+            y1={link.y1}
+            x2={link.x2}
+            y2={link.y2}
+            stroke={`var(${edgeHue(link)})`}
+            stroke-width={(link.near ? LINK_STROKE.near : LINK_STROKE.far) * link.weight}
+            opacity={link.near ? 0.7 : 0.3}
+          />
+        ))}
+        {scene.nodes.map((node) =>
+          node.family ? null : (
+            <circle
+              data-role="coordinator"
+              cx={node.x}
+              cy={node.y}
+              r={node.r}
+              fill="var(--color-base-100)"
+              stroke={`var(${nodeHue(node)})`}
+              stroke-width={RING_EDGE}
+            />
+          ),
+        )}
+      </g>
+      {scene.nodes.map((node, index) => {
+        if (!node.family || !node.labelBox) return null;
+        const identity = MODELS[node.family as ModelId];
+        const patch = node.labelBox;
+        return (
+          <g data-model={node.family} data-role={node.role}>
+            <rect
+              data-tile
+              x={node.tile.x}
+              y={node.tile.y}
+              width={node.tile.width}
+              height={node.tile.height}
+              rx={TILE.radius}
+              fill={identity.tileFill ?? 'var(--color-base-200)'}
+            />
+            <g clip-path={`url(#${tileClipId(scene.direction, index)})`}>
+              {identity.logo ? (
+                <image
+                  href={asset(identity.logo)}
+                  x={node.tile.x}
+                  y={node.tile.y}
+                  width={node.tile.width}
+                  height={node.tile.height}
+                  preserveAspectRatio="xMidYMid meet"
+                />
+              ) : (
+                <text
+                  x={node.x}
+                  y={node.y}
+                  font-size={`${MONOGRAM_SIZE}`}
+                  font-weight="600"
+                  text-anchor="middle"
+                  dominant-baseline="central"
+                  fill={identity.hue}
+                >
+                  {identity.monogram}
+                </text>
+              )}
+            </g>
+            <rect
+              data-tile-edge
+              x={node.tile.x}
+              y={node.tile.y}
+              width={node.tile.width}
+              height={node.tile.height}
+              rx={TILE.radius}
+              fill="none"
+              stroke={identity.hue}
+              stroke-width={TILE_EDGE}
+            />
+            <rect
+              data-label-patch
+              x={patch.x}
+              y={patch.y}
+              width={patch.width}
+              height={patch.height}
+              fill="var(--color-base-100)"
+            />
+            <text
+              data-label
+              x={patch.x + patch.width / 2}
+              y={patch.y + patch.height / 2}
+              fill="var(--color-dim)"
+              font-size={`${scene.labelSize}`}
+              text-anchor="middle"
+              dominant-baseline="central"
+            >
+              {node.label}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+export default function HeroCanvas(props: { children?: JSX.Element }) {
   let canvas!: HTMLCanvasElement;
-  let fallback!: SVGGElement;
+  const boxes: Partial<Record<SceneDirection, SVGSVGElement>> = {};
+  const frames: Partial<Record<SceneDirection, SVGGElement>> = {};
+  const parts: HeroParts = {
+    registerBox: (direction, element) => {
+      boxes[direction] = element;
+    },
+    registerFrame: (direction, element) => {
+      frames[direction] = element;
+    },
+  };
 
   onMount(() => {
     const reduceQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -231,6 +481,15 @@ export default function HeroCanvas() {
     let contextLost = false;
     let origin = 0;
     let seconds = 0;
+    let active: SceneDirection = 'wide';
+    let scale = 0;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    const everyFrame = () => Object.values(frames).filter(Boolean) as SVGGElement[];
+    const stillFrame = () => {
+      for (const group of everyFrame()) group.classList.remove('opacity-0');
+    };
 
     const stop = () => {
       if (frame) cancelAnimationFrame(frame);
@@ -241,7 +500,7 @@ export default function HeroCanvas() {
       event.preventDefault();
       contextLost = true;
       stop();
-      fallback.classList.remove('opacity-0');
+      stillFrame();
     };
     const onPreferenceChange = () => {
       origin = 0;
@@ -257,7 +516,8 @@ export default function HeroCanvas() {
       origin = 0;
       sync();
     });
-    const sizeObserver = new ResizeObserver(() => resize());
+    const sizeObserver = new ResizeObserver(() => place());
+    const boxObserver = new ResizeObserver(() => place());
 
     canvas.addEventListener('webglcontextlost', onContextLost);
     onCleanup(() => {
@@ -267,41 +527,21 @@ export default function HeroCanvas() {
       document.removeEventListener('visibilitychange', onVisibility);
       observer.disconnect();
       sizeObserver.disconnect();
+      boxObserver.disconnect();
       if (gl && program) gl.deleteProgram(program);
       if (gl && buffer) gl.deleteBuffer(buffer);
     });
 
-    if (!gl || !program || !buffer) return;
+    if (!gl || !program || !buffer) {
+      stillFrame();
+      return;
+    }
 
     const palette = readPalette(canvas.parentElement ?? document.body, SCENE_VARIABLES);
-    const nodePositions = new Float32Array(NODE_COUNT * 2);
-    const nodeRadii = new Float32Array(NODE_COUNT);
-    const nodeColors = new Float32Array(NODE_COUNT * 3);
-    const linkEnds = new Float32Array(LINK_COUNT * 4);
-    const linkColors = new Float32Array(LINK_COUNT * 3);
-    const linkPhases = new Float32Array(LINK_COUNT);
-    const linkNear = new Float32Array(LINK_COUNT);
-    const linkClamp = new Float32Array(LINK_COUNT);
-    const linkWeight = new Float32Array(LINK_COUNT);
-
-    NODES.forEach((node, i) => {
-      nodePositions[i * 2] = node.x;
-      nodePositions[i * 2 + 1] = node.y;
-      nodeRadii[i] = node.r;
-      nodeColors.set(palette[nodeHue(node)], i * 3);
-    });
-    LINKS.forEach((link, i) => {
-      linkEnds[i * 4] = link.x1;
-      linkEnds[i * 4 + 1] = link.y1;
-      linkEnds[i * 4 + 2] = link.x2;
-      linkEnds[i * 4 + 3] = link.y2;
-      linkColors.set(palette[edgeHue(link)], i * 3);
-      linkPhases[i] = link.phase;
-      linkNear[i] = link.near ? 1.0 : 0.6;
-      linkWeight[i] = link.weight;
-      const higher = Math.max(NODES[link.from].y, NODES[link.to].y);
-      linkClamp[i] = higher + TILE.half + LABEL.gap * 0.5;
-    });
+    const arrays = {
+      wide: sceneArrays(SCENES.wide, palette),
+      narrow: sceneArrays(SCENES.narrow, palette),
+    };
 
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
@@ -312,23 +552,38 @@ export default function HeroCanvas() {
 
     const uniform = (name: string) => gl.getUniformLocation(program, name);
     const resolution = uniform('uRes');
+    const originUniform = uniform('uOrigin');
+    const scaleUniform = uniform('uScale');
+    const heightUniform = uniform('uHeight');
     const elapsed = uniform('uTime');
     gl.uniform3fv(uniform('uBase'), palette['--color-base-100']);
     gl.uniform3fv(uniform('uLine'), palette['--color-line']);
-    gl.uniform2fv(uniform('uNode'), nodePositions);
-    gl.uniform1fv(uniform('uNodeRadius'), nodeRadii);
-    gl.uniform3fv(uniform('uNodeColor'), nodeColors);
-    gl.uniform4fv(uniform('uLink'), linkEnds);
-    gl.uniform3fv(uniform('uLinkColor'), linkColors);
-    gl.uniform1fv(uniform('uLinkPhase'), linkPhases);
-    gl.uniform1fv(uniform('uLinkNear'), linkNear);
-    gl.uniform1fv(uniform('uLinkClamp'), linkClamp);
-    gl.uniform1fv(uniform('uLinkWeight'), linkWeight);
+    const upload = (data: SceneArrays) => {
+      gl.uniform2fv(uniform('uNode'), data.nodePositions);
+      gl.uniform1fv(uniform('uNodeRadius'), data.nodeRadii);
+      gl.uniform3fv(uniform('uNodeColor'), data.nodeColors);
+      gl.uniform4fv(uniform('uLink'), data.linkEnds);
+      gl.uniform3fv(uniform('uLinkColor'), data.linkColors);
+      gl.uniform1fv(uniform('uLinkPhase'), data.linkPhases);
+      gl.uniform1fv(uniform('uLinkReturn'), data.linkReturns);
+      gl.uniform1fv(uniform('uLinkNear'), data.linkNear);
+      gl.uniform1fv(uniform('uLinkClamp'), data.linkClamp);
+      gl.uniform1fv(uniform('uLinkWeight'), data.linkWeight);
+    };
+    let uploaded: SceneDirection | null = null;
 
     const draw = () => {
-      if (contextLost || canvas.width < 1 || canvas.height < 1) return;
+      if (contextLost || canvas.width < 1 || canvas.height < 1 || scale <= 0) return;
+      if (uploaded !== active) {
+        upload(arrays[active]);
+        gl.uniform1f(heightUniform, SCENES[active].height);
+        uploaded = active;
+      }
       gl.viewport(0, 0, canvas.width, canvas.height);
       gl.uniform2f(resolution, canvas.width, canvas.height);
+      const density = Math.min(window.devicePixelRatio || 1, MAX_DEVICE_PIXEL_RATIO);
+      gl.uniform2f(originUniform, offsetX * density, offsetY * density);
+      gl.uniform1f(scaleUniform, scale * density);
       gl.uniform1f(elapsed, seconds);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     };
@@ -343,6 +598,23 @@ export default function HeroCanvas() {
         canvas.width = width;
         canvas.height = height;
       }
+    };
+
+    const place = () => {
+      resize();
+      const canvasBox = canvas.getBoundingClientRect();
+      const wide = boxes.wide?.getBoundingClientRect();
+      const narrow = boxes.narrow?.getBoundingClientRect();
+      const scene = wide && wide.width > 0 ? SCENES.wide : narrow && narrow.width > 0 ? SCENES.narrow : null;
+      const drawn = wide && wide.width > 0 ? wide : narrow;
+      if (!scene || !drawn) {
+        scale = 0;
+        return;
+      }
+      active = scene.direction;
+      scale = drawn.width / scene.width;
+      offsetX = drawn.left - canvasBox.left;
+      offsetY = canvasBox.bottom - drawn.bottom;
       draw();
     };
 
@@ -362,12 +634,12 @@ export default function HeroCanvas() {
 
     function sync() {
       if (shouldAnimate()) {
-        fallback.classList.add('opacity-0');
+        for (const group of everyFrame()) group.classList.add('opacity-0');
         if (!frame) frame = requestAnimationFrame(tick);
         return;
       }
       stop();
-      if (reduceQuery.matches || contextLost) fallback.classList.remove('opacity-0');
+      if (reduceQuery.matches || contextLost) stillFrame();
       draw();
     }
 
@@ -375,120 +647,15 @@ export default function HeroCanvas() {
     document.addEventListener('visibilitychange', onVisibility);
     observer.observe(canvas);
     sizeObserver.observe(canvas);
-    resize();
+    for (const box of Object.values(boxes)) if (box) boxObserver.observe(box);
+    place();
     sync();
   });
 
   return (
-    <div class="relative size-full">
-      <canvas ref={canvas} class="absolute inset-0 size-full" aria-hidden="true" />
-      <svg
-        viewBox={`0 0 ${DESIGN_WIDTH} ${DESIGN_HEIGHT}`}
-        class="absolute inset-0 size-full"
-        role="img"
-        aria-label={ARIA_LABEL}
-      >
-        <defs>
-          <clipPath id="hero-tile-clip">
-            <rect
-              x={-TILE.half}
-              y={-TILE.half}
-              width={TILE.side}
-              height={TILE.side}
-              rx={TILE.radius}
-            />
-          </clipPath>
-        </defs>
-        <g
-          ref={fallback}
-          class="transition-opacity duration-500 ease-out-soft"
-          opacity="0.25"
-        >
-          {LINKS.map((link) => (
-            <line
-              x1={link.x1}
-              y1={link.y1}
-              x2={link.x2}
-              y2={link.y2}
-              stroke={`var(${edgeHue(link)})`}
-              stroke-width={(link.near ? LINK_STROKE.near : LINK_STROKE.far) * link.weight}
-              opacity={link.near ? 0.7 : 0.3}
-            />
-          ))}
-          {NODES.map((node) =>
-            node.family ? null : (
-              <circle
-                cx={node.x}
-                cy={node.y}
-                r={node.r}
-                fill="var(--color-base-100)"
-                stroke={`var(${nodeHue(node)})`}
-                stroke-width="0.05"
-              />
-            ),
-          )}
-        </g>
-        {NODES.map((node) => {
-          if (!node.family) return null;
-          const identity = MODELS[node.family as ModelId];
-          return (
-            <g transform={`translate(${node.x} ${node.y})`} data-model={node.family} data-role={node.role}>
-              <rect
-                x={-TILE.half}
-                y={-TILE.half}
-                width={TILE.side}
-                height={TILE.side}
-                rx={TILE.radius}
-                fill={identity.tileFill ?? 'var(--color-base-200)'}
-              />
-              <g clip-path="url(#hero-tile-clip)">
-                {identity.logo ? (
-                  <image
-                    href={asset(identity.logo)}
-                    x={-TILE.half}
-                    y={-TILE.half}
-                    width={TILE.side}
-                    height={TILE.side}
-                    preserveAspectRatio="xMidYMid meet"
-                  />
-                ) : (
-                  <text
-                    x="0"
-                    y="0"
-                    font-size="0.26"
-                    font-weight="600"
-                    text-anchor="middle"
-                    dominant-baseline="central"
-                    fill={identity.hue}
-                  >
-                    {identity.monogram}
-                  </text>
-                )}
-              </g>
-              <rect
-                x={-TILE.half}
-                y={-TILE.half}
-                width={TILE.side}
-                height={TILE.side}
-                rx={TILE.radius}
-                fill="none"
-                stroke={identity.hue}
-                stroke-width="0.04"
-              />
-              {node.label ? (
-                <text
-                  y={TILE.half + LABEL.gap}
-                  fill="var(--color-dim)"
-                  font-size={`${LABEL.size}`}
-                  text-anchor="middle"
-                >
-                  {node.label}
-                </text>
-              ) : null}
-            </g>
-          );
-        })}
-      </svg>
-    </div>
+    <HeroPartsContext.Provider value={parts}>
+      <canvas ref={canvas} class="absolute inset-0 -z-10 size-full" aria-hidden="true" />
+      {props.children}
+    </HeroPartsContext.Provider>
   );
 }

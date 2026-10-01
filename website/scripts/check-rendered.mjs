@@ -98,9 +98,11 @@ const inspectLabelOverlaps = () => {
     };
   };
   const problems = [];
-  const hero = [...document.querySelectorAll('svg')].filter((svg) => svg.querySelector('[data-model]'));
+  const hero = [...document.querySelectorAll('svg[data-hero-layout]')].filter(
+    (svg) => svg.getBoundingClientRect().width > 0 && svg.getBoundingClientRect().height > 0,
+  );
   const targets = [
-    ...hero.map((svg) => ({ svg, which: 'the hero SVG' })),
+    ...hero.map((svg) => ({ svg, which: `the visible hero SVG (${svg.dataset.heroLayout})` })),
     ...[...document.querySelectorAll('svg[data-topo-svg]')].map((svg) => ({
       svg,
       which: `the topology SVG (${svg.dataset.topoVariant ?? 'variant'})`,
@@ -138,6 +140,91 @@ const inspectLabelOverlaps = () => {
       }
     }
     svg.style.display = declaredDisplay;
+  }
+  return problems;
+};
+
+const inspectHeroFit = () => {
+  const copyMargin = 4;
+  const narrow = 640;
+  const problems = [];
+  const layouts = [...document.querySelectorAll('svg[data-hero-layout]')];
+  const shown = layouts.filter((svg) => {
+    const rect = svg.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && getComputedStyle(svg).visibility !== 'hidden';
+  });
+  if (shown.length !== 1) {
+    problems.push(`the landing page shows ${shown.length} hero layouts at once, expected the wide and the narrow one to swap at ${narrow} CSS pixels`);
+    return problems;
+  }
+  const svg = shown[0];
+  const expected = document.documentElement.clientWidth < narrow ? 'narrow' : 'wide';
+  if (svg.dataset.heroLayout !== expected) {
+    problems.push(`the ${svg.dataset.heroLayout} hero layout is visible at ${document.documentElement.clientWidth} CSS pixels, expected the ${expected} one`);
+  }
+  const section = svg.closest('section');
+  if (!section) {
+    problems.push('the visible hero layout sits in no hero section');
+    return problems;
+  }
+  const sectionBox = section.getBoundingClientRect();
+  const viewport = { left: 0, right: document.documentElement.clientWidth };
+  const copy = [...section.querySelectorAll('h1, p, a.btn')]
+    .filter((element) => !svg.contains(element) && element.getBoundingClientRect().width > 0)
+    .map((element) => {
+      const rect = element.getBoundingClientRect();
+      return {
+        text: element.textContent.trim().slice(0, 30),
+        box: {
+          left: rect.left - copyMargin,
+          top: rect.top - copyMargin,
+          right: rect.right + copyMargin,
+          bottom: rect.bottom + copyMargin,
+        },
+      };
+    });
+  const drawn = [];
+  const add = (what, left, top, right, bottom) => drawn.push({ what, box: { left, top, right, bottom } });
+  for (const line of svg.querySelectorAll('[data-link]')) {
+    const matrix = line.getScreenCTM();
+    if (!matrix) continue;
+    const at = (x, y) => ({ x: matrix.a * x + matrix.c * y + matrix.e, y: matrix.b * x + matrix.d * y + matrix.f });
+    const start = at(line.x1.baseVal.value, line.y1.baseVal.value);
+    const end = at(line.x2.baseVal.value, line.y2.baseVal.value);
+    add(
+      `the ${line.getAttribute('data-kind')} line ${line.getAttribute('data-link')}`,
+      Math.min(start.x, end.x),
+      Math.min(start.y, end.y),
+      Math.max(start.x, end.x),
+      Math.max(start.y, end.y),
+    );
+  }
+  for (const group of svg.querySelectorAll('g[data-model]')) {
+    const name = group.querySelector('text[data-label]')?.textContent.trim() ?? group.dataset.model;
+    for (const [what, selector] of [['tile', 'rect[data-tile]'], ['label', 'text[data-label]']]) {
+      const element = group.querySelector(selector);
+      if (!element) continue;
+      const rect = element.getBoundingClientRect();
+      add(`the ${what} of ${name}`, rect.left, rect.top, rect.right, rect.bottom);
+    }
+  }
+  const ring = svg.querySelector('[data-role="coordinator"]');
+  if (!ring) {
+    problems.push('the visible hero layout draws no coordinator ring');
+  } else {
+    const rect = ring.getBoundingClientRect();
+    add('the coordinator ring', rect.left, rect.top, rect.right, rect.bottom);
+  }
+  const meets = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+  for (const { what, box } of drawn) {
+    if (box.left < viewport.left - 0.5 || box.right > viewport.right + 0.5) {
+      problems.push(`${what} leaves the viewport: it runs from ${Math.round(box.left)} to ${Math.round(box.right)} across a ${Math.round(viewport.right)} CSS pixel page`);
+    }
+    if (box.top < sectionBox.top - 0.5 || box.bottom > sectionBox.bottom + 0.5) {
+      problems.push(`${what} leaves the hero section: it runs from ${Math.round(box.top)} to ${Math.round(box.bottom)} across a section ${Math.round(sectionBox.height)} CSS pixels tall`);
+    }
+    const near = copy.find((entry) => meets(box, entry.box));
+    if (near) problems.push(`${what} sits within ${copyMargin} CSS pixels of the hero copy "${near.text}"`);
   }
   return problems;
 };
@@ -193,6 +280,12 @@ try {
         }
         for (const error of errors) failures.push(`${route} at ${width}px logged an error: ${error}`);
 
+        if (route === '/') {
+          for (const problem of await withinStep(page.evaluate(inspectHeroFit), `${route} at ${width}px hero fit inspection`)) {
+            failures.push(`${route} at ${width}px: ${problem}`);
+          }
+        }
+
         if (width === 320 || width === 768 || width === 1440) {
           for (const problem of await withinStep(page.evaluate(inspectLabels), `${route} at ${width}px label inspection`)) {
             failures.push(`${route} at ${width}px: label "${problem.text}" ${problem.kind}`);
@@ -207,6 +300,27 @@ try {
       } finally {
         await tab.close().catch(() => {});
       }
+    }
+  }
+
+  {
+    const tab = await openPage(site, { width: 1440 });
+    const page = tab.page;
+    try {
+      await page.setViewport({ width: 1440, height: 900 });
+      await page.goto(origin + '/', { waitUntil: 'networkidle0' });
+      await sleep(250);
+      for (const width of [390, 1440]) {
+        await page.setViewport({ width, height: 900 });
+        await sleep(250);
+        for (const problem of await withinStep(page.evaluate(inspectHeroFit), `/ resized to ${width}px hero fit inspection`)) {
+          failures.push(`/ resized from 1440px to ${width}px: ${problem}`);
+        }
+      }
+    } catch (error) {
+      failures.push(`/ could not be inspected after a resize: ${error.message}`);
+    } finally {
+      await tab.close().catch(() => {});
     }
   }
 
@@ -340,7 +454,7 @@ if (failures.length > 0) {
 console.log(
   `Rendered inspection passed: ${routes.length} routes at ${widths.join('/')} CSS pixels ` +
     `(${checkedPages} page loads); no horizontal overflow, exactly one h1 per route, no console or page errors, ` +
-    'no SVG label escaping its viewBox or straddling a card edge, no two labels crossing inside the hero or a topology SVG, no animation under prefers-reduced-motion, ' +
+    'no SVG label escaping its viewBox or straddling a card edge, no two labels crossing inside the visible hero or a topology SVG, the visible hero layout inside the viewport and away from the copy at every width and after a 1440 to 390 to 1440 resize, no animation under prefers-reduced-motion, ' +
     'every route still readable with JavaScript disabled, and the consent banner visible at 320 CSS pixels ' +
     'with timezone Europe/Berlin on every route without overflow or errors.',
 );
