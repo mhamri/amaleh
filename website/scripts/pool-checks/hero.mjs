@@ -460,29 +460,35 @@ function built(failures, publicDir) {
     if (!expected.some((worker) => worker.family === key)) expected.push({ family: key, name: MODELS[key]?.name ?? null });
   }
   const html = readFileSync(file, 'utf8');
-  const heroes = [...html.matchAll(/<svg\b[\s\S]*?<\/svg>/g)].map((match) => match[0]).filter((svg) => /data-model="/.test(svg));
-  if (heroes.length !== 1) {
-    failures.push(`/ has ${heroes.length} hero SVGs with model tiles, expected exactly one`);
+  const heroes = [...html.matchAll(/<svg\b[^>]*data-hero-layout="([^"]+)"[^>]*>[\s\S]*?<\/svg>/g)]
+    .map((match) => ({ layout: match[1], svg: match[0] }));
+  const layouts = heroes.map((hero) => hero.layout).sort();
+  if (layouts.length !== 2 || layouts[0] !== 'narrow' || layouts[1] !== 'wide') {
+    failures.push(`/ has hero SVGs for the layouts [${layouts.join(', ')}], expected exactly one narrow and one wide`);
     return;
   }
-  const hero = heroes[0];
-  const tiles = [...hero.matchAll(/<g\b([^>]*\bdata-model="([^"]+)"[^>]*)>/g)].map((match, index, all) => ({
-    attributes: match[1],
-    family: match[2],
-    body: hero.slice(match.index, all[index + 1]?.index ?? hero.length),
-  }));
-  const workerTiles = tiles.filter((tile) => /\bdata-role="worker"/.test(tile.attributes));
-  const families = workerTiles.map((tile) => tile.family).sort();
-  const wanted = expected.map((worker) => worker.family).sort();
-  const same = families.length === wanted.length && families.every((value, index) => value === wanted[index]);
-  if (!same) failures.push(`the built hero worker tiles are [${families.join(', ')}], expected [${wanted.join(', ')}]`);
-  const text = (tile) => [...tile.body.matchAll(/<text\b[^>]*>([\s\S]*?)<\/text>/g)].map((match) => match[1].replace(/<[^>]+>/g, '').trim());
-  for (const worker of expected) {
-    const tile = workerTiles.find((candidate) => candidate.family === worker.family);
-    if (!tile) continue;
-    const labels = text(tile).filter((value) => value.length > 0);
-    if (!worker.name || !labels.includes(worker.name)) {
-      failures.push(`the built hero tile ${worker.family} is labelled [${labels.join(', ')}], expected [${worker.name}]`);
+  for (const hero of heroes) {
+    const tiles = [...hero.svg.matchAll(/<g\b([^>]*\bdata-model="([^"]+)"[^>]*)>/g)].map((match, index, all) => ({
+      attributes: match[1],
+      family: match[2],
+      body: hero.svg.slice(match.index, all[index + 1]?.index ?? hero.svg.length),
+    }));
+    const workerTiles = tiles.filter((tile) => /\bdata-role="worker"/.test(tile.attributes));
+    const families = workerTiles.map((tile) => tile.family).sort();
+    const wanted = expected.map((worker) => worker.family).sort();
+    const same = families.length === wanted.length && families.every((value, index) => value === wanted[index]);
+    if (!same) {
+      failures.push(`the built ${hero.layout} hero worker tiles are [${families.join(', ')}], expected [${wanted.join(', ')}]`);
+    }
+    const text = (tile) => [...tile.body.matchAll(/<text\b[^>]*data-label[^>]*>([\s\S]*?)<\/text>/g)]
+      .map((match) => match[1].replace(/<[^>]+>/g, '').trim());
+    for (const worker of expected) {
+      const tile = workerTiles.find((candidate) => candidate.family === worker.family);
+      if (!tile) continue;
+      const labels = text(tile).filter((value) => value.length > 0);
+      if (!worker.name || !labels.includes(worker.name)) {
+        failures.push(`the built ${hero.layout} hero tile ${worker.family} is labelled [${labels.join(', ')}], expected [${worker.name}]`);
+      }
     }
   }
 }

@@ -51,8 +51,6 @@ export type Scene = {
 };
 
 export const TILE = { side: 0.72, half: 0.36, radius: 0.18 };
-export const LABEL = { size: 0.15, gap: 0.42 };
-export const HERO_FOCUS = { x: 13.2, y: 4.18 };
 
 const HUB_RADIUS = 0.9;
 const TILE_RADIUS = 0.42;
@@ -90,6 +88,9 @@ const CLAUDE_INDEX = 1;
 const CODEX_INDEX = 2;
 const FIRST_WORKER_INDEX = 3;
 
+const CLAUDE_PHASE = 0;
+const CODEX_PHASE = 0.5;
+const ESCALATION_PHASE = 0.3;
 const DECISION_PHASE = 0.12;
 const DECISION_PHASE_STEP = 0.11;
 const REVIEW_PHASE = 0.2;
@@ -157,15 +158,15 @@ function wideRow(spacing: number, widths: number[], ringRight: number, fanGap: n
 
 function narrowRow(count: number, spacing: number, centre: number, size: number, hubY: number) {
   const xs = Array.from({ length: count }, (_, index) => centre + (index - (count - 1) / 2) * spacing);
-  const rowBottom = hubY + HUB_RADIUS;
+  const ringBottom = hubY + HUB_RADIUS;
   const hostBottom = hubY + NARROW_HOST_DROP + portDrop(size);
   const corner = centre - HUB_RADIUS - NARROW_HOST_GAP;
   const outer = centre - xs[0];
   const cleared =
     outer > centre - corner
-      ? rowBottom + ((hostBottom + NARROW_LABEL_CLEAR - rowBottom) * outer) / (centre - corner)
+      ? ringBottom + ((hostBottom + NARROW_LABEL_CLEAR - ringBottom) * outer) / (centre - corner)
       : 0;
-  const rowY = Math.max(rowBottom + NARROW_ROW_GAP, hostBottom + NARROW_ROW_LABEL_CLEAR, cleared) + TILE.half;
+  const rowY = Math.max(ringBottom + NARROW_ROW_GAP, hostBottom + NARROW_ROW_LABEL_CLEAR, cleared) + TILE.half;
   return { xs, rowY };
 }
 
@@ -253,8 +254,8 @@ export function heroScene(pool: ScenePool, direction: SceneDirection): Scene {
     links.push({ from, to, x1, y1, x2, y2, kind, phase, weight, near, hueFamily, returnPhase });
   };
 
-  link(CLAUDE_INDEX, claudeSide, HUB_INDEX, ringSide, 'coordinator', 0, FULL_WEIGHT, false, HOSTS[0].family);
-  link(CODEX_INDEX, codexSide, HUB_INDEX, 'right', 'coordinator', 0.5, FULL_WEIGHT, false, HOSTS[1].family);
+  link(CLAUDE_INDEX, claudeSide, HUB_INDEX, ringSide, 'coordinator', CLAUDE_PHASE, FULL_WEIGHT, false, HOSTS[0].family);
+  link(CODEX_INDEX, codexSide, HUB_INDEX, 'right', 'coordinator', CODEX_PHASE, FULL_WEIGHT, false, HOSTS[1].family);
 
   for (let i = 0; i < count; i += 1) {
     const worker = FIRST_WORKER_INDEX + i;
@@ -274,7 +275,17 @@ export function heroScene(pool: ScenePool, direction: SceneDirection): Scene {
     if (i > 0) link(worker - 1, 'right', worker, 'left', 'review', REVIEW_PHASE + i * REVIEW_PHASE_STEP, FULL_WEIGHT, true);
   }
 
-  link(FIRST_WORKER_INDEX + count - 1, 'bottom', deepIndex, 'top', 'worker', 0.3, FULL_WEIGHT, true, deep.family);
+  link(
+    FIRST_WORKER_INDEX + count - 1,
+    'bottom',
+    deepIndex,
+    'top',
+    'worker',
+    ESCALATION_PHASE,
+    FULL_WEIGHT,
+    true,
+    deep.family,
+  );
 
   let width = 0;
   let height = 0;
