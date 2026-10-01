@@ -120,12 +120,13 @@ image is one edit there followed by a regeneration. The entries today:
 | --- | --- | --- | --- |
 | `brand/amaleh-mark.png` | 30 x 30 | header and footer lockup, 1x | 40 KB |
 | `brand/amaleh-mark@2x.png` | 60 x 60 | the lockup `srcset`, 2x | 40 KB |
+| `brand/amaleh-hero-mark.png` | 176 x 176 | the mark inside the hero's coordinator ring | 64 KB |
 | `brand/favicon-32.png` | 32 x 32 | `<link rel="icon" sizes="32x32">` | 40 KB |
 | `brand/favicon-16.png` | 16 x 16 | `<link rel="icon" sizes="16x16">` | 40 KB |
 | `brand/apple-touch-icon.png` | 180 x 180 | `<link rel="apple-touch-icon">` | 40 KB |
 | `brand/amaleh-share.png` | 600 x 600 | social share image | 300 KB |
 
-The two lockup marks and both favicons are transparent; the apple-touch icon
+The two lockup marks, the hero mark and both favicons are transparent; the apple-touch icon
 and the share image are opaque on the `#0f1216` page background, with the
 mark drawn at 85% of the apple-touch icon and 60% of the share square so each
 carries a margin. No page may reference any other copy:
@@ -225,9 +226,9 @@ Four widths are the contract. Every page is checked at all four.
 | Width | Target | What must be true |
 | --- | --- | --- |
 | 320–389 px | Small phone | One column. Nothing overflows horizontally. Diagrams switch to their stacked form. |
-| 390–767 px | Phone | One column. Cards full width. The hero scene is its own band under the copy, zoomed onto the model tiles. |
-| 768–1023 px | Tablet | Two-column card grids (`md:grid-cols-2`). Docs sidebar still stacked above the article. |
-| 1024 px and up | Desktop | The prose column is paired with a second column of real content. Docs use the three-column shell. Card grids reach three columns at `xl`. |
+| 390–767 px | Phone | One column. Cards full width. Below 640 px the hero draws its narrow arrangement in a centred block under the copy, up to 390 CSS pixels wide. |
+| 768–1023 px | Tablet | Two-column card grids (`md:grid-cols-2`). Docs sidebar still stacked above the article. From 640 px the hero draws its wide arrangement in a block under the copy, up to 760 CSS pixels wide. |
+| 1024 px and up | Desktop | The prose column is paired with a second column of real content. The hero is the one exception below 1280 px: its wide graph stays under the copy until 1280 px and sits beside the copy from 1280. Docs use the three-column shell. Card grids reach three columns at `xl`. |
 
 Rules that produce that:
 
@@ -294,8 +295,8 @@ repeats the offer and the one action, and nothing follows it but the footer.
 Where a section carries a fragment id it is the section element's own `id`, so
 an in-page link lands on the whole band.
 
-**The hero rule.** The hero carries exactly four things over the full-bleed
-scene, and nothing else:
+**The hero rule.** The hero carries exactly four things over its scene, and
+nothing else:
 
 1. one `<h1>` of at most 12 words that states the benefit the reader gets —
    never a statistic, a price or a token count;
@@ -309,16 +310,41 @@ scene, and nothing else:
 
 Measured rebuild figures, the pronunciation and origin of the name, and every
 explanation of the scene belong to the benefits and author sections, not to the
-hero. The scene is never covered by the copy: **at 1024 CSS pixels and wider no
-headline, paragraph or button may overlap any model tile.** The copy therefore
-sits in one compact block on the left (about a third of the band) and every
-labelled model tile in the scene stays right of the prose measure. **Below
-1024 CSS pixels the scene leaves the background** and becomes its own band
-under the buttons — 8:9 on a phone, 16:10 from `sm` — zoomed onto the model
-tiles so they read at phone width. Model name
-labels under a tile are supporting label copy: below body scale, and in the
-sans stack, because a model name is a topic rather than a string a reader could
-type or search.
+hero. The scene is never covered by the copy: **no headline, paragraph or
+button may overlap any part of the graph, and no line, tile, label or the
+coordinator ring may come within 4 CSS pixels of them.** `heroScene` in
+`website/src/lib/hero-scene.ts` returns two complete scenes from the pool —
+`wide` and `narrow` — and the page draws both:
+
+- **Wide** puts the coordinator ring at the far left. Claude Code and Codex sit
+  on one host row above the workers, every worker sits in one row, evenly
+  spaced, in pool order, and Jev sits on a row below the workers between the
+  first and last of them; all of those are right of the ring. Kimi sits
+  straight below the ring, on Jev's row, joined to the ring's bottom point and
+  to nothing else. Every host and dispatch line meets the ring at a point of
+  its own on the ring's right half, and every dispatch reaches its worker at
+  the top point, so the host and dispatch curves fan out without stacking.
+- **Narrow** puts Claude Code and Codex on a row at the top, mirrored about the
+  ring, with the ring below them. Kimi sits left of the ring at the height of
+  its centre, joined to the ring's left point. The worker row sits below the
+  ring and below Kimi, and Jev sits below the worker row. Every dispatch leaves
+  the ring from a point of its own on the ring's lower arc.
+
+Kimi is joined to the coordinator ring and never to a worker, because the
+coordinator is what sends a failing chunk to the repair model.
+
+Both scenes are server-rendered as `svg[data-hero-layout="wide"]` and
+`svg[data-hero-layout="narrow"]`, each in a box that takes its own scene's
+aspect ratio, so nothing is cropped and there is no zoom to reason about. CSS
+shows the narrow layout below 640 CSS pixels and the wide one from 640, so the
+swap also happens live while a loaded page is resized. Each box is capped so a
+label never leaves its readable range: below 640 the narrow box takes the
+content width up to 390 CSS pixels, centred under the copy; from 640 to 1279
+the wide box takes the content width up to 760 under the copy; from 1280 the
+copy takes a left column of `max-w-md` and the wide box sits to its right in
+the same row. Model name labels under a tile are supporting label copy: below
+body scale, and in the sans stack, because a model name is a topic rather than
+a string a reader could type or search.
 
 **Benefit figures.** Every figure on the landing page comes from
 `CASE-STUDY.md` — the two runs (`website-visuals` and `website-polish`) that
@@ -726,9 +752,9 @@ once by the shell in `app.tsx` beside `ConsentBanner`. Only a Star click shows
 it: `StarButton` and the header mobile menu link open it from their own click
 handler, so no route carries the panel on
 load. Its root carries `data-star-check` and `data-star-check-state` — one of
-`ask`, `checking`, `verified`, `already`, `not-found`, `no-user`, `busy`,
-`invalid`, `error` — so the flow is inspectable from the attribute instead of
-read out of the copy. The pattern, copy the class strings:
+`ask`, `checking`, `verified`, `confirmed`, `partial`, `not-found`, `no-user`,
+`busy`, `invalid`, `error` — so the flow is inspectable from the attribute
+instead of read out of the copy. The pattern, copy the class strings:
 
 ```html
 <div data-star-check data-star-check-state={state()}
@@ -765,10 +791,23 @@ page behind it stays readable.
 sentence into a single polite live region (`role="status"` with
 `aria-live="polite"`), so the outcome is announced and never carried by colour
 alone. The panel's own action is the secondary button; its dismissal is a ghost
-button beside it, and Escape closes the panel too. The verified state is the
-only state that adds a second action, and it renders the existing
-`SponsorButton` rather than a hand-written link, so the panel adds no second
-primary button to the view.
+button beside it, and Escape closes the panel too. The `verified` and
+`confirmed` states are the only states that add a second action, and both
+render the existing `SponsorButton` rather than a hand-written link, so the
+panel adds no second primary button to the view.
+
+**Every real star is confirmed.** `checkStar` in
+`src/lib/star-check.ts` reads the visitor's public starred list from
+`api.github.com`, newest first, with `cache: 'no-store'` so a check made seconds
+after an earlier one never reads a cached list, and with the
+`application/vnd.github.star+json` media type so each entry carries its
+`starred_at` time. It follows the `rel="next"` URL of GitHub's `Link` header
+page by page, 100 entries a page, and stops after 10 requests. A star made
+after the first Star click on this device (less a five-minute allowance) is
+`verified`; a star made before it is `confirmed`, thanked in the same words and
+offered the same Sponsor button. When the 10 requests end before the list does,
+the state is `partial` and the sentence says the whole list could not be read —
+never that the account has no star, because the star may sit further down.
 
 ### Copy button
 
@@ -798,64 +837,167 @@ kinds carry that, and all are subject to the rules here.
 **Hero canvas** — one per site, on the landing page only. A WebGL scene whose
 subject is the workflow itself: Claude Code or Codex running the coordinator,
 the coordinator handing chunks to the Flash workers, workers asking the
-decision model bounded questions, another Flash family reviewing each chunk, a
-chunk that keeps failing repair escalating to the repair model, and accepted
-chunks travelling back. The scene must match what the skill does: Anthropic
-and OpenAI are the coordinator hosts, never the reviewers. It reads as an instrument on the night-ledger console, drawn
+decision model bounded questions, another Flash family reviewing each chunk,
+the coordinator sending a chunk that keeps failing repair to the repair model,
+and accepted chunks travelling back. The scene must match what the skill does:
+Anthropic and OpenAI are the coordinator hosts, never the reviewers; a run has
+one host, either Claude Code or Codex, so the two host lines always act
+together and never take turns; and the repair model takes work from the
+coordinator, never from a worker. It reads as an instrument on the night-ledger console, drawn
 in palette hues (brass for the coordinator and action, teal for accepted or
 verified, violet for orchestration and routing) on the `base-100` background.
 No photographic texture, no lens flare, no particle confetti.
 
-**The scene is the pool.** `HeroCanvas.tsx` writes no model name of its own: it
-calls `heroScene` in `website/src/lib/hero-scene.ts` with the worker, repair
+**The scene is the pool.** `HeroCanvas.tsx` calls `heroScene` in
+`website/src/lib/hero-scene.ts` once per direction, with the worker, repair
 and decision identities that `website/src/lib/pool.ts` resolves from
 `amaleh/models.json` at build time through `family()` in
 `amaleh/scripts/family.ts` and the identity table in
-`website/src/lib/models.ts`, so the tiles, the links and the `aria-label`
-follow the pool by themselves. `hero-scene.ts` holds the whole layout rule:
-the workers fill one row above the decision node and spill into a second row
-below it when the pool no longer fits in one, each row centred on the decision
-node's column and running left to right in pool order; the repair node sits in
-the decision node's row to its right, and the host tiles sit above the top
-worker row. Every worker keeps its own line to the decision node, review lines
-join neighbours in the same row, the hosts reach the coordinator hub, and the
-escalation runs from a worker to the repair node. `heroScene` takes every name
-from its argument and never looks one up, so the scene is placed for whatever
-the pool holds, and the geometry is proved on synthetic pools by
-`website/scripts/pool-checks/hero.mjs`.
+`website/src/lib/models.ts`, so the worker, decision and repair tiles, their
+link hues and their names in the `aria-label` follow the pool by themselves.
+The hosts are the fixed pair Claude Code and Codex: `hero-scene.ts` holds them
+in its own `HOSTS` constant and the `aria-label` writes their names literally,
+because the coordinator host is always one of those two, never a routed pool
+member. `hero-scene.ts` holds the whole layout rule: the
+coordinator ring is a 0.9 radius circle, 1.8 design units across, which is 2.5
+of the 0.72 tile side; Claude Code and Codex sit on one host row above the
+workers; every worker sits in one row, evenly spaced, in pool order; the decision
+model sits on the row below, centred between the first and the last worker.
+`wide` puts the ring at the far left, the repair model straight below the ring
+on the decision model's row, and every other tile and label right of the ring.
+`narrow` puts the host row at the top, mirrored about the ring, the ring below
+it, the repair model left of the ring at the height of its centre, and the
+worker row below both.
 
-The hero canvas is a **full-bleed background**, not a panel beside the copy.
-It spans the whole hero band edge to edge, sits behind the headline at low
-enough contrast that the type stays at its documented ratios, and carries no
-`figcaption` — a caption under a background is a panel again. Whatever the
+**Every line that meets the ring meets it at a point of its own.** No two ring
+lines share a point, so the ring never carries a white-hot knot of stacked
+glows. In `wide` the dispatch lines leave the ring's lower right arc in a fan
+from 8 degrees below its right point, at most 10 degrees apart and never past
+50 degrees: the farthest worker's line leaves highest and the nearest worker's
+lowest, so the lines nest instead of crossing. Claude Code's line leaves its
+tile's left point and meets the ring 70 degrees above its right point; Codex's
+line leaves below its label and meets the ring 20 degrees above its right
+point. The escalation line leaves the ring's bottom point. In `narrow` the
+dispatch lines leave the ring's lower arc, spread around its bottom point at
+most 16 degrees apart inside a 60 degree span, each host's line leaves below
+its label and meets the ring's upper arc on the host's own side, 35 degrees
+from the ring's top point, and the escalation line leaves the ring's left
+point.
+
+The links are the workflow's own: each host reaches the ring; the ring
+dispatches to every worker; every worker puts a bounded question to the
+decision model; a review line joins each worker to its right-hand neighbour;
+and the ring escalates to the repair model. That is `3n + 2` links for
+`n` workers, and each is one quadratic curve: a start point, one control point
+and an end point, which `linkPoint` in `website/src/lib/hero-scene.ts`
+evaluates for both renderers and for the checks. A `wide` dispatch leaves the
+ring level and turns down into its worker's top point; a `narrow` dispatch
+drops from the ring and splays out to its worker; a review line arcs 0.12 of a
+design unit above the straight path between two neighbours; a question to the
+decision model bows 0.08 upward; the escalation runs straight from the ring to
+the repair model, down in `wide` and to the left in `narrow`.
+`heroScene` takes the worker, decision and repair names from its argument and
+adds the fixed hosts from its own `HOSTS` constant, so the scene is placed for
+whatever worker pool the argument holds, and the geometry is proved on
+synthetic pools of two to six workers in both directions by
+`website/scripts/pool-checks/hero.mjs`, which samples every curve at 48 steps
+and fails the scene when the ring is not 2.5 tile sides across, when a node,
+its label or a curve is not inside the scene box, when two boxes of different
+nodes come within 0.15 tile sides, when a link does not start and end on a
+tile's side point or on the ring, when two links meet the ring less than 0.15
+tile sides apart, when a link passes within 0.15 tile sides of a tile, a label
+or the ring it does not end at, when two links that share no node cross or
+come within that clearance, when two links that share a node cross, or when
+two links leave one point along the same direction.
+
+**The animation tells one chunk's story at a time.** `heroStory` in
+`website/src/lib/hero-story.ts` turns a scene into an ordered list of beats,
+and `fillFrame` in the same file turns that list and a time into one frame:
+a level and a packet position for every link, a level, a work phase and a
+verdict for every node, a fill for every ring segment and a pulse for the ring.
+The story is data, never a runtime random, and both renderers draw from it.
+One round gives every worker one chunk to build, in pool order, and each
+chunk's beats run in the order the skill works:
+
+1. both host lines glow at the same time, from Claude Code and from Codex to
+   the ring, and the ring pulses;
+2. the chunk travels the dispatch line to its builder;
+3. the builder's tile lights and a bright arc runs round it while it builds,
+   and during the build a short pulse goes down to the decision model and back
+   for the bounded question;
+4. the chunk crosses the review line to a neighbouring worker, which is always
+   a different family: the worker to the builder's right, or the worker to its
+   left when the builder is the last in the row;
+5. the reviewer's tile lights, then flashes `secondary` when the review passes;
+6. the chunk travels back to the ring along the reviewer's dispatch line, and
+   one ring segment fills.
+
+Once in every round, on the second worker's chunk, the review fails and the
+chunk climbs the skill's repair ladder: the reviewer's tile flashes `error`,
+the chunk goes back along the review line to its builder for a Flash repair,
+crosses to the reviewer again and fails again. The reviewer then returns the
+chunk to the ring along its dispatch line, the ring sends it along the
+escalation line to the repair model, the repair model's tile works, and the
+chunk comes back to the ring. The ring dispatches the repaired chunk to the
+same reviewer, which is a different family from the repair model, and the
+passing flash and the return follow. The story shows one Flash repair where the
+skill allows two. The ring carries one segment for each worker,
+so a full round fills the whole ring, and the segments fade together before the
+next round starts. A link that carries no packet stays at its quiet rest weight,
+so at any moment the eye has one path to follow.
+`website/scripts/pool-checks/hero.mjs` fails the story when a beat names a
+missing link or node or leaves the story's length, when two packets share a
+link at one time, when the two hosts do not send together once for each chunk,
+when a worker is never dispatched to or the round does not hold one dispatch
+for each worker plus one for the repaired chunk, when the accepted segments are
+not one for each worker, when a round does not hold exactly two failed reviews
+followed by the trip from the ring to the repair model, its repair and the trip
+back to the ring in that order, when a frame value leaves the range 0 to 1,
+when the still frame does not show exactly one chunk in mid-flight, or when the
+story does not repeat after its own length.
+
+One canvas covers the whole hero section behind the copy, and the scene itself
+sits in its own box beside or under that copy, so the graph is never drawn over
+the headline and nothing is cropped. The shader maps the scene onto the scene
+box that is actually visible. It carries no `figcaption` — a
+caption under a background is a panel again. Whatever the
 scene needs explaining goes in body copy further down the page, next to the
 thing it explains.
 
 **Depth is built into the scene, not applied to the whole canvas.** Both the
 canvas and every model tile render at full opacity; the layering inside the
-scene supplies the depth. Far edges — the coordinator distribution and the
-decision model's consultation — are thinner, dimmer and softer, a whisper of
-the workflow, while near edges — the cross-family review, the escalation to
-the repair model and the accepted-chunk returns — are brighter, thicker and
-sharper. On top of that
+scene supplies the depth. Far edges — the host lines, the coordinator's
+dispatches and the decision model's consultation — are thinner, dimmer and
+softer, a whisper of the workflow, while near edges — the cross-family review
+and the escalation to the repair model — are brighter, thicker and sharper. An
+accepted chunk's return is not an edge of its own: it travels back along the
+reviewer's dispatch line, so it shares that line's far band. On top of that
 banding each link carries its own fixed weight, described below, which thins
-the coordinator's dispatches and the returns one step. Node glows are additive
-and soft and breathe slowly, so a
-node is a small light in the dark rather than a flat disc, and the packet
-travelling each active edge is a bright pulse in that edge's own hue with a
-tight hot core and a wider soft halo. The additive palette stays below the
-luminance that would cost the copy its contrast ratios: a packet, its rail and
-a node ring together stay under half the AA threshold for `dim` body copy.
+the coordinator's dispatches, and the returns on them, one step. A tile's glow
+follows the tile's own rounded square, is additive and soft and breathes
+slowly, so a node is a small light in the dark rather than a flat disc, and the
+packet travelling the active edge is a bright pulse in that edge's own hue with
+a tight hot core, a wider soft halo and a tail that fades over the last 0.35 of
+the curve behind it.
 
-A straight line between two node centres would run through the model-name label
-under a tile, so `hero-scene.ts` gives every link an explicit exit and entry
-point instead — on the tile edge where the link leaves sideways, and below the
-tile's own label where it leaves downwards — and the canvas clamps edge glow
-below the higher of the two tiles, so no glowing line and no glow reaches a
-label box — the same "no label is crossed" rule the diagrams obey. A link that
-runs down a column starts below the upper tile's own label, so the name it
-passes is never in its way, and every worker holds its own query link to the
-decision node, whichever row it sits in.
+A line between two node centres would run through the model-name label under a
+tile, so every node carries exactly four side points in `ports` and a link
+never meets a tile anywhere else: a tile's top, right and left points are the
+middle of its own top, right and left edge, 0.36 of a design unit from its
+centre, and its bottom point sits on its vertical axis just below its label —
+0.908 below the centre in the wide scene and 0.972 in the narrow one, so every
+tile has exactly one bottom point and every line that meets a tile on one side
+meets it at that side's single point. The coordinator hub is a circle, and a
+link may meet it anywhere on its edge, 0.9 from the centre. A dispatch from the
+ring reaches its worker's top point, a review runs from the right point of the
+left worker to the left point of the right one, a query runs from a worker's
+bottom point to the decision model's top point, and the escalation runs from
+the ring's bottom point to the repair model's top point in `wide` and from the
+ring's left point to the repair model's right point in `narrow`.
+`website/scripts/pool-checks/hero.mjs` fails any scene in which two links that
+share a point leave it along the same direction. No curve passes within 0.15
+tile sides of a label it does not end at — the same "no label is crossed" rule
+the diagrams obey — so no label needs a box behind it.
 
 **One fixed weight per link.** Every link `heroScene` returns carries a
 `weight`, and the split is the workflow's own: the ordinary dispatch and return
@@ -864,32 +1006,77 @@ traffic between the coordinator hub and a worker tile runs at `THIN_WEIGHT`
 the escalation to the repair node keep `FULL_WEIGHT` 1. The number is data
 written on the link itself, never a runtime random, and one number drives both
 renderers, so the canvas and the no-WebGL SVG thin exactly the same
-connections: the fragment shader reads it as
-`uniform float uLinkWeight[...]` and multiplies it into the rail's glow width
-and brightness, and the fallback `<line>` sets `stroke-width` from it on top of
-the near/far stroke (0.032 of a design unit for the near band, 0.018 for the
+connections: the fragment shader reads it from
+`uniform vec2 uLinkShape[...]` and multiplies it into the rail's glow width
+and brightness, and the fallback `<path>` sets `stroke-width` from it on top of
+the near/far stroke (0.032 of a design unit for the near band, 0.022 for the
 far one). A thinned near link stays thicker than an untouched far one, so the
 two dimensions never invert, and the travelling packet keeps its size because
 it marks the event rather than the rail.
 
-**One design box, one source of colour.** The scene is drawn in a 16 × 9 box
-fitted inside the canvas the way SVG `preserveAspectRatio` `xMidYMid meet`
-fits a `viewBox` — the shader scales by `min(width / 16, height / 9)` and
-insets the remainder — so the canvas and the fallback SVG put every node, tile
-and label in the same place at every aspect ratio. No hex value is ever
+**One box per scene, one source of colour.** Every scene carries its own
+`width` and `height`, and each box is drawn at that ratio rather than at a
+shared one, so the canvas and the server-rendered SVG put every node, tile and
+label in the same place: the SVG uses `viewBox="0 0 width height"` and fills its
+box, and the shader scales by the visible box's width over its scene's width
+and offsets by the box's position inside the hero section. For the pool the
+site ships today the wide scene is 8.83 by 6.90 design units and the narrow one
+5.40 by 8.60, so the wide box is 1.28 times as wide as it is tall and the
+narrow box 0.63 times. No hex value is ever
 written into the component: the canvas resolves each palette custom property
-once after mount through `getComputedStyle`, which keeps the daisyUI theme in
+once after mount through `getComputedStyle`, on a probe element that sets
+`transition-property: none` so the reduced-motion rule's 0.01ms transition
+cannot hand back the previous colour, which keeps the daisyUI theme in
 `style.css` the single source of truth for both renderers. A model node glows
 in its own routed hue from `models.ts`; the coordinator hub and the review
-links keep their role hues. Labels under the tiles are supporting label copy at
-0.15 of a design unit — at most 13.5 CSS pixels in the widest fit — set in the
-sans stack, because a model name is a topic rather than a string a reader could
-type or search. Every labelled tile sits at x ≥ 10.5 of the 16 design units,
-clear of the hero copy at `lg` and wider; `Problem.tsx` crops the band onto
-that region below `lg`, centring it on `HERO_FOCUS`, the focus point
-`hero-scene.ts` exports, rather than on hand-written fractions. The fallback
-group ships at `opacity="0.25"`, the quiet background weight of the live
-frame, and the identity tiles sit outside it, so they never fade.
+links keep their role hues.
+
+Labels under the tiles are supporting label copy set in the sans stack, because
+a model name is a topic rather than a string a reader could type or search.
+Their size is scene data: `scene.labelSize` is 0.18 of a design unit in the wide
+scene and 0.22 in the narrow one, so on the built page a label renders from
+11.7 CSS pixels in the narrow box at 320 up to 15.9 in it at its 390 cap, and
+from 12.1 in the wide box at 640 up to 15.5 at its 760 cap — always at least 11
+and always below the 16 pixel body size. Each label is a `text[data-label]`
+drawn at its natural glyph width, with no forced text length and no box behind
+it: the glyphs carry an outline in `var(--color-base-100)`, 0.35 of the label
+size wide and painted under the fill, so a tile's glow never costs a name its
+edge. The scene still reserves a `labelBox` for every label, sized from the
+character count and at least 10 percent wider than the glyphs it carries; that
+box is layout data the curves keep clear of, not a drawn shape.
+`website/scripts/pool-checks/hero.mjs`
+fails the build when the real pool's `labelSize` falls below 0.0186 of the
+scene width in `wide` or 0.0382 in `narrow`, the ratios that keep an 11 CSS
+pixel label inside the box caps above, or when a label box is less than 10
+percent wider than the estimate of its glyphs, the character count times
+`labelSize` times 0.62. That check reads the scene, not the browser; the width
+the browser actually draws is measured only by a rendered check.
+
+**The ring carries the Amaleh mark and the round's progress.** The mark is
+`brand/amaleh-hero-mark.png` from `website/src/lib/brand.ts`, drawn 1 design
+unit wide at the ring's centre, outside the fallback group so it stays on
+screen in every state. The ring's edge is split into one segment for each
+worker, offset by half a segment so no gap sits at the ring's top, and a
+segment rests at half brightness until its chunk is accepted.
+
+The canvas covers the whole hero section rather than one scene box, because
+the ring's aura and its pulse reach past the scene box: a canvas cut to the box
+would show that glow as a lit rectangle edge. A `ResizeObserver` on the canvas
+and on both scene boxes re-reads the visible box and resizes the drawing
+buffer, so the mapped scene follows a live resize and no line goes missing
+while a loaded page changes width.
+
+**The still frame is the story stopped at one moment.** `STILL_SECONDS` in
+`website/src/lib/hero-story.ts` is the middle of the first dispatch, and the
+server-rendered fallback group `g[data-hero-frame]` draws that frame: every
+link as a `path[data-link]` at its rest opacity, the dispatch in flight
+brighter, one `circle[data-packet]` on it for the chunk, and the ring's
+`path[data-segment]` arcs. With WebGL missing that group is the whole scene;
+under `prefers-reduced-motion` the canvas draws the same moment once and the
+group stays on top of it; while the animation runs the group fades out and the
+canvas draws the story from its first beat every time the hero comes into
+view. The identity tiles, their labels and the mark sit outside the group, so
+they never fade.
 
 Each model node wears a **logo tile**: one rounded square, 0.72 of a design unit
 with a 0.18 corner radius, carrying the vendor's real mark when
@@ -968,21 +1155,25 @@ Required of every visual in this layer, without exception:
   CSS pixels, the count of labels straddling a card edge must be zero. Two
   labels must never cross either: measured with `getBBox` mapped through the
   element's own transform into the viewport's CSS pixels, the count of label
-  pairs crossing inside the hero scene or either topology variant must be zero
+  pairs crossing inside the visible hero layout or either topology variant must be zero
   at 320, 768 and 1440 CSS pixels, counting a pair only when it overlaps by
   more than 0.5 CSS pixels on both axes. A variant that CSS hides at the width
   being measured is shown for the measurement and hidden again, so both
-  topology variants are measured at every one of those widths.
+  topology variants are measured at every one of those widths, while the hero
+  is measured in whichever layout is visible there.
 - **Accessible.** A decorative canvas is `aria-hidden="true"` and the meaning
   is carried by adjacent text. A diagram that carries meaning is
   `role="img"` with an `aria-label` naming what it shows, or it exposes the
   same structure as real text beside it. Labels inside a diagram are real
   `<text>` in the SVG, so they are selectable and scale with the page.
 - **Sized in the layout, not by the window.** The wrapper sets an explicit
-  aspect ratio (`aspect-[4/3] sm:aspect-[16/10] lg:aspect-[16/9]`), the canvas
-  fills it with `size-full`, and the drawing buffer is set from
+  aspect ratio — a diagram panel uses
+  `aspect-[4/3] sm:aspect-[16/10] lg:aspect-[16/9]`, and each hero scene box
+  uses the aspect ratio of its own scene with the width caps stated under
+  **Hero canvas** — the canvas fills the hero section with `size-full`, and the drawing buffer is set from
   `getBoundingClientRect()` times `devicePixelRatio`, capped at 2, on mount
-  and on resize. Nothing reads `window.innerWidth` to decide a layout.
+  and on every resize of the canvas or either scene box. Nothing reads
+  `window.innerWidth` to decide a layout.
 - **Cheap.** Target 60 frames per second on integrated graphics: no more than
   a few hundred draw calls per frame, no per-frame allocation, no shader
   recompilation after mount.
@@ -1099,15 +1290,22 @@ redrawn or recoloured.
 - Rendered inspection (headless Chromium) at 320/390/768/1024/1440 px over
   every prerendered route: no horizontal overflow, one `h1` per route,
   visible keyboard focus, reduced motion respected, and at 1024 px and above
-  no page reduced to a single narrow column.
+  no page reduced to a single narrow column. On `/` the visible hero layout is
+  judged at each of those widths and after a loaded page is resized from 1440
+  to 390 and back: exactly one layout is shown, the narrow one below 640 CSS
+  pixels and the wide one from 640, it draws its link curves and the Amaleh
+  mark and no box behind a label, and no curve, tile, label, mark or
+  coordinator ring leaves the viewport or the hero section or comes within 4
+  CSS pixels of the headline, paragraph or buttons.
 - Every visual in the visualization layer is inspected with JavaScript
   disabled (the server-rendered fallback must be meaningful), with WebGL
   unavailable, and with `prefers-reduced-motion: reduce` forced.
 - The pool checks in `website/scripts/pool-checks/` run inside
   `npm run test:static`: every built Workers card names exactly the worker
   families in `amaleh/models.json` and no model the pool no longer routes,
-  every built topology variant names exactly those families, the hero scene's
-  geometry holds for synthetic pools and its built worker tiles are exactly
-  the pool, no built page outside the case study names a model identity the
+  every built topology variant names exactly those families, both built hero
+  layouts carry exactly the pool's flash families as labelled worker tiles,
+  the hero scenes' geometry and story hold for synthetic pools of two to six
+  workers in both directions, no built page outside the case study names a model identity the
   pool no longer routes, and a family in the pool with no identity in
   `website/src/lib/models.ts` fails the build.

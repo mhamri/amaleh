@@ -2,6 +2,14 @@ export type SceneModel = { family: string; name: string };
 
 export type SceneRole = 'coordinator' | 'host' | 'worker' | 'decision' | 'deep';
 
+export type SceneDirection = 'wide' | 'narrow';
+
+export type SceneSide = 'top' | 'right' | 'bottom' | 'left';
+
+export type ScenePoint = [number, number];
+
+export type SceneBox = { x: number; y: number; width: number; height: number };
+
 export type SceneNode = {
   x: number;
   y: number;
@@ -9,141 +17,315 @@ export type SceneNode = {
   role: SceneRole;
   family?: string;
   label?: string;
+  tile: SceneBox;
+  labelBox?: SceneBox;
+  ports: Record<SceneSide, ScenePoint>;
 };
 
-export type SceneLinkKind = 'coordinator' | 'worker' | 'review' | 'decision';
+export type SceneLinkKind = 'host' | 'dispatch' | 'review' | 'decision' | 'escalation';
 
 export type SceneLink = {
   from: number;
   to: number;
   x1: number;
   y1: number;
+  cx: number;
+  cy: number;
   x2: number;
   y2: number;
   kind: SceneLinkKind;
-  phase: number;
   weight: number;
   near: boolean;
   hueFamily?: string;
 };
 
-export type Scene = { nodes: SceneNode[]; links: SceneLink[] };
-
 export type ScenePool = { workers: SceneModel[]; deep: SceneModel[]; decision: SceneModel };
 
-export const TILE = { side: 0.72, half: 0.36, radius: 0.18 };
-export const LABEL = { size: 0.15, gap: 0.42 };
-export const HERO_FOCUS = { x: 13, y: 4.5 };
+export type Scene = {
+  direction: SceneDirection;
+  width: number;
+  height: number;
+  labelSize: number;
+  nodes: SceneNode[];
+  links: SceneLink[];
+};
 
-const SPACING = 1.4;
-const TOP_Y = 3.1;
-const BOTTOM_Y = 6;
-const HOST_Y = 1.55;
-const HUB = { x: 7.5, y: 2.6 };
-const CODEX_X = 11;
-const CLAUDE_X = 13;
-const DEEP_OFFSET = 2;
+export const TILE = { side: 0.72, half: 0.36, radius: 0.18 };
+
 const HUB_RADIUS = 0.9;
 const TILE_RADIUS = 0.42;
-const LABEL_DROP = 0.99;
+const MARGIN = 0.3;
+const LABEL_GAP = 0.2;
+const LABEL_BOX_SCALE = 1.6;
+const LABEL_GLYPH = 0.62;
+const LABEL_PAD = 0.8;
+const PORT_DROP = 0.06;
+const LABEL_SIZE: Record<SceneDirection, number> = { wide: 0.18, narrow: 0.22 };
+const MIN_SPACING: Record<SceneDirection, number> = { wide: 1.7, narrow: 1.2 };
+const LABEL_NEIGHBOUR_GAP = 0.2;
+const HOST_ROW_GAP = 0.6;
+const HOST_MIN_GAP = 2.6;
+const HOST_LEFT_GAP = 0.35;
+const FAN_GAP = 1;
+const FAN_GAP_PER_EXTRA_WORKER = 0.15;
+const NARROW_HOST_SPREAD = 0.36;
+const NARROW_HOST_ROW_GAP = 0.4;
+const NARROW_DEEP_GAP = 0.45;
+const NARROW_ROW_GAP = 0.9;
+const NARROW_ROW_SLOPE = 0.4;
+const DECISION_GAP = 0.9;
 const FULL_WEIGHT = 1;
 const THIN_WEIGHT = 0.7;
 
-function rowX(count: number, centre: number): number[] {
-  if (count <= 0) return [];
-  if (count === 1) return [centre];
-  if (count === 2) return [centre - SPACING / 2, centre + SPACING / 2];
-  return [centre - SPACING, centre, centre + SPACING];
-}
+const WIDE_HOST_DEGREES = { claude: -70, codex: -20 };
+const NARROW_HOST_DEGREES = { claude: -125, codex: -55 };
+const WIDE_FAN_DEGREES = { first: 8, last: 50, step: 10 };
+const NARROW_FAN_DEGREES = { spread: 60, step: 16 };
+const RING_BOTTOM_DEGREES = 90;
+const NARROW_DISPATCH_DROP = 0.3;
+const REVIEW_RISE = 0.24;
+const DECISION_RISE = 0.16;
 
-function below(node: SceneNode): [number, number] {
-  return [node.x, node.y + LABEL_DROP];
-}
+const HOSTS: [SceneModel, SceneModel] = [
+  { family: 'claude', name: 'Claude Code' },
+  { family: 'openai', name: 'Codex' },
+];
 
-function sideEntry(node: SceneNode, toward: number): [number, number] {
-  const side = toward >= node.x ? TILE.half : -TILE.half;
-  return [node.x + side, node.y];
-}
+const HUB_INDEX = 0;
+const CLAUDE_INDEX = 1;
+const CODEX_INDEX = 2;
+const FIRST_WORKER_INDEX = 3;
 
-export function heroScene(pool: ScenePool): Scene {
-  const decisionX = HERO_FOCUS.x;
-  const decisionY = HERO_FOCUS.y;
-  const topCount = Math.min(pool.workers.length, 3);
-  const top = pool.workers.slice(0, topCount);
-  const bottom = pool.workers.slice(topCount);
-  const topX = rowX(top.length, decisionX);
-  const bottomX = rowX(bottom.length, decisionX);
-
-  const nodes: SceneNode[] = [
-    { x: HUB.x, y: HUB.y, r: HUB_RADIUS, role: 'coordinator' },
-    { x: CODEX_X, y: HOST_Y, r: TILE_RADIUS, role: 'host', family: 'openai', label: 'Codex' },
-    { x: CLAUDE_X, y: HOST_Y, r: TILE_RADIUS, role: 'host', family: 'claude', label: 'Claude Code' },
+export function linkPoint(link: SceneLink, t: number): ScenePoint {
+  const u = 1 - t;
+  return [
+    u * u * link.x1 + 2 * u * t * link.cx + t * t * link.x2,
+    u * u * link.y1 + 2 * u * t * link.cy + t * t * link.y2,
   ];
+}
 
-  top.forEach((model, index) => {
-    nodes.push({ x: topX[index], y: TOP_Y, r: TILE_RADIUS, role: 'worker', family: model.family, label: model.name });
-  });
-  bottom.forEach((model, index) => {
-    nodes.push({ x: bottomX[index], y: BOTTOM_Y, r: TILE_RADIUS, role: 'worker', family: model.family, label: model.name });
+function labelWidth(text: string, size: number): number {
+  return text.length * size * LABEL_GLYPH + size * LABEL_PAD;
+}
+
+function portDrop(size: number): number {
+  return TILE.half + LABEL_GAP + size * LABEL_BOX_SCALE + PORT_DROP;
+}
+
+function tileNode(x: number, y: number, role: SceneRole, model: SceneModel, size: number): SceneNode {
+  const width = labelWidth(model.name, size);
+  const labelBox: SceneBox = {
+    x: x - width / 2,
+    y: y + TILE.half + LABEL_GAP,
+    width,
+    height: size * LABEL_BOX_SCALE,
+  };
+  return {
+    x,
+    y,
+    r: TILE_RADIUS,
+    role,
+    family: model.family,
+    label: model.name,
+    tile: { x: x - TILE.half, y: y - TILE.half, width: TILE.side, height: TILE.side },
+    labelBox,
+    ports: {
+      top: [x, y - TILE.half],
+      right: [x + TILE.half, y],
+      left: [x - TILE.half, y],
+      bottom: [x, labelBox.y + labelBox.height + PORT_DROP],
+    },
+  };
+}
+
+function hubNode(x: number, y: number): SceneNode {
+  return {
+    x,
+    y,
+    r: HUB_RADIUS,
+    role: 'coordinator',
+    tile: { x: x - HUB_RADIUS, y: y - HUB_RADIUS, width: HUB_RADIUS * 2, height: HUB_RADIUS * 2 },
+    ports: {
+      top: [x, y - HUB_RADIUS],
+      right: [x + HUB_RADIUS, y],
+      bottom: [x, y + HUB_RADIUS],
+      left: [x - HUB_RADIUS, y],
+    },
+  };
+}
+
+function wideRow(spacing: number, widths: number[], ringRight: number, fanGap: number, hubY: number) {
+  const first = ringRight + Math.max(TILE.half, widths[0] / 2) + HOST_LEFT_GAP;
+  const xs = widths.map((_, index) => first + index * spacing);
+  return { xs, rowY: hubY + fanGap + TILE.half };
+}
+
+function narrowRow(count: number, spacing: number, centre: number, hubY: number) {
+  const xs = Array.from({ length: count }, (_, index) => centre + (index - (count - 1) / 2) * spacing);
+  const outer = centre - xs[0];
+  const rowY = hubY + HUB_RADIUS + Math.max(NARROW_ROW_GAP, outer * NARROW_ROW_SLOPE) + TILE.half;
+  return { xs, rowY };
+}
+
+const midpoint = (a: ScenePoint, b: ScenePoint): ScenePoint => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+
+export function heroScene(pool: ScenePool, direction: SceneDirection): Scene {
+  const size = LABEL_SIZE[direction];
+  const count = pool.workers.length;
+  const widths = pool.workers.map((worker) => labelWidth(worker.name, size));
+  const deep = pool.deep[0];
+  const nodes: SceneNode[] = [];
+
+  let neighbour = 0;
+  for (let i = 1; i < count; i += 1) neighbour = Math.max(neighbour, (widths[i - 1] + widths[i]) / 2);
+  const spacing = Math.max(MIN_SPACING[direction], neighbour + LABEL_NEIGHBOUR_GAP);
+
+  let workerXs: number[];
+  let rowY: number;
+  let deepBesideRing: ScenePoint | undefined;
+
+  if (direction === 'wide') {
+    const hostY = MARGIN + TILE.half;
+    const hubY = Math.max(MARGIN + HUB_RADIUS, hostY + portDrop(size) + HOST_ROW_GAP);
+    const ringRight = MARGIN + HUB_RADIUS * 2;
+    const fanGap = FAN_GAP + FAN_GAP_PER_EXTRA_WORKER * Math.max(0, count - 4);
+    const row = wideRow(spacing, widths, ringRight, fanGap, hubY);
+    workerXs = row.xs;
+    rowY = row.rowY;
+    const claudeX = ringRight + labelWidth(HOSTS[0].name, size) / 2 + HOST_LEFT_GAP;
+    const codexX = Math.max(
+      claudeX + HOST_MIN_GAP,
+      (workerXs[0] + workerXs[count - 1]) / 2 + spacing / 2,
+    );
+    nodes.push(hubNode(MARGIN + HUB_RADIUS, hubY));
+    nodes.push(tileNode(claudeX, hostY, 'host', HOSTS[0], size));
+    nodes.push(tileNode(codexX, hostY, 'host', HOSTS[1], size));
+  } else {
+    const claudeWidth = labelWidth(HOSTS[0].name, size);
+    const hostOffset = claudeWidth / 2 + NARROW_HOST_SPREAD;
+    const deepOffset = HUB_RADIUS + NARROW_DEEP_GAP + TILE.half;
+    const reach = Math.max(
+      hostOffset + claudeWidth / 2,
+      deepOffset + Math.max(TILE.half, labelWidth(deep.name, size) / 2),
+      ((count - 1) * spacing) / 2 + widths[0] / 2,
+    );
+    const centre = MARGIN + reach;
+    const hostY = MARGIN + TILE.half;
+    const hubY = hostY + portDrop(size) + NARROW_HOST_ROW_GAP + HUB_RADIUS;
+    const row = narrowRow(count, spacing, centre, hubY);
+    workerXs = row.xs;
+    rowY = row.rowY;
+    deepBesideRing = [centre - deepOffset, hubY];
+    nodes.push(hubNode(centre, hubY));
+    nodes.push(tileNode(centre - hostOffset, hostY, 'host', HOSTS[0], size));
+    nodes.push(tileNode(centre + hostOffset, hostY, 'host', HOSTS[1], size));
+  }
+
+  pool.workers.forEach((worker, index) => {
+    nodes.push(tileNode(workerXs[index], rowY, 'worker', worker, size));
   });
 
   const decisionIndex = nodes.length;
-  nodes.push({ x: decisionX, y: decisionY, r: TILE_RADIUS, role: 'decision', family: pool.decision.family, label: pool.decision.name });
+  const decisionX = (workerXs[0] + workerXs[count - 1]) / 2;
+  const decisionY = rowY + portDrop(size) + DECISION_GAP + TILE.half;
+  nodes.push(tileNode(decisionX, decisionY, 'decision', pool.decision, size));
   const deepIndex = nodes.length;
-  const deep = pool.deep[0];
-  nodes.push({ x: decisionX + DEEP_OFFSET, y: decisionY, r: TILE_RADIUS, role: 'deep', family: deep.family, label: deep.name });
+  const [deepX, deepY] = deepBesideRing ?? [nodes[HUB_INDEX].x, decisionY];
+  nodes.push(tileNode(deepX, deepY, 'deep', deep, size));
 
   const links: SceneLink[] = [];
-  const push = (link: SceneLink) => links.push(link);
-  const hub = nodes[0];
-  const decision = nodes[decisionIndex];
+  const wide = direction === 'wide';
+  const hub = nodes[HUB_INDEX];
+  const claude = nodes[CLAUDE_INDEX];
+  const codex = nodes[CODEX_INDEX];
 
-  links.push({ from: 1, to: 0, x1: below(nodes[1])[0], y1: below(nodes[1])[1], x2: hub.x, y2: hub.y, kind: 'coordinator', phase: 0, weight: FULL_WEIGHT, near: false, hueFamily: 'openai' });
-  links.push({ from: 2, to: 0, x1: below(nodes[2])[0], y1: below(nodes[2])[1], x2: hub.x, y2: hub.y, kind: 'coordinator', phase: 0.5, weight: FULL_WEIGHT, near: false, hueFamily: 'claude' });
+  const ringPoint = (degrees: number): ScenePoint => {
+    const angle = (degrees * Math.PI) / 180;
+    return [hub.x + HUB_RADIUS * Math.cos(angle), hub.y + HUB_RADIUS * Math.sin(angle)];
+  };
 
-  const workerIndex = (index: number) => 3 + index;
+  const link = (
+    kind: SceneLinkKind,
+    from: number,
+    start: ScenePoint,
+    to: number,
+    end: ScenePoint,
+    control: ScenePoint,
+    weight: number,
+    near: boolean,
+    hueFamily?: string,
+  ) => {
+    links.push({
+      from,
+      to,
+      x1: start[0],
+      y1: start[1],
+      cx: control[0],
+      cy: control[1],
+      x2: end[0],
+      y2: end[1],
+      kind,
+      weight,
+      near,
+      hueFamily,
+    });
+  };
 
-  nodes.forEach((node, index) => {
-    if (node.role !== 'worker') return;
-    const fromTop = index < 3 + topCount;
-    if (fromTop) {
-      const [x1, y1] = below(node);
-      push({ from: index, to: decisionIndex, x1, y1, x2: decision.x, y2: decision.y, kind: 'decision', phase: 0.12 + index * 0.11, weight: FULL_WEIGHT, near: false });
+  if (wide) {
+    const claudeEnd = ringPoint(WIDE_HOST_DEGREES.claude);
+    const codexEnd = ringPoint(WIDE_HOST_DEGREES.codex);
+    link('host', CLAUDE_INDEX, claude.ports.left, HUB_INDEX, claudeEnd, [claudeEnd[0], claude.ports.left[1]], FULL_WEIGHT, false, HOSTS[0].family);
+    link('host', CODEX_INDEX, codex.ports.bottom, HUB_INDEX, codexEnd, [codex.ports.bottom[0], codexEnd[1]], FULL_WEIGHT, false, HOSTS[1].family);
+  } else {
+    const claudeEnd = ringPoint(NARROW_HOST_DEGREES.claude);
+    const codexEnd = ringPoint(NARROW_HOST_DEGREES.codex);
+    link('host', CLAUDE_INDEX, claude.ports.bottom, HUB_INDEX, claudeEnd, [claude.ports.bottom[0], claudeEnd[1]], FULL_WEIGHT, false, HOSTS[0].family);
+    link('host', CODEX_INDEX, codex.ports.bottom, HUB_INDEX, codexEnd, [codex.ports.bottom[0], codexEnd[1]], FULL_WEIGHT, false, HOSTS[1].family);
+  }
+
+  const wideStep = Math.min(
+    WIDE_FAN_DEGREES.step,
+    (WIDE_FAN_DEGREES.last - WIDE_FAN_DEGREES.first) / (count - 1),
+  );
+  const narrowStep = Math.min(NARROW_FAN_DEGREES.step, NARROW_FAN_DEGREES.spread / (count - 1));
+
+  for (let i = 0; i < count; i += 1) {
+    const worker = FIRST_WORKER_INDEX + i;
+    const top = nodes[worker].ports.top;
+    const bottom = nodes[worker].ports.bottom;
+    if (wide) {
+      const start = ringPoint(WIDE_FAN_DEGREES.first + (count - 1 - i) * wideStep);
+      link('dispatch', HUB_INDEX, start, worker, top, [top[0], start[1]], THIN_WEIGHT, false, nodes[worker].family);
     } else {
-      const [x1, y1] = sideEntry(node, decision.x);
-      const [x2, y2] = sideEntry(decision, node.x);
-      push({ from: index, to: decisionIndex, x1, y1, x2, y2, kind: 'decision', phase: 0.12 + index * 0.11, weight: FULL_WEIGHT, near: false });
+      const start = ringPoint(RING_BOTTOM_DEGREES - (i - (count - 1) / 2) * narrowStep);
+      const control: ScenePoint = [start[0], start[1] + NARROW_DISPATCH_DROP * (top[1] - start[1])];
+      link('dispatch', HUB_INDEX, start, worker, top, control, THIN_WEIGHT, false, nodes[worker].family);
     }
-  });
-
-  for (let i = 1; i < top.length; i += 1) {
-    const a = workerIndex(i - 1);
-    const b = workerIndex(i);
-    push({ from: a, to: b, x1: nodes[a].x, y1: nodes[a].y, x2: nodes[b].x, y2: nodes[b].y, kind: 'review', phase: 0.2 + i * 0.13, weight: FULL_WEIGHT, near: true });
-  }
-  for (let i = 1; i < bottom.length; i += 1) {
-    const a = workerIndex(topCount + i - 1);
-    const b = workerIndex(topCount + i);
-    push({ from: a, to: b, x1: nodes[a].x, y1: nodes[a].y, x2: nodes[b].x, y2: nodes[b].y, kind: 'review', phase: 0.34 + i * 0.17, weight: FULL_WEIGHT, near: true });
-  }
-  if (bottom.length === 1) {
-    const a = workerIndex(0);
-    const b = workerIndex(topCount);
-    push({ from: a, to: b, x1: below(nodes[a])[0], y1: below(nodes[a])[1], x2: nodes[b].x, y2: nodes[b].y, kind: 'review', phase: 0.44, weight: FULL_WEIGHT, near: true });
+    const decisionTop = nodes[decisionIndex].ports.top;
+    const bow = midpoint(bottom, decisionTop);
+    link('decision', worker, bottom, decisionIndex, decisionTop, [bow[0], bow[1] - DECISION_RISE], FULL_WEIGHT, false);
+    if (i > 0) {
+      const start = nodes[worker - 1].ports.right;
+      const end = nodes[worker].ports.left;
+      const arc = midpoint(start, end);
+      link('review', worker - 1, start, worker, end, [arc[0], arc[1] - REVIEW_RISE], FULL_WEIGHT, true);
+    }
   }
 
-  const escalator = workerIndex(topCount - 1);
-  push({ from: escalator, to: deepIndex, x1: below(nodes[escalator])[0], y1: below(nodes[escalator])[1], x2: nodes[deepIndex].x, y2: nodes[deepIndex].y, kind: 'worker', phase: 0.3, weight: FULL_WEIGHT, near: true, hueFamily: deep.family });
+  const escalationStart = wide ? hub.ports.bottom : hub.ports.left;
+  const escalationEnd = wide ? nodes[deepIndex].ports.top : nodes[deepIndex].ports.right;
+  link('escalation', HUB_INDEX, escalationStart, deepIndex, escalationEnd, midpoint(escalationStart, escalationEnd), FULL_WEIGHT, true, deep.family);
 
-  const firstTop = workerIndex(0);
-  push({ from: 0, to: firstTop, x1: hub.x, y1: hub.y, x2: nodes[firstTop].x, y2: nodes[firstTop].y, kind: 'coordinator', phase: 0.08, weight: THIN_WEIGHT, near: false, hueFamily: nodes[firstTop].family });
-  push({ from: firstTop, to: 0, x1: nodes[firstTop].x, y1: nodes[firstTop].y, x2: hub.x, y2: hub.y, kind: 'review', phase: 0.58, weight: THIN_WEIGHT, near: true });
-
-  if (bottom.length > 0) {
-    const firstBottom = workerIndex(topCount);
-    push({ from: 0, to: firstBottom, x1: hub.x, y1: hub.y, x2: nodes[firstBottom].x, y2: nodes[firstBottom].y, kind: 'coordinator', phase: 0.62, weight: THIN_WEIGHT, near: false, hueFamily: nodes[firstBottom].family });
-    push({ from: firstBottom, to: 0, x1: nodes[firstBottom].x, y1: nodes[firstBottom].y, x2: hub.x, y2: hub.y, kind: 'review', phase: 0.86, weight: THIN_WEIGHT, near: true });
+  let width = 0;
+  let height = 0;
+  for (const node of nodes) {
+    const boxes = node.labelBox ? [node.tile, node.labelBox] : [node.tile];
+    for (const box of boxes) {
+      width = Math.max(width, box.x + box.width);
+      height = Math.max(height, box.y + box.height);
+    }
+    height = Math.max(height, node.ports.bottom[1]);
   }
 
-  return { nodes, links };
+  return { direction, width: width + MARGIN, height: height + MARGIN, labelSize: size, nodes, links };
 }

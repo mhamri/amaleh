@@ -2,20 +2,58 @@ import { checkPayload, countOf, fail, openPage, sleep } from '../browser-harness
 import { REPOSITORY_URL, SPONSOR_URL } from '../../src/lib/links.ts';
 
 const starAccept = 'application/vnd.github.star+json';
+const starRequestBound = 10;
 const repositoryFullName = new URL(REPOSITORY_URL).pathname.replace(/^\/+/, '').replace(/\/+$/, '');
-const states = ['ask', 'checking', 'verified', 'already', 'not-found', 'no-user', 'busy', 'invalid', 'error'];
+const states = ['ask', 'checking', 'verified', 'confirmed', 'partial', 'not-found', 'no-user', 'busy', 'invalid', 'error'];
 
 function starred(withDates, fullName, starredAt) {
   return withDates ? { starred_at: starredAt, repo: { full_name: fullName } } : { full_name: fullName };
 }
 
+const paginatedAccounts = {
+  'deep-starrer': { id: 103, pages: 3, repoPage: 2, repoAt: '2020-01-01T00:00:00Z' },
+  'huge-starrer': { id: 104, pages: 60, repoPage: null, repoAt: null },
+};
+const paginatedNameById = new Map(Object.entries(paginatedAccounts).map(([name, account]) => [String(account.id), name]));
+
+function paginatedPage(request, account, withDates) {
+  const url = new URL(request.url());
+  const page = Number(url.searchParams.get('page') ?? '1');
+  const perPage = Number(url.searchParams.get('per_page') ?? '30');
+  const now = Date.now();
+  const body = [];
+  for (let index = 0; index < perPage; index += 1) {
+    const at = new Date(now - ((page - 1) * perPage + index + 1) * 3600000).toISOString();
+    body.push(starred(withDates, `someone/repo-${page}-${index}`, at));
+  }
+  if (account.repoPage === page) {
+    const at = account.repoAt === 'now' ? new Date(now).toISOString() : account.repoAt;
+    body.splice(Math.floor(perPage / 2), 0, starred(withDates, repositoryFullName, at));
+    body.length = perPage;
+  }
+  const pageUrl = (number) => `https://api.github.com/user/${account.id}/starred?per_page=${perPage}&page=${number}`;
+  const links = [];
+  if (page < account.pages) links.push(`<${pageUrl(page + 1)}>; rel="next"`, `<${pageUrl(account.pages)}>; rel="last"`);
+  if (page > 1) links.push(`<${pageUrl(1)}>; rel="first"`, `<${pageUrl(page - 1)}>; rel="prev"`);
+  const headers = { 'access-control-expose-headers': 'ETag, Link, Retry-After, X-RateLimit-Remaining' };
+  if (links.length) headers.link = links.join(', ');
+  return { body, headers };
+}
+
 function githubApi(request) {
   const url = new URL(request.url());
-  const requested = /^\/users\/([^/]+)\/starred$/.exec(url.pathname);
-  if (request.method() !== 'GET' || !requested) return { status: 404, body: { message: 'Not Found' } };
-  const name = decodeURIComponent(requested[1]).toLowerCase();
+  const byName = /^\/users\/([^/]+)\/starred$/.exec(url.pathname);
+  const byNumber = /^\/user\/(\d+)\/starred$/.exec(url.pathname);
+  const name = byName
+    ? decodeURIComponent(byName[1]).toLowerCase()
+    : byNumber
+      ? (paginatedNameById.get(byNumber[1]) ?? null)
+      : null;
+  const account = name ? paginatedAccounts[name] : null;
+  if (request.method() !== 'GET' || !name) return { status: 404, body: { message: 'Not Found' } };
   const withDates = (request.headers().accept ?? '').includes(starAccept);
   const now = new Date().toISOString();
+  if (account) return paginatedPage(request, account, withDates);
   switch (name) {
     case 'fresh-starrer':
       return {
@@ -136,6 +174,32 @@ function expectStarClick(wins, location, where) {
   }
 }
 
+async function trackStarFetches(page) {
+  await page.evaluate(() => {
+    window.__starFetchCache = [];
+    const original = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const cache = init?.cache ?? (input instanceof Request ? input.cache : 'default');
+      if (String(url).includes('api.github.com')) window.__starFetchCache.push({ url: String(url), cache });
+      return original(input, init);
+    };
+  });
+}
+
+async function expectCacheBypassed(page, where) {
+  const fetches = await page.evaluate(() => window.__starFetchCache ?? []);
+  if (fetches.length === 0) {
+    fail(`${where}: no api.github.com request passed through window.fetch, so the cache mode could not be read`);
+    return;
+  }
+  for (const request of fetches) {
+    if (!['no-store', 'no-cache', 'reload'].includes(request.cache)) {
+      fail(`${where}: ${request.url} is fetched with cache mode ${JSON.stringify(request.cache)}, so the browser can answer from a cached starred list`);
+    }
+  }
+}
+
 function checkRequests(requests, where) {
   if (requests.length === 0) {
     fail(`${where}: no request reached api.github.com`);
@@ -144,7 +208,7 @@ function checkRequests(requests, where) {
   for (const request of requests) {
     const url = new URL(request.url);
     if (url.origin !== 'https://api.github.com') fail(`${where}: ${request.url} does not call api.github.com`);
-    if (!/^\/users\/[^/]+\/starred$/.test(url.pathname)) fail(`${where}: ${request.url} does not read /users/{name}/starred`);
+    if (!/^\/(users\/[^/]+|user\/\d+)\/starred$/.test(url.pathname)) fail(`${where}: ${request.url} does not read a GitHub starred list`);
     if (url.searchParams.get('per_page') !== '100') fail(`${where}: ${request.url} does not ask api.github.com for per_page=100`);
     const accept = request.headers.accept ?? '';
     if (!accept.includes(starAccept)) {
@@ -280,6 +344,19 @@ async function verifiedFlow(site) {
   await tab.close();
 }
 
+async function panelParts(page) {
+  return page.evaluate((sponsor) => ({
+    text: document.querySelector('[data-star-check] [aria-live="polite"]')?.textContent.trim() ?? '',
+    sponsor: Boolean(document.querySelector(`[data-star-check] a[href="${sponsor}"]`)),
+  }), SPONSOR_URL);
+}
+
+async function expectConfirmedPanel(page, where) {
+  const parts = await panelParts(page);
+  if (!/thank/i.test(parts.text)) fail(`${where}: the sentence ${JSON.stringify(parts.text)} does not thank the visitor for the star`);
+  if (!parts.sponsor) fail(`${where}: the confirmed panel offers no Sponsor button`);
+}
+
 async function starCheckStates(site) {
   const tab = await openPage(site, { width: 1440, githubApi });
   await tab.goto('/');
@@ -287,9 +364,13 @@ async function starCheckStates(site) {
   await clickStar(tab, `#final-cta a[href="${REPOSITORY_URL}"]`, 'the final call Star click');
   await expectState(tab.page, 'ask', 'the panel before the star check states');
   expectStarClick(await tab.wins(), 'final-call', 'the final call Star click');
+  await trackStarFetches(tab.page);
+
+  await submitName(tab.page, 'old-starrer', 'old-starrer');
+  await expectState(tab.page, 'confirmed', 'old-starrer');
+  await expectConfirmedPanel(tab.page, 'old-starrer');
 
   const failures = [
-    ['old-starrer', 'already'],
     ['no-star', 'not-found'],
     ['ghost', 'no-user'],
     ['busy', 'busy'],
@@ -307,9 +388,29 @@ async function starCheckStates(site) {
       }
     }
   }
+
+  const beforeDeep = tab.githubRequests.length;
+  await submitName(tab.page, 'deep-starrer', 'deep-starrer');
+  await expectState(tab.page, 'confirmed', 'deep-starrer');
+  await expectConfirmedPanel(tab.page, 'deep-starrer');
+  const deepRequests = tab.githubRequests.length - beforeDeep;
+  if (deepRequests < 2) fail(`deep-starrer: the star sits on page 2 but the check sent ${deepRequests} request(s) to api.github.com`);
+  if (deepRequests > starRequestBound) fail(`deep-starrer: one check sent ${deepRequests} requests to api.github.com, above ${starRequestBound}`);
+
+  const beforeHuge = tab.githubRequests.length;
+  await submitName(tab.page, 'huge-starrer', 'huge-starrer');
+  await expectState(tab.page, 'partial', 'huge-starrer');
+  const huge = await panelParts(tab.page);
+  if (/no star/i.test(huge.text)) fail(`huge-starrer: the sentence ${JSON.stringify(huge.text)} claims the account has no star`);
+  if (huge.sponsor) fail('huge-starrer: the panel offers a Sponsor button for a star it never found');
+  if (!/could not read/i.test(huge.text)) fail(`huge-starrer: the sentence ${JSON.stringify(huge.text)} does not say the whole list could not be read`);
+  const hugeRequests = tab.githubRequests.length - beforeHuge;
+  if (hugeRequests > starRequestBound) fail(`huge-starrer: one check sent ${hugeRequests} requests to api.github.com, above ${starRequestBound}`);
+
+  await expectCacheBypassed(tab.page, 'the star check states');
   checkRequests(tab.githubRequests, 'the star check states');
   if (countOf(await tab.wins(), 'amaleh_star_verified') !== 0) {
-    fail('a star check that verified no new star recorded amaleh_star_verified');
+    fail('a star check that found no new star recorded amaleh_star_verified');
   }
 
   for (const name of ['fresh-starrer', 'mixed-case']) {

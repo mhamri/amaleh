@@ -1,41 +1,39 @@
-import HeroCanvas from "./HeroCanvas";
+import HeroCanvas, { HeroSceneBox } from "./HeroCanvas";
 import { asset } from "../../lib/paths";
 import { SponsorButton } from "../ProjectActions";
-import { HERO_FOCUS } from "../../lib/hero-scene";
 
 export default function Problem() {
   return (
-    <section class="relative isolate overflow-hidden lg:min-h-[36rem]">
-      <div class="relative mx-auto w-full max-w-7xl px-4 pt-16 sm:px-6 md:pt-24 lg:pb-8">
-        <div class="animate-rise max-w-xl">
-          <h1 class="font-display text-hero font-semibold tracking-tight">
-            Your expensive model directs. Cheap Flash delivers.
-          </h1>
-          <p class="mt-5 max-w-prose text-lg leading-relaxed text-dim">
-            Each chunk is built by a cheap Flash model, then reviewed by a different model family before it can merge.
-          </p>
-          <div class="mt-8 flex flex-wrap gap-3">
-            <a
-              class="btn btn-primary font-semibold rounded-field"
-              href={asset('docs/getting-started/')}
-            >
-              Get started
-            </a>
-            <SponsorButton location="hero" />
+    <section class="relative isolate overflow-hidden">
+      <HeroCanvas>
+        <div class="relative mx-auto flex w-full max-w-7xl flex-col gap-10 px-4 pb-14 pt-16 sm:px-6 sm:pb-16 md:pt-24 xl:flex-row xl:items-start xl:gap-12 xl:pb-24">
+          <div class="animate-rise w-full max-w-xl xl:max-w-md">
+            <h1 class="font-display text-hero font-semibold tracking-tight">
+              Your expensive model directs. Cheap Flash delivers.
+            </h1>
+            <p class="mt-5 max-w-prose text-lg leading-relaxed text-dim">
+              Each chunk is built by a cheap Flash model, then reviewed by a different model family before it can merge.
+            </p>
+            <div class="mt-8 flex flex-wrap gap-3">
+              <a
+                class="btn btn-primary font-semibold rounded-field"
+                href={asset('docs/getting-started/')}
+              >
+                Get started
+              </a>
+              <SponsorButton location="hero" />
+            </div>
           </div>
+          <HeroSceneBox
+            direction="narrow"
+            class="mx-auto w-full max-w-[390px] sm:hidden"
+          />
+          <HeroSceneBox
+            direction="wide"
+            class="mx-auto w-full max-w-[760px] hidden sm:block xl:flex-1"
+          />
         </div>
-      </div>
-      <div class="relative mt-8 aspect-[8/9] overflow-hidden sm:aspect-[16/10] lg:absolute lg:inset-0 lg:-z-10 lg:mt-0 lg:aspect-auto">
-        <div
-          class="absolute left-1/2 top-1/2 aspect-[16/9] w-[250%] [transform:translate(calc(-1*var(--hero-focus-x)),calc(-1*var(--hero-focus-y)))] sm:w-[150%] lg:inset-0 lg:aspect-auto lg:w-auto lg:[transform:none]"
-          style={{
-            '--hero-focus-x': `${(HERO_FOCUS.x / 16) * 100}%`,
-            '--hero-focus-y': `${(HERO_FOCUS.y / 9) * 100}%`,
-          }}
-        >
-          <HeroCanvas />
-        </div>
-      </div>
+      </HeroCanvas>
     </section>
   );
 }

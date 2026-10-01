@@ -3,138 +3,581 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { family } from '../../../amaleh/scripts/family.ts';
 import { MODELS } from '../../src/lib/models.ts';
-import { heroScene, TILE, LABEL, HERO_FOCUS } from '../../src/lib/hero-scene.ts';
+import { heroScene, linkPoint } from '../../src/lib/hero-scene.ts';
+import { emptyFrame, fillFrame, heroStory, NO_HEAD, STILL_SECONDS } from '../../src/lib/hero-story.ts';
+import { WORKERS, REPAIR, DECISION } from '../../src/lib/pool.ts';
 
 const here = fileURLToPath(new URL('../../../', import.meta.url));
-const names = ['DeepSeek', 'Stealth', 'MiMo', 'GLM', 'Qwen Coder', 'Nemotron'];
-const EPS = 0.005;
-const GAP = 0.04;
-const CLEARANCE = 0.1;
+const names = ['DeepSeek', 'GLM', 'MiMo', 'Stealth', 'Qwen Coder', 'Nemotron'];
+const SIDES = ['top', 'right', 'bottom', 'left'];
+const EPS = 1e-6;
+const RING_SIDES = 2.5;
+const CLEARANCE_SIDES = 0.15;
+const OVERLAP_CROSS = 0.025;
+const CURVE_SAMPLES = 48;
+const STORY_STEP_SECONDS = 0.05;
+const LABEL_MIN_RATIO = { wide: 0.0186, narrow: 0.0382 };
+const HOST_MODELS = [
+  { family: 'claude', name: 'Claude Code' },
+  { family: 'openai', name: 'Codex' },
+];
+const DISPATCH_WEIGHT = 0.7;
+const FIRST_WORKER_INDEX = 3;
+const LABEL_DRAWN_GLYPH = 0.62;
+const LABEL_BOX_SLACK = 1.1;
+const IDENTITY_FAMILY = new Map(Object.entries(MODELS).map(([key, value]) => [value, key]));
 
-const tileBox = (node) => ({ x0: node.x - TILE.half, y0: node.y - TILE.half, x1: node.x + TILE.half, y1: node.y + TILE.half });
+const distance = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+const same = (a, b) => distance(a, b) < EPS;
 
-function labelBox(node) {
-  const width = [...node.label].length * LABEL.size * 0.62;
-  const baseline = node.y + TILE.half + LABEL.gap;
-  return { x0: node.x - width / 2, y0: baseline - LABEL.size * 0.78, x1: node.x + width / 2, y1: baseline + LABEL.size * 0.22 };
+function pointSegment(p, a, b) {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const length = dx * dx + dy * dy;
+  const t = length < EPS ? 0 : Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length));
+  return Math.hypot(p[0] - (a[0] + dx * t), p[1] - (a[1] + dy * t));
 }
 
-const overlap = (a, b, margin = 0) => a.x0 < b.x1 + margin && b.x0 < a.x1 + margin && a.y0 < b.y1 + margin && b.y0 < a.y1 + margin;
-const shrink = (box, edge) => ({ x0: box.x0 + edge, y0: box.y0 + edge, x1: box.x1 - edge, y1: box.y1 - edge });
-const grow = (box, edge) => ({ x0: box.x0 - edge, y0: box.y0 - edge, x1: box.x1 + edge, y1: box.y1 + edge });
+const orient = (a, b, c) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
 
-function segmentHitsBox(segment, box) {
-  let t0 = 0;
-  let t1 = 1;
-  const dx = segment.x2 - segment.x1;
-  const dy = segment.y2 - segment.y1;
-  for (const [p, q] of [[-dx, segment.x1 - box.x0], [dx, box.x1 - segment.x1], [-dy, segment.y1 - box.y0], [dy, box.y1 - segment.y1]]) {
-    if (p === 0) {
-      if (q < 0) return false;
-    } else {
-      const r = q / p;
-      if (p < 0) t0 = Math.max(t0, r);
-      else t1 = Math.min(t1, r);
-      if (t0 > t1) return false;
+function segmentsCross(a, b, c, d) {
+  const signs = [orient(a, b, c), orient(a, b, d), orient(c, d, a), orient(c, d, b)];
+  if (!signs.some((value) => value > EPS) || !signs.some((value) => value < -EPS)) return false;
+  return (signs[0] > EPS) !== (signs[1] > EPS) && (signs[2] > EPS) !== (signs[3] > EPS);
+}
+
+function segmentSegment(a, b, c, d) {
+  if (segmentsCross(a, b, c, d)) return 0;
+  return Math.min(pointSegment(a, c, d), pointSegment(b, c, d), pointSegment(c, a, b), pointSegment(d, a, b));
+}
+
+const cornersOf = (box) => [
+  [box.x, box.y],
+  [box.x + box.width, box.y],
+  [box.x + box.width, box.y + box.height],
+  [box.x, box.y + box.height],
+];
+
+function insideBox(p, box, shrink = 0) {
+  return p[0] > box.x + shrink && p[0] < box.x + box.width - shrink && p[1] > box.y + shrink && p[1] < box.y + box.height - shrink;
+}
+
+function segmentBox(a, b, box) {
+  if (insideBox(a, box) || insideBox(b, box)) return 0;
+  const corners = cornersOf(box);
+  let best = Infinity;
+  for (let i = 0; i < 4; i += 1) best = Math.min(best, segmentSegment(a, b, corners[i], corners[(i + 1) % 4]));
+  return best;
+}
+
+const curveOf = (link) => Array.from({ length: CURVE_SAMPLES + 1 }, (_, step) => linkPoint(link, step / CURVE_SAMPLES));
+
+function curveBox(curve, box) {
+  let best = Infinity;
+  for (let i = 1; i < curve.length; i += 1) best = Math.min(best, segmentBox(curve[i - 1], curve[i], box));
+  return best;
+}
+
+function curvePoint(curve, point) {
+  let best = Infinity;
+  for (let i = 1; i < curve.length; i += 1) best = Math.min(best, pointSegment(point, curve[i - 1], curve[i]));
+  return best;
+}
+
+function curveCurve(a, b) {
+  let best = Infinity;
+  for (let i = 1; i < a.length; i += 1) {
+    for (let j = 1; j < b.length; j += 1) best = Math.min(best, segmentSegment(a[i - 1], a[i], b[j - 1], b[j]));
+  }
+  return best;
+}
+
+function curvesCross(a, b) {
+  for (let i = 1; i < a.length; i += 1) {
+    for (let j = 1; j < b.length; j += 1) if (segmentsCross(a[i - 1], a[i], b[j - 1], b[j])) return true;
+  }
+  return false;
+}
+
+const boxesOverlap = (a, b, gap) =>
+  a.x < b.x + b.width + gap && b.x < a.x + a.width + gap && a.y < b.y + b.height + gap && b.y < a.y + a.height + gap;
+
+const isBox = (box) => box && ['x', 'y', 'width', 'height'].every((key) => Number.isFinite(box[key])) && box.width > 0 && box.height > 0;
+
+function syntheticPool(count) {
+  return {
+    workers: names.slice(0, count).map((name, index) => ({ family: `w${index}`, name })),
+    deep: [{ family: 'kimi', name: 'Kimi' }],
+    decision: { family: 'jev', name: 'Jev' },
+  };
+}
+
+function nodesOf(scene) {
+  const byRole = (role) => scene.nodes.filter((node) => node.role === role);
+  return { hub: byRole('coordinator')[0], hosts: byRole('host'), workers: byRole('worker'), jev: byRole('decision')[0], kimi: byRole('deep')[0] };
+}
+
+function sideOf(node, point) {
+  return SIDES.find((side) => same(node.ports[side], point));
+}
+
+function ports(failures, scene, ring, at) {
+  for (const node of scene.nodes) {
+    const name = node.label ?? node.role;
+    if (!isBox(node.tile)) {
+      failures.push(`${at}: ${name} has no tile box { x, y, width, height }`);
+      continue;
+    }
+    if (!node.ports || SIDES.some((side) => !Array.isArray(node.ports[side]) || node.ports[side].length !== 2)) {
+      failures.push(`${at}: ${name} carries no ports { top, right, bottom, left } as [x, y] points`);
+      continue;
+    }
+    if (node === ring) {
+      for (const side of SIDES) {
+        const expected = { top: [node.x, node.y - node.r], right: [node.x + node.r, node.y], bottom: [node.x, node.y + node.r], left: [node.x - node.r, node.y] }[side];
+        if (!same(node.ports[side], expected)) failures.push(`${at}: the coordinator ring's ${side} point is not on the ring at its ${side}`);
+      }
+      continue;
+    }
+    if (!isBox(node.labelBox)) {
+      failures.push(`${at}: ${name} has no labelBox { x, y, width, height }`);
+      continue;
+    }
+    const middle = node.tile.x + node.tile.width / 2;
+    const expected = { top: [middle, node.tile.y], right: [node.tile.x + node.tile.width, node.tile.y + node.tile.height / 2], left: [node.tile.x, node.tile.y + node.tile.height / 2] };
+    if (Math.abs(node.labelBox.x + node.labelBox.width / 2 - middle) > EPS) failures.push(`${at}: the label of ${name} is not centred under its tile`);
+    if (node.labelBox.y < node.tile.y + node.tile.height - EPS) failures.push(`${at}: the label of ${name} starts above the bottom of its tile`);
+    for (const side of ['top', 'right', 'left']) if (!same(node.ports[side], expected[side])) failures.push(`${at}: the ${side} point of ${name} is not the midpoint of its ${side} edge`);
+    if (Math.abs(node.ports.bottom[0] - middle) > EPS || node.ports.bottom[1] < node.labelBox.y + node.labelBox.height - EPS) {
+      failures.push(`${at}: the bottom point of ${name} is not on its axis at or below its label`);
+    }
+    if (scene.nodes.some((other) => other !== node && other.label && other.label === node.label)) failures.push(`${at}: ${name} is labelled like another node`);
+  }
+}
+
+function boxesOf(scene, ring) {
+  const boxes = [{ name: 'the coordinator ring', box: ring.tile, node: ring }];
+  for (const node of scene.nodes) {
+    if (node === ring) continue;
+    boxes.push({ name: `the tile of ${node.label}`, box: node.tile, node });
+    boxes.push({ name: `the label of ${node.label}`, box: node.labelBox, node });
+  }
+  return boxes;
+}
+
+function arrangement(failures, scene, direction, models, at) {
+  const { hub, hosts, workers, jev, kimi } = models;
+  const side = scene.nodes.find((node) => node.family).tile.width;
+  const clearance = CLEARANCE_SIDES * side;
+  if (Math.abs(hub.r * 2 - RING_SIDES * side) > 0.01 * side) {
+    failures.push(`${at}: the coordinator ring's diameter is ${(hub.r * 2).toFixed(3)}, expected ${RING_SIDES} tile sides (${(RING_SIDES * side).toFixed(3)})`);
+  }
+  if (hub.family || hub.label || hub.labelBox) failures.push(`${at}: the coordinator ring carries a family, label or labelBox`);
+
+  const boxes = boxesOf(scene, hub);
+  for (const { name, box } of boxes) {
+    if (box.x < -EPS || box.y < -EPS || box.x + box.width > scene.width + EPS || box.y + box.height > scene.height + EPS) {
+      failures.push(`${at}: ${name} leaves the ${scene.width.toFixed(2)} by ${scene.height.toFixed(2)} scene box`);
     }
   }
-  return true;
+  for (let i = 0; i < boxes.length; i += 1) {
+    for (let j = i + 1; j < boxes.length; j += 1) {
+      if (boxes[i].node === boxes[j].node) continue;
+      if (boxesOverlap(boxes[i].box, boxes[j].box, clearance)) {
+        failures.push(`${at}: ${boxes[i].name} and ${boxes[j].name} are closer than ${clearance.toFixed(3)}`);
+      }
+    }
+  }
+
+  const ys = workers.map((node) => node.y);
+  if (Math.max(...ys) - Math.min(...ys) > EPS) failures.push(`${at}: the workers are not in one row`);
+  for (let i = 1; i < workers.length; i += 1) {
+    if (!(workers[i].x > workers[i - 1].x)) failures.push(`${at}: ${workers[i].label} is not right of ${workers[i - 1].label}`);
+    if (Math.abs(workers[i].x - workers[i - 1].x - (workers[1].x - workers[0].x)) > EPS) failures.push(`${at}: the workers are not evenly spaced`);
+  }
+  const rowTop = Math.min(...workers.map((node) => node.tile.y));
+  const rowBottom = Math.max(...workers.map((node) => node.labelBox.y + node.labelBox.height));
+  for (const host of hosts) {
+    if (!(host.labelBox.y + host.labelBox.height < rowTop - EPS)) failures.push(`${at}: ${host.label} does not sit above the worker row`);
+  }
+  if (!(hosts[0].x < hosts[1].x)) failures.push(`${at}: Claude Code is not left of Codex`);
+  if (!(jev.tile.y > rowBottom + EPS)) failures.push(`${at}: Jev does not sit below the worker row`);
+  if (!(jev.x >= workers[0].x - EPS && jev.x <= workers.at(-1).x + EPS)) failures.push(`${at}: Jev is not between the first and last worker`);
+
+  if (direction === 'wide') {
+    for (const node of scene.nodes.filter((candidate) => candidate !== hub && candidate !== kimi)) {
+      if (!(node.tile.x > hub.x + hub.r + EPS) || !(node.labelBox.x > hub.x + hub.r + EPS)) {
+        failures.push(`${at}: ${node.label} is not entirely right of the coordinator ring`);
+      }
+    }
+    if (Math.abs(kimi.x - hub.x) > EPS || !(kimi.tile.y > hub.y + hub.r + EPS)) {
+      failures.push(`${at}: Kimi is not centred below the coordinator ring`);
+    }
+  } else {
+    for (const host of hosts) {
+      if (!(host.labelBox.y + host.labelBox.height < hub.y - hub.r - EPS)) failures.push(`${at}: ${host.label} does not sit above the coordinator ring`);
+    }
+    if (Math.abs(hosts[0].x + hosts[1].x - 2 * hub.x) > EPS) failures.push(`${at}: Claude Code and Codex are not mirrored about the coordinator ring`);
+    if (Math.abs(kimi.y - hub.y) > EPS || !(kimi.tile.x + kimi.tile.width < hub.x - hub.r - EPS)) {
+      failures.push(`${at}: Kimi is not left of the coordinator ring at the height of its centre`);
+    }
+    if (!(rowTop > hub.y + hub.r + EPS)) failures.push(`${at}: the worker row is not below the coordinator ring`);
+    if (!(rowTop > kimi.labelBox.y + kimi.labelBox.height + EPS)) failures.push(`${at}: the worker row is not below Kimi`);
+  }
+}
+
+function linksOf(failures, scene, direction, models, at) {
+  const { hub, hosts, workers, jev, kimi } = models;
+  const side = scene.nodes.find((node) => node.family).tile.width;
+  const clearance = CLEARANCE_SIDES * side;
+  const named = (node) => node.label ?? node.role;
+  const centre = [hub.x, hub.y];
+  const onRing = (point) => Math.abs(distance(point, centre) - hub.r) < EPS;
+  const ends = [];
+  const seen = new Set();
+
+  for (const link of scene.links) {
+    const from = scene.nodes[link.from];
+    const to = scene.nodes[link.to];
+    if (!from || !to) {
+      failures.push(`${at}: a link names a missing node`);
+      continue;
+    }
+    const name = `${named(from)} to ${named(to)}`;
+    const start = [link.x1, link.y1];
+    const end = [link.x2, link.y2];
+    const control = [link.cx, link.cy];
+    if (![...start, ...end, ...control].every(Number.isFinite)) {
+      failures.push(`${at}: the link ${name} carries no finite start, control and end point`);
+      continue;
+    }
+    const startSide = from === hub ? (onRing(start) ? 'ring' : undefined) : sideOf(from, start);
+    const endSide = to === hub ? (onRing(end) ? 'ring' : undefined) : sideOf(to, end);
+    if (!startSide || !endSide) {
+      failures.push(`${at}: the link ${name} does not start and end on a side point of a tile or on the coordinator ring`);
+      continue;
+    }
+    const key = [link.from, link.to].sort((a, b) => a - b).join('-');
+    if (seen.has(key)) {
+      failures.push(`${at}: two links join ${named(from)} and ${named(to)}`);
+      continue;
+    }
+    seen.add(key);
+    ends.push({ link, from, to, start, end, control, startSide, endSide, name, curve: curveOf(link) });
+  }
+
+  if (ends.length !== 3 * workers.length + 2) {
+    failures.push(`${at}: ${ends.length} linked node pairs, expected ${3 * workers.length + 2}`);
+  }
+
+  const wanted = [
+    ...hosts.map((host) => ({ a: host, b: hub, kind: 'host', hueFamily: host.family, weight: 1 })),
+    ...workers.map((worker) => ({ a: worker, b: hub, kind: 'dispatch', hueFamily: worker.family, weight: DISPATCH_WEIGHT })),
+    ...workers.map((worker) => ({ a: worker, b: jev, kind: 'decision', hueFamily: undefined, weight: 1 })),
+    ...workers.slice(1).map((worker, index) => ({ a: workers[index], b: worker, kind: 'review', hueFamily: undefined, weight: 1 })),
+    { a: hub, b: kimi, kind: 'escalation', hueFamily: kimi.family, weight: 1 },
+  ];
+  for (const { a, b, kind, hueFamily, weight } of wanted) {
+    const end = ends.find((candidate) => (candidate.from === a && candidate.to === b) || (candidate.from === b && candidate.to === a));
+    if (!end) {
+      failures.push(`${at}: no link joins ${named(a)} and ${named(b)}`);
+      continue;
+    }
+    if (end.link.kind !== kind) failures.push(`${at}: the link ${named(a)} to ${named(b)} has kind ${end.link.kind}, expected ${kind}`);
+    if (Math.abs(end.link.weight - weight) > EPS) failures.push(`${at}: the link ${named(a)} to ${named(b)} has weight ${end.link.weight}, expected ${weight}`);
+    if (end.link.hueFamily !== hueFamily) failures.push(`${at}: the link ${named(a)} to ${named(b)} has hue family ${end.link.hueFamily}, expected ${hueFamily}`);
+  }
+
+  const sideAt = (end, node) => (end.from === node ? end.startSide : end.endSide);
+  const pointAt = (end, node) => (end.from === node ? end.start : end.end);
+  for (const end of ends) {
+    const roles = [end.from.role, end.to.role];
+    if (roles.includes('coordinator') && roles.includes('worker')) {
+      const worker = end.from.role === 'worker' ? end.from : end.to;
+      const point = pointAt(end, hub);
+      if (direction === 'wide' && !(point[0] > hub.x && point[1] > hub.y)) {
+        failures.push(`${at}: the dispatch line to ${worker.label} does not leave the ring from its lower right arc`);
+      }
+      if (direction === 'narrow' && !(point[1] > hub.y)) {
+        failures.push(`${at}: the dispatch line to ${worker.label} does not leave the ring from its lower arc`);
+      }
+      if (sideAt(end, worker) !== 'top') failures.push(`${at}: the dispatch line reaches ${worker.label} at its ${sideAt(end, worker)} point, expected its top point`);
+    }
+    if (roles.includes('coordinator') && roles.includes('host')) {
+      const host = end.from.role === 'host' ? end.from : end.to;
+      const point = pointAt(end, hub);
+      const expected = direction === 'wide' && host === hosts[0] ? 'left' : 'bottom';
+      if (sideAt(end, host) !== expected) {
+        failures.push(`${at}: the line from ${host.label} leaves its ${sideAt(end, host)} point, expected its ${expected} point`);
+      }
+      if (direction === 'wide' && !(point[0] > hub.x && point[1] < hub.y)) {
+        failures.push(`${at}: the line from ${host.label} does not meet the ring on its upper right arc`);
+      }
+      if (direction === 'narrow' && !(point[1] < hub.y && (host === hosts[0] ? point[0] < hub.x : point[0] > hub.x))) {
+        failures.push(`${at}: the line from ${host.label} does not meet the ring on the upper arc at the side of ${host.label}`);
+      }
+    }
+    if (roles[0] === 'worker' && roles[1] === 'worker') {
+      const [left, right] = end.from.x < end.to.x ? [end.from, end.to] : [end.to, end.from];
+      if (sideAt(end, left) !== 'right' || sideAt(end, right) !== 'left') {
+        failures.push(`${at}: the review line ${left.label} to ${right.label} does not run from the right point of ${left.label} to the left point of ${right.label}`);
+      }
+    }
+    if (roles.includes('worker') && roles.includes('decision')) {
+      const worker = end.from.role === 'worker' ? end.from : end.to;
+      if (sideAt(end, worker) !== 'bottom' || sideAt(end, jev) !== 'top') {
+        failures.push(`${at}: the decision line ${worker.label} to Jev does not run from the bottom point of ${worker.label} to the top point of Jev`);
+      }
+    }
+    if (roles.includes('coordinator') && roles.includes('deep')) {
+      const ringSide = direction === 'wide' ? 'bottom' : 'left';
+      const kimiSide = direction === 'wide' ? 'top' : 'right';
+      if (!same(pointAt(end, hub), hub.ports[ringSide]) || sideAt(end, kimi) !== kimiSide) {
+        failures.push(`${at}: the escalation line does not run from the ${ringSide} point of the coordinator ring to the ${kimiSide} point of Kimi`);
+      }
+    }
+    if (roles.includes('worker') && roles.includes('deep')) {
+      const worker = end.from.role === 'worker' ? end.from : end.to;
+      failures.push(`${at}: a line joins ${worker.label} and Kimi, and Kimi takes work only from the coordinator ring`);
+    }
+  }
+
+  const ringEnds = ends.filter((end) => end.from === hub || end.to === hub);
+  for (let i = 0; i < ringEnds.length; i += 1) {
+    for (let j = i + 1; j < ringEnds.length; j += 1) {
+      const gap = distance(pointAt(ringEnds[i], hub), pointAt(ringEnds[j], hub));
+      if (gap < clearance) {
+        failures.push(`${at}: the lines ${ringEnds[i].name} and ${ringEnds[j].name} meet the ring ${gap.toFixed(3)} apart, below ${clearance.toFixed(3)}`);
+      }
+    }
+  }
+
+  const boxes = boxesOf(scene, hub);
+  for (const end of ends) {
+    const inner = end.curve.slice(1, -1);
+    if (end.curve.some((point) => point[0] < -EPS || point[1] < -EPS || point[0] > scene.width + EPS || point[1] > scene.height + EPS)) {
+      failures.push(`${at}: the line ${end.name} leaves the ${scene.width.toFixed(2)} by ${scene.height.toFixed(2)} scene box`);
+    }
+    for (const { name, box, node } of boxes) {
+      if (node === end.from || node === end.to) continue;
+      if (node === hub) {
+        if (curvePoint(end.curve, centre) < hub.r + clearance) {
+          failures.push(`${at}: the line ${end.name} passes within ${clearance.toFixed(3)} of the coordinator ring`);
+        }
+        continue;
+      }
+      if (curveBox(end.curve, box) < clearance) {
+        failures.push(`${at}: the line ${end.name} passes within ${clearance.toFixed(3)} of ${name}`);
+      }
+    }
+    for (const node of [end.from, end.to]) {
+      if (node === hub) {
+        if (inner.some((point) => distance(point, centre) < hub.r - EPS)) failures.push(`${at}: the line ${end.name} runs through the coordinator ring`);
+        continue;
+      }
+      if (inner.some((point) => insideBox(point, node.tile, EPS) || insideBox(point, node.labelBox, EPS))) {
+        failures.push(`${at}: the line ${end.name} runs through the tile or label of ${node.label}`);
+      }
+    }
+  }
+
+  const leaving = (end, point) => {
+    const away = same(end.control, point) ? (same(end.start, point) ? end.end : end.start) : end.control;
+    return [away[0] - point[0], away[1] - point[1]];
+  };
+  for (let i = 0; i < ends.length; i += 1) {
+    for (let j = i + 1; j < ends.length; j += 1) {
+      const a = ends[i];
+      const b = ends[j];
+      const sharesNode = a.from === b.from || a.from === b.to || a.to === b.from || a.to === b.to;
+      if (!sharesNode) {
+        const gap = curveCurve(a.curve, b.curve);
+        if (gap < clearance) {
+          failures.push(`${at}: the lines ${a.name} and ${b.name} ${gap < EPS ? 'cross' : `come within ${gap.toFixed(3)}`}, below ${clearance.toFixed(3)}`);
+        }
+        continue;
+      }
+      if (curvesCross(a.curve, b.curve)) failures.push(`${at}: the lines ${a.name} and ${b.name} share a node and cross`);
+      const shared = [a.start, a.end].find((point) => same(point, b.start) || same(point, b.end));
+      if (!shared) continue;
+      const u = leaving(a, shared);
+      const v = leaving(b, shared);
+      const cross = Math.abs(u[0] * v[1] - u[1] * v[0]) / (Math.hypot(...u) * Math.hypot(...v));
+      if (cross < OVERLAP_CROSS && u[0] * v[0] + u[1] * v[1] > 0) {
+        failures.push(`${at}: the lines ${a.name} and ${b.name} leave one point along the same direction and overlap`);
+      }
+    }
+  }
+}
+
+function story(failures, scene, models, at) {
+  const { workers, jev, kimi } = models;
+  let told;
+  try {
+    told = heroStory(scene);
+  } catch (error) {
+    failures.push(`${at}: heroStory threw ${error.message}`);
+    return;
+  }
+  if (!(told.length > 0)) {
+    failures.push(`${at}: the story has no positive length`);
+    return;
+  }
+  const indexOf = (node) => scene.nodes.indexOf(node);
+  const travels = told.beats.filter((beat) => beat.kind === 'travel');
+  for (const beat of told.beats) {
+    const end = beat.end ?? beat.start;
+    if (!(beat.start >= 0 && end >= beat.start && end <= told.length)) {
+      failures.push(`${at}: a ${beat.kind} beat runs from ${beat.start} to ${end}, outside the ${told.length.toFixed(2)} second story`);
+    }
+    if (beat.kind === 'travel' && !scene.links[beat.link]) failures.push(`${at}: a travel beat names the missing link ${beat.link}`);
+    if ('node' in beat && !scene.nodes[beat.node]) failures.push(`${at}: a ${beat.kind} beat names the missing node ${beat.node}`);
+  }
+  for (let i = 0; i < travels.length; i += 1) {
+    for (let j = i + 1; j < travels.length; j += 1) {
+      if (travels[i].link === travels[j].link && travels[i].start < travels[j].end && travels[j].start < travels[i].end) {
+        failures.push(`${at}: two packets travel link ${travels[i].link} at the same time`);
+      }
+    }
+  }
+
+  const builds = workers.map((worker) =>
+    travels.filter((beat) => scene.links[beat.link].kind === 'dispatch' && scene.links[beat.link].to === indexOf(worker) && beat.direction === 1).length,
+  );
+  const forward = builds.reduce((sum, value) => sum + value, 0);
+  if (builds.some((value) => value < 1) || forward !== workers.length + 1) {
+    failures.push(`${at}: the story dispatches a chunk to each worker [${builds.join(', ')}] times, expected each worker at least once and ${workers.length + 1} in total, the extra one being the chunk Kimi repaired`);
+  }
+  const hostTrips = travels.filter((beat) => scene.links[beat.link].kind === 'host');
+  const together = hostTrips.every((beat) => hostTrips.filter((other) => other.start === beat.start && other.link !== beat.link).length === 1);
+  if (hostTrips.length !== 2 * workers.length || !together) {
+    failures.push(`${at}: the story holds ${hostTrips.length} host trips, expected Claude Code and Codex to send together once for each of the ${workers.length} chunks`);
+  }
+  const accepted = told.beats.filter((beat) => beat.kind === 'accept').map((beat) => beat.segment).sort((a, b) => a - b);
+  if (accepted.length !== workers.length || accepted.some((segment, position) => segment !== position)) {
+    failures.push(`${at}: the story accepts the ring segments [${accepted.join(', ')}], expected one for each of the ${workers.length} workers`);
+  }
+  const returns = travels.filter((beat) => scene.links[beat.link].kind === 'dispatch' && beat.direction === -1).length;
+  if (returns !== workers.length + 1) failures.push(`${at}: ${returns} trips return to the ring, expected ${workers.length + 1}: one for each chunk and one for the chunk that goes to Kimi`);
+  const reviews = travels.filter((beat) => scene.links[beat.link].kind === 'review').length;
+  if (reviews !== workers.length + 2) failures.push(`${at}: ${reviews} trips cross between a builder and its reviewer, expected ${workers.length + 2}: one for each chunk, and one back and one out again for the Flash repair`);
+  const questions = travels.filter((beat) => scene.links[beat.link].kind === 'decision' && scene.links[beat.link].to === indexOf(jev));
+  if (questions.length !== 2 * workers.length) failures.push(`${at}: ${questions.length} question trips to Jev, expected one out and one back for each of the ${workers.length} workers`);
+  const failed = told.beats.filter((beat) => beat.kind === 'verdict' && !beat.passed);
+  const repairs = told.beats.filter((beat) => beat.kind === 'work' && beat.node === indexOf(kimi));
+  const escalations = travels.filter((beat) => scene.links[beat.link].kind === 'escalation');
+  if (failed.length !== 2 || repairs.length !== 1 || escalations.length !== 2) {
+    failures.push(`${at}: the story holds ${failed.length} failed reviews, ${repairs.length} repairs by Kimi and ${escalations.length} escalation trips, expected 2, 1 and 2`);
+  } else if (!(failed[0].start < failed[1].start && failed[1].start <= escalations[0].start && escalations[0].end <= repairs[0].start && repairs[0].end <= escalations[1].start)) {
+    failures.push(`${at}: the two failed reviews, the trip to Kimi, the repair and the trip back are not in that order`);
+  } else if (escalations[0].direction !== 1 || escalations[1].direction !== -1) {
+    failures.push(`${at}: the escalation trips do not run from the coordinator ring to Kimi and then back`);
+  }
+
+  const frame = emptyFrame(scene);
+  const inRange = (values) => [...values].every((value) => value >= -EPS && value <= 1 + EPS);
+  for (let seconds = 0; seconds < told.length; seconds += STORY_STEP_SECONDS) {
+    fillFrame(told, seconds, frame);
+    const heads = [...frame.linkHead].filter((head) => head !== NO_HEAD);
+    const levels = [heads, frame.linkLevel, frame.nodeLevel, frame.nodeVerdict, frame.segments, [frame.pulse]];
+    if (!levels.every(inRange)) {
+      failures.push(`${at}: the story frame at ${seconds.toFixed(2)} seconds holds a value outside 0 to 1`);
+      break;
+    }
+  }
+  const still = fillFrame(told, STILL_SECONDS, emptyFrame(scene));
+  const flying = [...still.linkHead].filter((head) => head > 0.2 && head < 0.8).length;
+  if (flying !== 1) failures.push(`${at}: the still frame at ${STILL_SECONDS} seconds shows ${flying} chunks in mid-flight, expected 1`);
+  const again = fillFrame(told, STILL_SECONDS + told.length, emptyFrame(scene));
+  if ([...still.linkHead].some((head, index) => Math.abs(head - again.linkHead[index]) > 1e-3)) {
+    failures.push(`${at}: the story does not repeat after its ${told.length.toFixed(2)} second length`);
+  }
+}
+
+function content(failures, scene, pool, models, at) {
+  const { hub, hosts, workers, jev, kimi } = models;
+  const index = new Map(scene.nodes.map((node, position) => [node, position]));
+  const order = [hub, ...hosts, ...workers, jev, kimi];
+  if (order.some((node, position) => scene.nodes[position] !== node)) {
+    failures.push(`${at}: the nodes are not in the order coordinator, Claude Code, Codex, workers in pool order, decision, repair`);
+  }
+  scene.nodes.forEach((node, position) => {
+    if (position >= FIRST_WORKER_INDEX && position < FIRST_WORKER_INDEX + workers.length) {
+      const worker = pool.workers[position - FIRST_WORKER_INDEX];
+      if (node.family !== worker.family || node.label !== worker.name) {
+        failures.push(`${at}: node ${position} is ${node.family}/${node.label}, expected ${worker.family}/${worker.name}`);
+      }
+    }
+  });
+  if (index.size !== scene.nodes.length) failures.push(`${at}: the scene repeats a node`);
+}
+
+function labelSize(failures, direction, scene) {
+  const ratio = scene.labelSize / scene.width;
+  if (!(ratio >= LABEL_MIN_RATIO[direction])) {
+    failures.push(`the real pool's ${direction} label size is ${ratio.toFixed(5)} of the scene width, below ${LABEL_MIN_RATIO[direction]}, so an 11 CSS pixel label needs a box wider than ${Math.round(11 / LABEL_MIN_RATIO[direction])} pixels`);
+  }
+  for (const node of scene.nodes) {
+    if (!node.labelBox) continue;
+    const drawn = node.label.length * scene.labelSize * LABEL_DRAWN_GLYPH;
+    if (node.labelBox.width < drawn * LABEL_BOX_SLACK) {
+      failures.push(`the label box of ${node.label} in the ${direction} layout is ${node.labelBox.width.toFixed(3)} wide, below 10% more than the ${drawn.toFixed(3)} its glyphs need`);
+      break;
+    }
+  }
 }
 
 function geometry(failures) {
-  for (let n = 2; n <= 6; n += 1) {
-    const workers = names.slice(0, n).map((name, index) => ({ family: `w${index}`, name }));
-    const deep = [{ family: 'kimi', name: 'Kimi' }];
-    const decision = { family: 'jev', name: 'Jev' };
-    let scene;
-    try {
-      scene = heroScene({ workers, deep, decision });
-    } catch (error) {
-      failures.push(`n=${n}: heroScene threw ${error.message}`);
-      continue;
-    }
-    const { nodes, links } = scene;
-    const at = `n=${n}`;
-    const workerNodes = nodes.filter((node) => node.role === 'worker');
-    const decisions = nodes.filter((node) => node.role === 'decision');
-    const deeps = nodes.filter((node) => node.role === 'deep');
-    const hosts = nodes.filter((node) => node.role === 'host');
-    if (workerNodes.length !== n) failures.push(`${at}: ${workerNodes.length} worker nodes`);
-    workerNodes.forEach((node, index) => {
-      if (node.label !== workers[index].name || node.family !== workers[index].family) {
-        failures.push(`${at}: worker ${index} is ${node.family}/${node.label}, expected ${workers[index].family}/${workers[index].name}`);
+  for (const direction of ['wide', 'narrow']) {
+    for (let count = 2; count <= 6; count += 1) {
+      const at = `${count} workers, ${direction}`;
+      const pool = syntheticPool(count);
+      let scene;
+      try {
+        scene = heroScene(pool, direction);
+      } catch (error) {
+        failures.push(`${at}: heroScene threw ${error.message}`);
+        continue;
       }
-    });
-    if (decisions.length !== 1 || decisions[0].label !== 'Jev') failures.push(`${at}: expected one decision node labelled Jev`);
-    if (deeps.length !== 1 || deeps[0].label !== 'Kimi') failures.push(`${at}: expected one deep node labelled Kimi`);
-    if (hosts.length !== 2 || !hosts.some((host) => host.label === 'Claude Code') || !hosts.some((host) => host.label === 'Codex')) {
-      failures.push(`${at}: expected host nodes Claude Code and Codex`);
-    }
-    if (!nodes.some((node) => node.role === 'coordinator' && !node.family)) failures.push(`${at}: no coordinator hub`);
-    if (failures.length) continue;
-
-    const jev = decisions[0];
-    const top = workerNodes.slice(0, Math.min(n, 3));
-    const bottom = workerNodes.slice(3);
-    const rowY = (row) => row.every((worker) => Math.abs(worker.y - row[0].y) < EPS);
-    const centred = (row) => Math.abs(row.reduce((sum, worker) => sum + worker.x, 0) / row.length - jev.x) < 0.05;
-    if (!rowY(top) || !centred(top) || !(top[0].y < jev.y)) failures.push(`${at}: the first ${top.length} workers must share one row above Jev, centred on Jev's column`);
-    if (bottom.length && (!rowY(bottom) || !centred(bottom) || !(bottom[0].y > jev.y))) failures.push(`${at}: workers 4 to ${n} must share one row below Jev, centred on Jev's column`);
-    if (!(Math.abs(deeps[0].y - jev.y) < EPS && deeps[0].x > jev.x)) failures.push(`${at}: Kimi must sit to Jev's right in Jev's row`);
-    for (const row of [top, bottom]) {
-      for (let i = 1; i < row.length; i += 1) {
-        if (!(row[i].x > row[i - 1].x)) failures.push(`${at}: workers in a row must run left to right in pool order`);
+      if (scene.direction !== direction) failures.push(`${at}: the scene's direction is ${scene.direction}`);
+      if (!(scene.width > 0 && scene.height > 0 && scene.labelSize > 0)) {
+        failures.push(`${at}: the scene has no positive width, height and labelSize`);
+        continue;
       }
-    }
-
-    const window = {
-      x0: Math.max(10.5, HERO_FOCUS.x - 3.2),
-      x1: Math.min(16, HERO_FOCUS.x + 3.2),
-      y0: Math.max(0, HERO_FOCUS.y - 3.33),
-      y1: Math.min(9, HERO_FOCUS.y + 3.33),
-    };
-    const boxes = [];
-    for (const node of nodes.filter((candidate) => candidate.family)) {
-      boxes.push({ kind: 'tile', node, box: tileBox(node) });
-      if (node.label) boxes.push({ kind: 'label', node, box: labelBox(node) });
-    }
-    for (const { kind, node, box } of boxes) {
-      if (box.x0 < window.x0 || box.x1 > window.x1 || box.y0 < window.y0 || box.y1 > window.y1) {
-        failures.push(`${at}: ${kind} of ${node.label ?? node.family} leaves the visible window`);
+      if (JSON.stringify(heroScene(pool, direction)) !== JSON.stringify(scene)) {
+        failures.push(`${at}: two calls with the same pool return different scenes`);
       }
-    }
-    for (let i = 0; i < boxes.length; i += 1) {
-      for (let j = i + 1; j < boxes.length; j += 1) {
-        if (boxes[i].node === boxes[j].node) continue;
-        if (overlap(boxes[i].box, boxes[j].box, GAP)) {
-          failures.push(`${at}: ${boxes[i].kind} of ${boxes[i].node.label} touches ${boxes[j].kind} of ${boxes[j].node.label}`);
+      const models = nodesOf(scene);
+      if (!models.hub || models.hosts.length !== 2 || models.workers.length !== count || !models.jev || !models.kimi) {
+        failures.push(`${at}: expected one coordinator, 2 hosts, ${count} workers, one decision and one repair node, found ${scene.nodes.length} nodes`);
+        continue;
+      }
+      models.hosts.forEach((host, position) => {
+        const wanted = HOST_MODELS[position];
+        if (host.family !== wanted.family || host.label !== wanted.name) {
+          failures.push(`${at}: host ${position} is ${host.family}/${host.label}, expected ${wanted.family}/${wanted.name}`);
         }
+      });
+      if (models.jev.family !== pool.decision.family || models.jev.label !== pool.decision.name) {
+        failures.push(`${at}: the decision node is ${models.jev.family}/${models.jev.label}, expected ${pool.decision.family}/${pool.decision.name}`);
       }
+      if (models.kimi.family !== pool.deep[0].family || models.kimi.label !== pool.deep[0].name) {
+        failures.push(`${at}: the repair node is ${models.kimi.family}/${models.kimi.label}, expected ${pool.deep[0].family}/${pool.deep[0].name}`);
+      }
+      content(failures, scene, pool, models, at);
+      ports(failures, scene, models.hub, at);
+      arrangement(failures, scene, direction, models, at);
+      linksOf(failures, scene, direction, models, at);
+      story(failures, scene, models, at);
     }
-    links.forEach((link, index) => {
-      const from = nodes[link.from];
-      const to = nodes[link.to];
-      if (!from || !to) {
-        failures.push(`${at}: link ${index} names a missing node`);
-        return;
-      }
-      const name = `link ${index} (${from.label ?? from.role} to ${to.label ?? to.role})`;
-      if (Math.hypot(link.x1 - from.x, link.y1 - from.y) > 1.0 || Math.hypot(link.x2 - to.x, link.y2 - to.y) > 1.0) {
-        failures.push(`${at}: ${name} does not start and end at its nodes`);
-      }
-      for (const { kind, node, box } of boxes) {
-        if (kind === 'tile' && (node === from || node === to)) continue;
-        if (segmentHitsBox(link, shrink(box, EPS))) failures.push(`${at}: ${name} crosses the ${kind} of ${node.label ?? node.family}`);
-        else if (segmentHitsBox(link, grow(box, CLEARANCE))) failures.push(`${at}: ${name} passes within ${CLEARANCE} design units of the ${kind} of ${node.label ?? node.family}, so its glow reaches it`);
-      }
-    });
-    const linked = (a, b) => links.some((link) => (nodes[link.from] === a && nodes[link.to] === b) || (nodes[link.from] === b && nodes[link.to] === a));
-    for (const worker of workerNodes) {
-      if (!linked(worker, jev)) failures.push(`${at}: ${worker.label} has no link to Jev`);
-      if (!workerNodes.some((other) => other !== worker && linked(worker, other))) failures.push(`${at}: ${worker.label} has no review link to another worker`);
-    }
-    if (!workerNodes.some((worker) => linked(worker, deeps[0]))) failures.push(`${at}: no worker escalates to Kimi`);
   }
+
+  const pool = {
+    workers: WORKERS.map((worker) => ({ family: IDENTITY_FAMILY.get(worker), name: worker.name })),
+    deep: [{ family: IDENTITY_FAMILY.get(REPAIR), name: REPAIR.name }],
+    decision: { family: IDENTITY_FAMILY.get(DECISION), name: DECISION.name },
+  };
+  for (const direction of ['wide', 'narrow']) labelSize(failures, direction, heroScene(pool, direction));
 }
 
 function built(failures, publicDir) {
@@ -150,30 +593,47 @@ function built(failures, publicDir) {
     if (!expected.some((worker) => worker.family === key)) expected.push({ family: key, name: MODELS[key]?.name ?? null });
   }
   const html = readFileSync(file, 'utf8');
-  const heroes = [...html.matchAll(/<svg\b[\s\S]*?<\/svg>/g)].map((match) => match[0]).filter((svg) => /data-model="/.test(svg));
-  if (heroes.length !== 1) {
-    failures.push(`/ has ${heroes.length} hero SVGs with model tiles, expected exactly one`);
+  const heroes = [...html.matchAll(/<svg\b[^>]*data-hero-layout="([^"]+)"[^>]*>[\s\S]*?<\/svg>/g)]
+    .map((match) => ({ layout: match[1], svg: match[0] }));
+  const layouts = heroes.map((hero) => hero.layout).sort();
+  if (layouts.length !== 2 || layouts[0] !== 'narrow' || layouts[1] !== 'wide') {
+    failures.push(`/ has hero SVGs for the layouts [${layouts.join(', ')}], expected exactly one narrow and one wide`);
     return;
   }
-  const hero = heroes[0];
-  const tiles = [...hero.matchAll(/<g\b([^>]*\bdata-model="([^"]+)"[^>]*)>/g)].map((match, index, all) => ({
-    attributes: match[1],
-    family: match[2],
-    body: hero.slice(match.index, all[index + 1]?.index ?? hero.length),
-  }));
-  const workerTiles = tiles.filter((tile) => /\bdata-role="worker"/.test(tile.attributes));
-  const families = workerTiles.map((tile) => tile.family).sort();
-  const wanted = expected.map((worker) => worker.family).sort();
-  const same = families.length === wanted.length && families.every((value, index) => value === wanted[index]);
-  if (!same) failures.push(`the built hero worker tiles are [${families.join(', ')}], expected [${wanted.join(', ')}]`);
-  const text = (tile) => [...tile.body.matchAll(/<text\b[^>]*>([\s\S]*?)<\/text>/g)].map((match) => match[1].replace(/<[^>]+>/g, '').trim());
-  for (const worker of expected) {
-    const tile = workerTiles.find((candidate) => candidate.family === worker.family);
-    if (!tile) continue;
-    const labels = text(tile).filter((value) => value.length > 0);
-    if (!worker.name || !labels.includes(worker.name)) {
-      failures.push(`the built hero tile ${worker.family} is labelled [${labels.join(', ')}], expected [${worker.name}]`);
+  for (const hero of heroes) {
+    const tiles = [...hero.svg.matchAll(/<g\b([^>]*\bdata-model="([^"]+)"[^>]*)>/g)].map((match, index, all) => ({
+      attributes: match[1],
+      family: match[2],
+      body: hero.svg.slice(match.index, all[index + 1]?.index ?? hero.svg.length),
+    }));
+    const workerTiles = tiles.filter((tile) => /\bdata-role="worker"/.test(tile.attributes));
+    const families = workerTiles.map((tile) => tile.family).sort();
+    const wanted = expected.map((worker) => worker.family).sort();
+    const same = families.length === wanted.length && families.every((value, index) => value === wanted[index]);
+    if (!same) {
+      failures.push(`the built ${hero.layout} hero worker tiles are [${families.join(', ')}], expected [${wanted.join(', ')}]`);
     }
+    const text = (tile) => [...tile.body.matchAll(/<text\b[^>]*data-label[^>]*>([\s\S]*?)<\/text>/g)]
+      .map((match) => match[1].replace(/<[^>]+>/g, '').trim());
+    for (const worker of expected) {
+      const tile = workerTiles.find((candidate) => candidate.family === worker.family);
+      if (!tile) continue;
+      const labels = text(tile).filter((value) => value.length > 0);
+      if (!worker.name || !labels.includes(worker.name)) {
+        failures.push(`the built ${hero.layout} hero tile ${worker.family} is labelled [${labels.join(', ')}], expected [${worker.name}]`);
+      }
+    }
+    const curves = [...hero.svg.matchAll(/<path\b[^>]*\bdata-link="[^"]+"[^>]*>/g)].length;
+    const segments = [...hero.svg.matchAll(/<path\b[^>]*\bdata-segment="[^"]+"[^>]*>/g)].length;
+    const packets = [...hero.svg.matchAll(/<circle\b[^>]*\bdata-packet\b[^>]*>/g)].length;
+    if (curves !== 3 * expected.length + 2) {
+      failures.push(`the built ${hero.layout} hero draws ${curves} link curves, expected ${3 * expected.length + 2}`);
+    }
+    if (segments !== expected.length) {
+      failures.push(`the built ${hero.layout} hero draws ${segments} ring segments, expected one for each of the ${expected.length} workers`);
+    }
+    if (packets !== 1) failures.push(`the built ${hero.layout} hero draws ${packets} still chunks, expected 1`);
+    if (/data-label-patch/.test(hero.svg)) failures.push(`the built ${hero.layout} hero still draws a box behind a label`);
   }
 }
 

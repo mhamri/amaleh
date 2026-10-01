@@ -8,6 +8,8 @@ import {
   isGitHubUsername,
   repositoryFullName,
   starCheckOpen,
+  starListPageSize,
+  starListRequestBound,
   type StarCheckState,
 } from '../lib/star-check';
 import { recordWin } from '../lib/wins';
@@ -17,7 +19,8 @@ const sentences: Record<StarCheckState, string> = {
   ask: `Star ${repositoryFullName()} on GitHub, then type your GitHub username so we can confirm it.`,
   checking: 'Checking your star with GitHub.',
   verified: `Thank you — your star on ${repositoryFullName()} is confirmed.`,
-  already: `You starred ${repositoryFullName()} before this visit.`,
+  confirmed: `Thank you — your star on ${repositoryFullName()} is confirmed.`,
+  partial: `We could not read your whole starred list: GitHub lists more than ${starListPageSize * starListRequestBound} stars for that account, and ${repositoryFullName()} is not among the newest ${starListPageSize * starListRequestBound}.`,
   'not-found': `That account has no star on ${repositoryFullName()}. Try again with another username.`,
   'no-user': 'GitHub has no user with that username.',
   busy: 'GitHub is asking us to slow down. Try again in a minute.',
@@ -75,7 +78,7 @@ export default function StarCheck() {
         <p role="status" aria-live="polite" class="mt-2 text-sm leading-relaxed text-dim">
           {sentences[state()]}
         </p>
-        <Show when={state() === 'verified'}>
+        <Show when={state() === 'verified' || state() === 'confirmed'}>
           <div class="mt-4">
             <SponsorButton location="star-check" />
           </div>
