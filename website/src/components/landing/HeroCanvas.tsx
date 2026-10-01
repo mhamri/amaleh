@@ -30,7 +30,7 @@ const SCENE = heroScene({
   workers: WORKERS.map((identity) => ({ family: familyOf(identity), name: identity.name })),
   deep: [{ family: familyOf(REPAIR), name: REPAIR.name }],
   decision: { family: familyOf(DECISION), name: DECISION.name },
-});
+}, 'wide');
 
 const NODES = SCENE.nodes;
 const LINKS = SCENE.links;
