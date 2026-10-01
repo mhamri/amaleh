@@ -57,13 +57,14 @@ test('spend splits estimated cost and cached tokens by model, role and task',asy
  const call=async(model:string,session:string,readOnly:boolean,cost:number)=>{const tr=await trace(root,'pi',{model,readOnly,sessionDir:join(root,'sessions',session)});await tr.write('usage',{inputTokens:10,outputTokens:5,cacheRead:1000,cost,costSource:'pi-estimate'});await tr.end('success');};
  await call('moonshotai/kimi-k3','hero',false,2);
  await call('xiaomi/mimo-v2.5','hero-review-1790000000000',true,.5);
+ await call('xiaomi/mimo-v2.5','hero-review-1790764601519-2036a48b',true,.125);
  await call('xiaomi/mimo-v2.5','docs',false,.25);
  const report=await diagnostics(root),costs=spend(report.operations);
- assert.equal(report.totals.cacheReadTokens,3000);
- assert.deepEqual(costs.byModel.map(r=>[r.key,r.estimatedCost]),[['moonshotai/kimi-k3',2],['xiaomi/mimo-v2.5',.75]]);
- assert.deepEqual(costs.byTask.map(r=>[r.key,r.calls]),[['hero',2],['docs',1]]);
+ assert.equal(report.totals.cacheReadTokens,4000);
+ assert.deepEqual(costs.byModel.map(r=>[r.key,r.estimatedCost]),[['moonshotai/kimi-k3',2],['xiaomi/mimo-v2.5',.875]]);
+ assert.deepEqual(costs.byTask.map(r=>[r.key,r.calls]),[['hero',3],['docs',1]],'a reviewer session, with or without its random suffix, is spend of the task it reviewed');
  assert.deepEqual(costs.byRole.map(r=>r.key),['worker','reviewer']);
- assert.deepEqual([costs.total?.estimatedCost,costs.total?.piEstimate,costs.total?.costSource],[2.75,2.75,'pi-estimate'],'without a recorded OpenRouter price, spend falls back to the pi estimate and says so');
+ assert.deepEqual([costs.total?.estimatedCost,costs.total?.piEstimate,costs.total?.costSource],[2.875,2.875,'pi-estimate'],'without a recorded OpenRouter price, spend falls back to the pi estimate and says so');
 });
 
 test('a malformed usage row counts as zero, never as negative money',async t=>{
@@ -102,6 +103,25 @@ test('health prices spend from the OpenRouter catalog cards its route decisions 
  const health=await processHealth(store) as any,rows=Object.fromEntries(health.metrics.spend.byModel.map((r:any)=>[r.key,[r.estimatedCost,r.piEstimate,r.costSource]]));
  assert.deepEqual(rows,{'stealth/free-alpha':[0,4.95,'openrouter-catalog'],'xiaomi/mimo-v2.6-flash':[.423,4.95,'openrouter-catalog'],'unrouted/model':[.5,.5,'pi-estimate']});
  assert.deepEqual([health.metrics.spend.total.estimatedCost,health.metrics.spend.total.costSource],[.923,'mixed']);
+});
+
+test('health measures the main model from its transcripts and warns when it reads more than the workers',async t=>{
+ const dir=await temp(t,'amaleh-mainmodel-'),transcripts=await temp(t,'amaleh-transcripts-');
+ const old=process.env.AMALEH_HOST_TRANSCRIPTS;process.env.AMALEH_HOST_TRANSCRIPTS=transcripts;
+ t.after(()=>{if(old===undefined)delete process.env.AMALEH_HOST_TRANSCRIPTS;else process.env.AMALEH_HOST_TRANSCRIPTS=old;});
+ const store=await c.start(dir,{shape:clearCut,id:'main',host:{kind:'claude',model:'claude-opus-5-5'},intent:'Measure the main model',criteria:['Main model measured']});
+ const tr=await trace(store.root,'pi',{model:'xiaomi/mimo-v2.5',readOnly:false,sessionDir:join(store.root,'sessions','hero')});
+ await tr.write('usage',{inputTokens:1000,outputTokens:10,cacheRead:4000,cost:.01,costSource:'pi-estimate'});await tr.end('success');
+ const turn=(id:string,at:string,cacheRead:number)=>JSON.stringify({type:'assistant',timestamp:at,message:{id,model:'claude-opus-5-5',usage:{input_tokens:10,cache_read_input_tokens:cacheRead,cache_creation_input_tokens:100,output_tokens:50},content:[{type:'tool_use'}]}});
+ const now=new Date().toISOString(),before=new Date(Date.now()-86400000).toISOString();
+ await mkdir(join(transcripts,'session','subagents'),{recursive:true});
+ await writeFile(join(transcripts,'session.jsonl'),[turn('m1',now,3000),turn('m1',now,3000),turn('old',before,900000),'not json'].join('\n'));
+ await writeFile(join(transcripts,'session','subagents','agent.jsonl'),turn('m2',now,3000));
+ const health=await processHealth(store) as any;
+ assert.deepEqual([health.metrics.mainModel.turns,health.metrics.mainModel.toolCalls,health.metrics.mainModel.cacheReadTokens,health.metrics.mainModel.outputTokens],[2,3,6000,100],'a repeated message id counts once, and a turn before the run does not count');
+ assert.ok(health.warnings.some((w:string)=>/main model read 0\.01 million tokens over 2 turn\(s\)/.test(w)),health.warnings.join('\n'));
+ const codex=await c.start(await temp(t,'amaleh-mainmodel-codex-'),{shape:clearCut,id:'main',host:{kind:'codex',model:'gpt-6-astra'},intent:'Measure the main model',criteria:['Main model measured']});
+ assert.equal(((await processHealth(codex)) as any).metrics.mainModel.available,false);
 });
 
 test('health warns when the deep model takes most of the spend, and stays quiet otherwise',async t=>{

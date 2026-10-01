@@ -1,11 +1,7 @@
-// Autonomous chunk execution: the coordinator delegates a whole task once, and
-// this loop runs worker -> checks -> independent review -> repair internally
-// until the task is accepted or a genuine escalation boundary is reached.
-// Workers consult Jev directly through scripts/jev.ts; the loop itself only
-// spends one bounded Jev call per repair cycle for course correction.
+// See references/runtime.md (delegate) and references/review.md#the-jev-gate
 import { hostname } from 'node:os';
-import { Store, taskOf, invariant, check, repair, accept, fingerprint, family, scopeCheckId, event, reviewCoverageDebt, openDelegations, next, requireShaped, execute, hostAuthored, scopeQuestion, askedScopePaths, answerScopeQuestion, unmetDependencies, contractQuestions, answerContractQuestions, keptForUpstream, runCommitMissingFromCheckout, refreshCheckoutReason, unstableChecks, jevTaskContext, type Check, type Task } from './core.ts';
-import { worker, reviewer, requestJson, choiceAnswer, transientProvider, settledProviderFailure, taskDiff, trackedContent, WorkspaceEscape, CallStopped } from './adapters.ts';
+import { Store, taskOf, invariant, check, repair, accept, fingerprint, family, scopeCheckId, event, reviewCoverageDebt, openDelegations, next, requireShaped, execute, hostAuthored, scopeQuestion, askedScopePaths, answerScopeQuestion, unmetDependencies, contractQuestions, answerContractQuestions, keptForUpstream, runCommitMissingFromCheckout, refreshCheckoutReason, unstableChecks, jevTaskContext, settleFindings, findingOwner, lastRepairCause, openDrive, type Check, type Task, type Finding, type FindingSettlement, type FindingVerdict } from './core.ts';
+import { worker, reviewer, requestJson, choiceAnswerFor, blockingDefinition, transientProvider, settledProviderFailure, taskDiff, trackedContent, WorkspaceEscape, CallStopped } from './adapters.ts';
 import type { RoutingRequest } from './routing.ts';
 import { jevModel, loadModelConfig } from './config.ts';
 import { inScope, resourceSetsOverlap } from './resources.ts';
@@ -21,18 +17,36 @@ const pendingOutcome=(pending:{action:string;model?:string})=>pending.action==='
 const resumableReview=(t:Task)=>t.status==='review'&&!!t.output&&!t.activity&&!t.owner;
 const escapedPaths=(error:unknown)=>error instanceof WorkspaceEscape?error.paths:undefined;
 
-async function repairStrategy(store:Store,id:string,findings:unknown[],failing:string[],fetcher?:typeof fetch){
+const courses={
+ targeted:'Apply the smallest correct fixes that resolve each listed defect',
+ rethink:'The current approach is likely wrong; reconsider the design before editing further',
+ simplify:'The implementation is too complex; reduce to the minimal contract-satisfying change'};
+const progress={
+ new:'Every defect listed now differs from every defect of the previous round',
+ same:'At least one defect listed now is the same defect as one of the previous round: the last repair did not remove it'};
+const verdicts={
+ 'fix-here':'A blocking defect that a worker on this task must fix: it meets the blocking definition, and it sits in this task\'s resources or this task\'s own changes cause it',
+ 'other-owner':'A real defect, but it sits in a file outside this task\'s resources and this task\'s changes did not cause it, so the owner of that file must fix it',
+ 'not-blocking':'Not blocking under the blocking definition: a preference, a style choice, an optional improvement or a hypothetical requirement'};
+const gateConfidence=.85,gatedFindings=12;
+type Gate={course?:{choice:string;confidence?:number;meaning:string};sameDefect:boolean;settlements:FindingSettlement[]};
+// See references/review.md#the-jev-gate
+async function repairGate(store:Store,id:string,failing:string[],fetcher?:typeof fetch):Promise<Gate|undefined>{
  try{
-  const s=await store.load();
-  const criteria={
-   targeted:'Apply the smallest correct fixes that resolve each listed defect',
-   rethink:'The current approach is likely wrong; reconsider the design before editing further',
-   simplify:'The implementation is too complex; reduce to the minimal contract-satisfying change'};
-  const raw=await requestJson('https://openrouter.ai/api/alpha/decisions',{model:await jevModel(),state:{...jevTaskContext(s,taskOf(s,id)),findings,failingChecks:failing},questions:{selection:{type:'choice',instructions:'Which repair course is most likely to resolve these verification failures without adding scope?',criteria}}},fetcher,store.root);
-  const answer=choiceAnswer(raw,criteria);
-  if(answer.choice)return {choice:answer.choice,confidence:answer.confidence,meaning:criteria[answer.choice as keyof typeof criteria]};
- }catch{}
- return undefined;
+  const s=await store.load(),t=taskOf(s,id),previousRound=lastRepairCause(s,id);
+  const open=(t.review?.findings??[]).map((finding,index)=>({finding,index})).filter(x=>x.finding.blocking&&x.finding.disposition==='open').slice(0,gatedFindings);
+  const ask=(instructions:string,criteria:Record<string,string>)=>({type:'choice',instructions,criteria});
+  const questions={
+   course:ask('Which repair course is most likely to resolve these verification failures without adding scope?',courses),
+   ...(previousRound?{progress:ask('Compare the defects listed now with previousRound. Did the last repair remove every defect of the previous round?',progress)}:{}),
+   ...Object.fromEntries(open.map(x=>[`finding_${x.index}`,ask(`Judge the finding with index ${x.index} in findings against blockingDefinition and its fileOwner.`,verdicts)]))};
+  const state={...jevTaskContext(s,t),blockingDefinition,otherTasks:s.tasks.filter(o=>o.id!==t.id).map(o=>({id:o.id,resources:o.resources})),findings:open.map(x=>({index:x.index,...x.finding,fileOwner:findingOwner(s,t,x.finding).owner})),failingChecks:failing,previousRound};
+  const raw=await requestJson('https://openrouter.ai/api/alpha/decisions',{model:await jevModel(),state,questions},fetcher,store.root);
+  const answer=(key:string,criteria:Record<string,string>,threshold?:number)=>{try{return choiceAnswerFor(raw,key,criteria,threshold);}catch{return undefined;}};
+  const course=answer('course',courses);
+  const settlements=open.flatMap(x=>{const verdict=answer(`finding_${x.index}`,verdicts,gateConfidence);return verdict?.choice&&verdict.choice!=='fix-here'?[{index:x.index,verdict:verdict.choice as FindingVerdict,confidence:verdict.confidence}]:[];});
+  return {course:course?.choice?{choice:course.choice,confidence:course.confidence,meaning:courses[course.choice as keyof typeof courses]}:undefined,sameDefect:answer('progress',progress,gateConfidence)?.choice==='same',settlements};
+ }catch{return undefined;}
 }
 
 async function passingProbes(checks:Check[],workspace:string){
@@ -127,10 +141,10 @@ async function reviewFailover<T>(store:Store,id:string,trail:Trail,routing:Routi
 }
 export async function delegate(store:Store,id:string,input:{workspace?:string;brief?:string;routing?:RoutingRequest;lenses?:string[];skills?:string[];references?:string[]}={},deps:Partial<DelegateDeps>={}):Promise<DelegateOutcome>{
  const d:DelegateDeps={...real,...deps};
- const trail:Trail=[],stalled:string[]=[];
+ const trail:Trail=[],stalled:string[]=[],settledFindings:Awaited<ReturnType<typeof settleFindings>>=[];
  await store.transaction(s=>{requireShaped(s,'delegate');const t=taskOf(s,id);invariant(['ready','repair'].includes(t.status)||resumableReview(t),'Task is not delegable; reconcile or requeue it first');invariant(t.workspace||input.workspace,'Task workspace required');const brief=input.brief?.trim();invariant(!contractQuestions(s,t).length||brief,`Task ${id} has an open contract question from its worker. Amend the contract, or delegate again with a brief that says why the contract stands`);answerScopeQuestion(s,t,'revert');answerContractQuestions(s,t,'stands',brief!);event(s,'delegate-started',{id,pid:process.pid,host:hostname()});});
  const resumeAtVerification=resumableReview(taskOf(await store.load(),id));
- const finish=async(outcome:Record<string,unknown>):Promise<DelegateOutcome>=>{await store.transaction(s=>event(s,'delegate-finished',{id,outcome:outcome.outcome})).catch(()=>{});return {task:id,trail,outcome:String(outcome.outcome),...outcome};};
+ const finish=async(outcome:Record<string,unknown>):Promise<DelegateOutcome>=>{await store.transaction(s=>event(s,'delegate-finished',{id,outcome:outcome.outcome})).catch(()=>{});return {task:id,trail,outcome:String(outcome.outcome),...(settledFindings.length?{settledFindings}:{}),...outcome};};
  const acceptChunk=async(detail:Record<string,unknown>)=>{await accept(store,id);const s=await store.load(),done=taskOf(s,id),unstable=[...new Set(unstableChecks(s,id,done.fingerprint).map(u=>u.checkId))];return finish({outcome:'accepted',cycles:done.cycles,author:done.author,fingerprint:done.fingerprint,...(unstable.length?{unstableChecks:unstable}:{}),...detail});};
  const s0=await store.load(),t0=taskOf(s0,id),unmet=unmetDependencies(s0,t0);
  if(resumeAtVerification&&unmet.length)return finish({outcome:'route-pending',route:{action:'dispatch-blocked',reason:'Unmet dependencies; integrate prerequisite tasks before verifying this chunk again',tasks:unmet}});
@@ -194,8 +208,19 @@ export async function delegate(store:Store,id:string,input:{workspace?:string;br
    }
    const question=scopeQuestion(s,t);
    if(question)return finish({outcome:'escalated',stage:'scope-question',outOfScope:question.outOfScope,failingChecks:failing,workerOutput:t.output,
-    reason:`The worker changed ${question.outOfScope.length} path(s) outside the task's resources. Amend resources to keep them, and the next delegate verifies this same output with no new worker run; or delegate again, and a repair reverts them`});   let blocking:unknown[]=[];
-   if(!failing.length){
+    reason:`The worker changed ${question.outOfScope.length} path(s) outside the task's resources. Amend resources to keep them, and the next delegate verifies this same output with no new worker run; or delegate again, and a repair reverts them`});
+   let blocking:Finding[]=[],gate:Gate|undefined;
+   const openBlocking=async()=>{s=await store.load();t=taskOf(s,id);return t.review?.findings.filter(f=>f.blocking&&f.disposition==='open')??[];};
+   const judge=async()=>{
+    gate=await repairGate(store,id,failing,d.fetcher);
+    if(!gate)return;
+    const settled=gate.settlements.length?await settleFindings(store,id,gate.settlements):[];
+    settledFindings.push(...settled);
+    trail.push({stage:'jev-gate',detail:{course:gate.course?.choice,confidence:gate.course?.confidence,sameDefect:gate.sameDefect,settled:settled.map(x=>({id:x.finding.id,verdict:x.verdict,owner:x.owner}))}});
+    blocking=await openBlocking();
+   };
+   if(failing.length)await judge();
+   else{
     const lenses=input.lenses??['Spec','Standards','Correctness','Omissions'];
     const obtainReview=async(excludeFamilies:string[]=[])=>{
      const routing=excludeFamilies.length?{...input.routing,excludeFamilies:[...(input.routing?.excludeFamilies??[]),...excludeFamilies]}:input.routing;
@@ -206,30 +231,27 @@ export async function delegate(store:Store,id:string,input:{workspace?:string;br
      return undefined;
     };
     const first=await obtainReview();if(first)return finish({outcome:'route-pending',route:first});
-    s=await store.load();t=taskOf(s,id);
-    blocking=t.review?.findings.filter(f=>f.blocking&&f.disposition==='open')??[];
+    blocking=await openBlocking();
+    if(blocking.length)await judge();
     let debt=reviewCoverageDebt(s,t);
     if(!blocking.length&&debt.length){
      const firstFamily=t.review?.family;
      const retry=await obtainReview(firstFamily?[firstFamily]:[]);
      if(retry)return finish({outcome:'route-pending',route:retry});
-     s=await store.load();t=taskOf(s,id);
-     blocking=t.review?.findings.filter(f=>f.blocking&&f.disposition==='open')??[];
+     blocking=await openBlocking();
+     if(blocking.length)await judge();
      debt=reviewCoverageDebt(s,t);
     }
     if(!blocking.length&&!debt.length)return acceptChunk({reviewFamily:t.review?.family});
     if(!blocking.length)return finish({outcome:'escalated',stage:'review-evidence',reason:'Reviewer left obligations unreviewed; supply the requested host evidence or a corrected independent review',obligations:debt});
    }
    s=await store.load();t=taskOf(s,id);
-   if(t.cycles>=s.config.flashRepairCycles+s.config.deepRepairCycles){
-    await repair(store,id);
-    return finish({outcome:'escalated',stage:'repair-exhausted',depth:'host',reason:'Persistent repair allowance exhausted; host-depth diagnosis required',findings:blocking,failingChecks:failing});
-   }
-   const guidance=await repairStrategy(store,id,blocking,failing,d.fetcher);
-   if(guidance)trail.push({stage:'jev-strategy',detail:guidance});
+   const course=(gate as Gate|undefined)?.course,sameDefect=(gate as Gate|undefined)?.sameDefect===true,reviewFamily=t.review?.family;
+   const allowanceSpent=t.cycles-(t.ladderBase??0)>=s.config.flashRepairCycles+s.config.deepRepairCycles;
    const scopeOut=failing.includes(scopeCheckId)?await (async()=>{const r=t.receipts.find(r=>r.id===scopeCheckId)!;try{return (JSON.parse(await store.readArtifact(r.artifact)) as {stdout:string}).stdout;}catch{return undefined;}})():undefined;
-   await repair(store,id);
-   try{out=await workerFailover(store,id,trail,t.workspace!,undefined,stalled,routing=>d.runWorker(store,id,{workspace:t.workspace!,brief:repairBrief(blocking,failing,guidance,scopeOut,input.brief),routing,skills:input.skills,references:input.references}));}
+   await repair(store,id,{sameDefect});
+   if(taskOf(await store.load(),id).depth==='host')return finish({outcome:'escalated',stage:'repair-exhausted',depth:'host',reason:allowanceSpent?'Persistent repair allowance exhausted; host-depth diagnosis required':'The same defect survived a deep repair, so one more cheap repair would only repeat it; host-depth diagnosis required',findings:blocking,failingChecks:failing});
+   try{out=await workerFailover(store,id,trail,t.workspace!,reviewFamily?{excludeFamilies:[reviewFamily]}:undefined,stalled,routing=>d.runWorker(store,id,{workspace:t.workspace!,brief:repairBrief(blocking,failing,course,scopeOut,input.brief),routing,skills:input.skills,references:input.references}));}
    catch(error){const escaped=escapedPaths(error);if(!escaped)throw error;trail.push({stage:'repair-worker',detail:{workspaceEscape:escaped}});return finish({outcome:'escalated',stage:'workspace-escape',escaped,reason:(error as Error).message});}
    pending=routePending(out);
    if(pending)return finish(pendingOutcome(pending));
@@ -280,11 +302,25 @@ export async function delegateBatch(store:Store,input:BatchInput,deps:Partial<De
 }
 
 const waitLimitMs=540000;
-export async function waitForDelegations(store:Store,input:{after?:number;timeoutMs?:number}={},pollMs=2000){
+type WaitInput={after?:number;timeoutMs?:number};
+function waitDeadline(input:WaitInput){
  const timeoutMs=input.timeoutMs??100000;
  invariant(Number.isInteger(timeoutMs)&&timeoutMs>=0&&timeoutMs<=waitLimitMs,`wait timeoutMs must be a whole number of milliseconds from 0 to ${waitLimitMs}`);
- invariant(input.after===undefined||Number.isInteger(input.after)&&input.after>=0,'wait after must be the cursor an earlier wait or delegate-batch returned');
- const deadline=Date.now()+timeoutMs;let after=input.after;
+ invariant(input.after===undefined||Number.isInteger(input.after)&&input.after>=0,'wait after must be the cursor an earlier wait, delegate-batch or drive returned');
+ return Date.now()+timeoutMs;
+}
+export async function waitForDrive(store:Store,input:WaitInput={},pollMs=2000){
+ const deadline=waitDeadline(input);let after=input.after;
+ for(;;){
+  const s=await store.load();after??=s.events.length;
+  const done=s.events.slice(after).findLast(e=>e.type==='drive-finished')?.detail as {outcome:string;report?:string}|undefined,open=openDrive(s);
+  if(done||!open?.alive||Date.now()>=deadline)
+   return {outcome:done?.report?'finished':done||open&&!open.alive?'interrupted':open?'still-running':'idle',cursor:s.events.length,drive:done?.report?JSON.parse(await store.readArtifact(done.report)):undefined,live:openDelegations(s).filter(d=>d.alive).map(d=>d.id),next:await next(store)};
+  await new Promise(r=>setTimeout(r,Math.min(pollMs,Math.max(0,deadline-Date.now()))));
+ }
+}
+export async function waitForDelegations(store:Store,input:WaitInput={},pollMs=2000){
+ const deadline=waitDeadline(input);let after=input.after;
  for(;;){
   const s=await store.load();after??=s.events.length;
   const finished=s.events.slice(after).filter(e=>e.type==='delegate-finished').map(e=>{const d=e.detail as {id:string;outcome:string;reason?:string};return {id:d.id,outcome:d.outcome,reason:d.reason,at:e.at};});

@@ -93,6 +93,32 @@ export async function taskWorktree(store:core.Store,input:{id:string;base?:strin
  return {id,workspace:path,branch,base:sha,created:true};
 }
 
+export type Integration={id:string;integrated:true;evidence:string}|{id:string;integrated:false;stage:'not-a-task-worktree'|'commit-failed'|'merge-conflict'|'merge-failed'|'integration-rejected';reason:string;files?:string[]};
+// See references/execution.md#drive
+export async function integrateTask(store:core.Store,id:string):Promise<Integration>{
+ const s=await store.load(),t=core.taskOf(s,id);
+ core.invariant(t.status==='accepted'&&!t.integrated&&t.workspace,`Task ${id} is not an accepted task that waits for integration`);
+ const run=await realpath(s.workspace),branch=`${branchPrefix}${s.id}/${t.id}`;
+ const record=async(evidence:string):Promise<Integration>=>{
+  try{await core.integrated(store,id,evidence);return {id,integrated:true,evidence};}
+  catch(error){return {id,integrated:false,stage:'integration-rejected',reason:(error as Error).message};}
+ };
+ if(key(t.workspace)===key(run))return record(`Task ${id} ran in the run checkout ${run}, so its output is already there`);
+ const checkedOut=trim(await git(t.workspace,['symbolic-ref','--quiet','--short','HEAD']));
+ if(checkedOut!==branch)return {id,integrated:false,stage:'not-a-task-worktree',reason:`Task ${id} works in ${t.workspace} on ${checkedOut||'a detached HEAD'}, not on ${branch}, so drive cannot merge it. Merge its output into ${run}, then record integrated`};
+ if(trim(await git(t.workspace,['status','--porcelain']))){
+  const add=await git(t.workspace,['add','-A']),commit=add.code===0?await git(t.workspace,['commit','-m',t.title]):add;
+  if(commit.code!==0)return {id,integrated:false,stage:'commit-failed',reason:`git commit of task ${id} in ${t.workspace} failed: ${failure(commit)}`};
+ }
+ const merge=await git(run,['merge','--no-ff','--no-edit',branch]);
+ if(merge.code!==0){
+  const files=out(await git(run,['diff','--name-only','--diff-filter=U'])).map(l=>l.trim()).filter(Boolean);
+  await git(run,['merge','--abort']);
+  return files.length?{id,integrated:false,stage:'merge-conflict',files,reason:`Merging ${branch} into ${run} conflicts in ${files.join(', ')}. The merge was aborted. Merge it by hand, resolve the conflicts, then record integrated`}:{id,integrated:false,stage:'merge-failed',reason:`git merge ${branch} in ${run} failed: ${failure(merge)}`};
+ }
+ return record(`drive merged ${branch} into ${run} as ${trim(await git(run,['rev-parse','HEAD']))}`);
+}
+
 type WorktreeTask={run:string;id:string;status:string;integrated:boolean};
 type WorktreeEntry={path:string;branch:string|null;head:string;main:boolean;dirty:boolean;adds:boolean|null;mergedVia?:string;missing:boolean;task:WorktreeTask|null;reason?:string};
 export type WorktreeListing={defaultBranch:string|null;worktrees:WorktreeEntry[];reason?:string};

@@ -1,4 +1,4 @@
-import {fixtureClaim,clearCut} from './execution-fixture.ts';
+import {fixtureClaim,clearCut,jevGate} from './execution-fixture.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
@@ -25,10 +25,10 @@ async function fixture(t:any){
  return {dir,store};
 }
 async function syntheticCoverage(store:c.Store,id:string){const state=await store.load();return c.reviewObligations(state,c.taskOf(state,id)).map(o=>({id:o.id,status:'covered' as const,evidence:'Synthetic protocol fixture only; not a real model review'}));}
-const blocking=[{id:'wrong',lens:'Spec',location:'app.txt',scenario:'charges 11 instead of 10',evidence:'observed expected-versus-actual',consequence:'overcharge',blocking:true}];
+const blocking=[{id:'wrong',lens:'Spec',location:'a/charge.ts:12',scenario:'charges 11 instead of 10',evidence:'observed expected-versus-actual',consequence:'overcharge',blocking:true}];
 const fakeWorker=(dir:string,counter?:{n:number})=>async (store:any,id:string,input:any)=>{if(counter)counter.n++;await fixtureClaim(store,id,{workspace:input.workspace??dir,model:'deepseek/flash'});writeFileSync(join(input.workspace??dir,'app.txt'),'corrected');await c.result(store,id,{changed:'app.txt'});return {artifact:c.taskOf(await store.load(),id).output};};
 const fakeReviewer=(dir:string,script:any[][])=>{let call=0;return async (store:any,id:string)=>{const findings=script[Math.min(call++,script.length-1)];await c.review(store,id,{model:'z-ai/glm-flash',fingerprint:await c.fingerprint(dir),findings,report:'Synthetic fixture review',coverage:await syntheticCoverage(store,id)});return {findings};};};
-const jevTargeted=(async()=>Response.json({model:'test/jev',answers:{selection:{type:'choice',choice:'targeted',confidence:.95,probabilities:{targeted:.95,rethink:.03,simplify:.02}}}})) as typeof fetch;
+const jevTargeted=jevGate();
 
 test('a clean chunk is accepted end to end without coordinator involvement',async t=>{
  const {dir,store}=await fixture(t);
@@ -45,7 +45,85 @@ test('blocking findings trigger autonomous repair with one bounded Jev course-co
  assert.equal(out.outcome,'accepted');
  assert.equal(dispatches.n,2);
  assert.equal(c.taskOf(await store.load(),'a').cycles,1);
- assert.ok(out.trail.some(x=>x.stage==='jev-strategy'&&(x.detail as any).choice==='targeted'));
+ assert.ok(out.trail.some(x=>x.stage==='jev-gate'&&(x.detail as any).course==='targeted'));
+ const repaired=(await store.load()).events.find(e=>e.type==='repair')!.detail as any;
+ assert.deepEqual(repaired.cause,{failingChecks:[],findings:[{id:'wrong',lens:'Spec',location:'a/charge.ts:12',scenario:'charges 11 instead of 10'}]},'the repair event names what caused it');
+});
+test('one Jev call asks the repair course, the progress and a verdict for each blocking finding',async t=>{
+ const {dir,store}=await fixture(t);const seen:any[]=[];
+ const second=[{...blocking[0],id:'other',scenario:'rounds twice'}];
+ await delegate(store,'a',{workspace:dir},{runWorker:fakeWorker(dir) as any,runReviewer:fakeReviewer(dir,[[...blocking],second,[]]) as any,fetcher:jevGate({},seen)});
+ assert.deepEqual(seen.map(body=>Object.keys(body.questions)),[['course','finding_0'],['course','progress','finding_0']],'the progress question is asked only when a previous round exists');
+ assert.equal(seen[0].state.findings[0].fileOwner,'task');
+ assert.equal(seen[1].state.previousRound.findings[0].id,'wrong');
+ assert.match(seen[0].state.blockingDefinition,/regression of existing behaviour/);
+});
+test('a finding Jev judges not blocking is settled without a repair, and the chunk is accepted',async t=>{
+ const {dir,store}=await fixture(t);const dispatches={n:0};
+ const out=await delegate(store,'a',{workspace:dir},{runWorker:fakeWorker(dir,dispatches) as any,runReviewer:fakeReviewer(dir,[[...blocking]]) as any,fetcher:jevGate({findings:'not-blocking'})});
+ assert.equal(out.outcome,'accepted');
+ assert.equal(dispatches.n,1,'no repair worker runs for a finding that is not blocking');
+ assert.deepEqual((out.settledFindings as any[]).map(x=>[x.finding.id,x.verdict]),[['wrong','not-blocking']]);
+ const state=await store.load(),task=c.taskOf(state,'a');
+ assert.equal(task.cycles,0);
+ assert.equal(task.review!.findings[0].settled!.verdict,'not-blocking');
+ assert.ok(state.events.some(e=>e.type==='finding-settled'&&(e.detail as any).verdict==='not-blocking'));
+ const health=await processHealth(store);
+ if(!health.available)throw new Error(health.reason);
+ assert.equal((health.metrics.reviews as any).findingsSettledNotBlocking,1);
+ assert.equal(health.metrics.firstPassAccepted,1);
+});
+test('a defect in a file another task owns is handed to that task, and Jev cannot hand away a defect in the task\'s own files',async t=>{
+ const {store,spaces}=await batchFixture(t,['a','b'],2);
+ const foreign=[{id:'stale',lens:'Omissions',location:'b/README.md:3',scenario:'the document names the old flag',evidence:'read the file',consequence:'readers follow a dead flag',blocking:true}];
+ const out=await delegate(store,'a',{},{runWorker:batchWorker(spaces) as any,runReviewer:batchReviewer({a:[foreign]}) as any,fetcher:jevGate({findings:'other-owner'})});
+ assert.equal(out.outcome,'accepted');
+ assert.deepEqual((out.settledFindings as any[]).map(x=>[x.finding.id,x.verdict,x.owner]),[['stale','other-owner','b']]);
+ assert.deepEqual(((await c.packet(store,'b')) as any).handedFindings.map((h:any)=>[h.from,h.finding.id]),[['a','stale']],'the owner task receives the finding in its brief context');
+ const own=[{...foreign[0],id:'own',location:'b/app.txt'}];
+ const kept=await delegate(store,'b',{},{runWorker:batchWorker(spaces) as any,runReviewer:batchReviewer({b:[own,[]]}) as any,fetcher:jevGate({findings:'other-owner'})});
+ assert.equal(kept.outcome,'accepted');
+ assert.equal(kept.settledFindings,undefined,'a finding inside the task\'s own resources stays blocking');
+ assert.equal(c.taskOf(await store.load(),'b').cycles,1);
+ assert.deepEqual(((await c.packet(store,'b')) as any).handedFindings,[],'a finding the worker already received is not handed over again');
+});
+const ladderWorker=(dir:string,depths:string[])=>async(store:any,id:string)=>{
+ const depth=c.taskOf(await store.load(),id).depth;depths.push(depth);
+ await fixtureClaim(store,id,{workspace:dir,model:depth==='deep'?'moonshotai/kimi-k3':'deepseek/flash'});
+ writeFileSync(join(dir,'app.txt'),'corrected '+depths.length);await c.result(store,id,{changed:'app.txt'});
+ return {artifact:c.taskOf(await store.load(),id).output};
+};
+test('the same defect surviving a Flash repair goes to the deep model, and surviving the deep repair goes to the host',async t=>{
+ const {dir,store}=await fixture(t);const depths:string[]=[];
+ const worker=ladderWorker(dir,depths);
+ const out=await delegate(store,'a',{workspace:dir},{runWorker:worker as any,runReviewer:fakeReviewer(dir,[[...blocking]]) as any,fetcher:jevGate({progress:'same'})});
+ assert.equal(out.outcome,'escalated');assert.equal(out.stage,'repair-exhausted');
+ assert.match(String(out.reason),/same defect survived a deep repair/);
+ assert.deepEqual(depths,['flash','flash','deep'],'first run, one Flash repair, then the deep model as soon as the defect repeats');
+ const task=c.taskOf(await store.load(),'a');
+ assert.equal(task.cycles,3);assert.equal(task.depth,'host');
+ const health=await processHealth(store);
+ if(!health.available)throw new Error(health.reason);
+ const {byCheck,...causes}=health.metrics.repairCauses as any;
+ assert.deepEqual([causes,byCheck],[{afterFailedCheck:0,afterReview:3,notRecorded:0,sameDefectAgain:2},{}],'health says why each repair ran');
+ await c.hostException(store,{id:'a',reason:'repair-escalation',evidence:'The same defect survived the deep repair'});
+});
+test('new defects each round stay on Flash until the Flash allowance is spent',async t=>{
+ const {dir,store}=await fixture(t);const depths:string[]=[];
+ const out=await delegate(store,'a',{workspace:dir},{runWorker:ladderWorker(dir,depths) as any,runReviewer:fakeReviewer(dir,[[...blocking]]) as any,fetcher:jevGate({progress:'new'})});
+ assert.equal(out.stage,'repair-exhausted');
+ assert.match(String(out.reason),/allowance exhausted/);
+ assert.deepEqual(depths,['flash','flash','flash','deep']);
+});
+test('reopening accepted work restarts the repair ladder on Flash',async t=>{
+ const {dir,store}=await fixture(t);
+ await delegate(store,'a',{workspace:dir},{runWorker:ladderWorker(dir,[]) as any,runReviewer:fakeReviewer(dir,[[...blocking],[...blocking],[...blocking],[]]) as any,fetcher:jevGate({progress:'new'})});
+ const accepted=c.taskOf(await store.load(),'a');
+ assert.equal(accepted.status,'accepted');assert.equal(accepted.cycles,3);assert.equal(accepted.depth,'deep');
+ await c.invalidate(store,{id:'a',reason:'Label spills out of its card',noProbe:'A rendered layout; no executable can show it'});
+ const reopened=c.taskOf(await store.load(),'a');
+ assert.equal(reopened.cycles,4,'the reopening still spends a cycle');
+ assert.equal(reopened.depth,'flash','but the new defect starts on the cheap model again');
 });
 test('exhausted repair allowance escalates to host depth instead of looping forever',async t=>{
  const {dir,store}=await fixture(t);
@@ -68,7 +146,7 @@ test('worker-side Jev helper answers and records its origin for health auditing'
 });
 test('Jev judges a worker question and a repair course against the task contract',async t=>{
  const {dir,store}=await fixture(t);const states:any[]=[];
- const fetcher=(async(_url:any,init:any)=>{const body=JSON.parse(init.body);states.push(body.state);const options=Object.keys(body.questions.selection.criteria);return Response.json({model:'test/jev',answers:{selection:{type:'choice',choice:options[0],confidence:.95,probabilities:Object.fromEntries(options.map((k,i)=>[k,i?.05/(options.length-1):.95]))}}});}) as typeof fetch;
+ const fetcher=(async(_url:any,init:any)=>{const body=JSON.parse(init.body);states.push(body.state);return Response.json({model:'test/jev',answers:Object.fromEntries(Object.entries(body.questions as Record<string,{criteria:Record<string,string>}>).map(([key,q])=>{const options=Object.keys(q.criteria);return [key,{type:'choice',choice:options[0],confidence:.95,probabilities:Object.fromEntries(options.map((k,i)=>[k,i?.05/(options.length-1):.95]))}];}))});}) as typeof fetch;
  await jevAsk(store,{taskId:'a',question:'Which approach?',options:['safe','risky'],state:'the amount is rounded twice'},fetcher);
  const contract={intent:'Correct charge amount',constraints:[],task:{id:'a',goal:'Correct observable behavior',criteria:['correct result'],resources:['a'],kind:'code',checks:[{id:'test',role:'probe'}],repairCycles:0}};
  assert.deepEqual(states[0],{...contract,workerState:'the amount is rounded twice'});

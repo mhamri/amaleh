@@ -1,7 +1,8 @@
 import {mkdir,writeFile,readdir,readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {Store,invariant} from './core.ts';
+import {Store,invariant,type RepairCause} from './core.ts';
+import {hostUsage} from './host-usage.ts';
 import {sanitize,diagnostics,modelSpeed,slowModels,recentSpeeds,readSpeedSamples,spend} from './telemetry.ts';
 import {loadModelConfig} from './config.ts';
 import {routedPrices} from './routing.ts';
@@ -77,7 +78,20 @@ export async function processHealth(store:Store):Promise<{available:false;reason
  const deepSpend=costs.byModel.filter(r=>config?.deep.includes(r.key)),deepCost=deepSpend.reduce((total,r)=>total+r.estimatedCost,0),deepShare=estimatedTotal?deepCost/estimatedTotal:0;
  const speeds=windowMs?await recentSpeeds(store.amalehDir,windowMs):modelSpeed(await readSpeedSamples(store.amalehDir)),slow=slowModels(speeds,config?.flash??[]);
  const skipNote=(role:string)=>windowMs?` Routing skips it as ${role} while this holds over the last ${Math.round(windowMs/86400000*10)/10} day(s), unless no other model is eligible.`:' slowModelWindowMs is 0, so routing still uses it.';
+ const about=(e:{detail:unknown})=>e.detail as {id?:string;cause?:RepairCause;sameDefect?:boolean;followUp?:boolean;verdict?:string};
+ const repairs=s.events.filter(e=>e.type==='repair'),causes=repairs.map(e=>about(e).cause);
+ const repairsByCheck:Record<string,number>={};
+ for(const cause of causes)for(const check of cause?.failingChecks??[])repairsByCheck[check]=(repairsByCheck[check]??0)+1;
+ const repairCauses={afterFailedCheck:causes.filter(c=>c?.failingChecks.length).length,afterReview:causes.filter(c=>c&&!c.failingChecks.length).length,notRecorded:causes.filter(c=>!c).length,sameDefectAgain:repairs.filter(e=>about(e).sameDefect).length,byCheck:repairsByCheck};
+ const settled=s.events.filter(e=>e.type==='finding-settled');
+ const reviews={total:s.events.filter(e=>e.type==='review').length,ofRepairOnly:s.events.filter(e=>e.type==='review-session'&&about(e).followUp).length,findingsSettledNotBlocking:settled.filter(e=>about(e).verdict==='not-blocking').length,findingsHandedToOwner:settled.filter(e=>about(e).verdict==='other-owner').length};
+ const firstPassAccepted=s.tasks.filter(t=>t.status==='accepted'&&!s.events.some(e=>(e.type==='repair'||e.type==='invalidated')&&about(e).id===t.id)).length;
+ const span=s.events.map(e=>Date.parse(e.at)).filter(Number.isFinite);
+ const mainModel=await hostUsage(s.host,s.workspace,Math.min(...span),s.status==='complete'?Math.max(...span):Date.now());
+ const read=(u:{inputTokens:number;cacheReadTokens:number;cacheWriteTokens:number})=>u.inputTokens+u.cacheReadTokens+u.cacheWriteTokens,millions=(n:number)=>(n/1e6).toFixed(2);
+ const workerRead=costs.total?read(costs.total):0;
  const warnings:string[]=[];
+ if(mainModel.available&&workerRead>0&&read(mainModel)>workerRead)warnings.push(`The main model read ${millions(read(mainModel))} million tokens over ${mainModel.turns} turn(s) in this run; every worker and reviewer together read ${millions(workerRead)} million. Each main-model turn reads the whole conversation again, so the turn count is the cost. Run drive: it batches, waits and integrates in one command, and returns only when the main model is needed.`);
  if(tasks&&coordinatorDecisions.length>2*tasks)warnings.push(`${coordinatorDecisions.length} coordinator-authored Jev decisions across ${tasks} task(s): micro-decision pattern. Delegate chunks and let workers consult Jev through the worker helper.`);
  if(claims.length>0&&delegations.length===0)warnings.push(`${claims.length} worker dispatch(es) without any delegate run: the coordinator is stepping through the worker→check→review→repair loop manually instead of delegating the chunk.`);
  if(coordinatorDecisions.length>0&&workerJev.length===0)warnings.push('All semantic decisions were made by the coordinator; none by workers. In-task choices belong to the worker-side Jev helper.');
@@ -88,7 +102,7 @@ export async function processHealth(store:Store):Promise<{available:false;reason
  if(tasks===1&&s.criteria.length>=3&&!s.events.some(e=>e.type==='single-chunk'))warnings.push(`One task carries ${s.criteria.length} run outcomes: nothing can run in parallel. Split the work into independent chunks, or record a single-chunk reason.`);
  if(deepShare>deepSpendShareLimit&&estimatedTotal>=deepSpendFloor)warnings.push(`${deepSpend.map(r=>r.key).join(', ')} took ${Math.round(deepShare*100)}% of the $${estimatedTotal.toFixed(2)} estimated spend across ${deepSpend.reduce((n,r)=>n+r.calls,0)} call(s). Deep repairs come from repeated reopens and failed repairs: find the check each chunk is missing instead of paying the deep model to guess.`);
  const slowNotes=slow.map(m=>`${m.model} as ${m.role} averages ${m.averageMinutes} min per call over ${m.calls} calls, ${m.times}× the ${m.medianMinutes} min median for that role: ${m.outputTokensPerSecond} output tokens per second and ${m.outputTokensPerCall} output tokens per call.${skipNote(m.role)}`);
- return {available:true,slowModels:slowNotes,metrics:{modelSpeed:speeds,tasks,coordinatorDecisions:coordinatorDecisions.length,hostDecisions:hostDecisions.length,workerJevCalls:workerJev.length,delegations:delegations.length,workerDispatches:claims.length,manualLoopSteps:manualSteps,reopenedChunks:reopened,hostTakeovers:hostTakeovers.length,hostTakeoversByTask,hostActionRecords:ledger.records.length,contractQuestions,unstableChecks,revisions:s.revision,coordinatorOperations,retries,coordinatorDecisionsPerTask:perTask(coordinatorDecisions.length),hostActionsPerTask:perTask(ledger.records.length),coordinatorOperationsPerTask:perTask(coordinatorOperations),workerFamilies:families,cost:runtime.totals,spend:costs},warnings};
+ return {available:true,slowModels:slowNotes,metrics:{modelSpeed:speeds,tasks,coordinatorDecisions:coordinatorDecisions.length,hostDecisions:hostDecisions.length,workerJevCalls:workerJev.length,delegations:delegations.length,workerDispatches:claims.length,manualLoopSteps:manualSteps,reopenedChunks:reopened,hostTakeovers:hostTakeovers.length,hostTakeoversByTask,hostActionRecords:ledger.records.length,contractQuestions,unstableChecks,revisions:s.revision,coordinatorOperations,retries,coordinatorDecisionsPerTask:perTask(coordinatorDecisions.length),hostActionsPerTask:perTask(ledger.records.length),coordinatorOperationsPerTask:perTask(coordinatorOperations),workerFamilies:families,firstPassAccepted,repairCauses,reviews,mainModel,cost:runtime.totals,spend:costs},warnings};
 }
 // Shareable by explicit user choice: omit all free text, paths, models, raw
 // identifiers, prompts, artifact bodies and original exception messages.

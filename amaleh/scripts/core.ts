@@ -4,7 +4,7 @@ import { resolve, join, relative, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { hostname } from 'node:os';
-import { resourceSetsOverlap } from './resources.ts';
+import { resourceSetsOverlap, inScope } from './resources.ts';
 import { family } from './family.ts';
 import { processAlive, ownerAlive } from './owner.ts';
 import { withCheckLock } from './check-lock.ts';
@@ -13,10 +13,12 @@ export { family } from './family.ts';
 export type Command = { command:string; args:string[] };
 type IntegrationCheck = Command & { id:string };
 export type Check = IntegrationCheck & { role:'probe'|'guard' };
-export type Finding = { id:string; lens:string; location:string; scenario:string; evidence:string; consequence:string; blocking:boolean; disposition?:'open'|'resolved'|'refuted'; resolution?:string };
+export type FindingVerdict = 'other-owner'|'not-blocking';
+export type Finding = { id:string; lens:string; location:string; scenario:string; evidence:string; consequence:string; blocking:boolean; disposition?:'open'|'resolved'|'refuted'; resolution?:string; settled?:{verdict:FindingVerdict;owner?:string;confidence:number} };
+export type RepairCause = { failingChecks:string[]; findings:{id:string;lens:string;location:string;scenario:string}[] };
 export type ReviewCoverage = { id:string; status:'covered'|'finding'|'unreviewed'|'not-applicable'; evidence:string };
 export type Guidance = { skills?:string[]; references?:string[] };
-export type Task = { id:string; title:string; goal:string; phase:string; deps:string[]; resources:string[]; criteria:string[]; checks:Check[]; kind:'code'|'research'|'plan'; skills?:string[]; references?:string[]; noProbe?:string; status:'ready'|'running'|'review'|'repair'|'accepted'|'blocked'; workspace?:string; activity?:{kind:'check'|'review';owner:{pid:number;coordinatorPid?:number;host:string;operation:string};checkId?:string}; owner?:{pid:number;coordinatorPid?:number;host:string;operation:string}; execution?:{kind:'routed-worker'|'coordinator-exception';authorization:string}; author?:string; family?:string; fingerprint?:string; output?:string; receipts:{id:string;code:number;fingerprint:string;artifact:string;isolated?:boolean}[]; review?:{family:string;fingerprint:string;findings:Finding[];artifact:string;coverage?:ReviewCoverage[]}; cycles:number; depth:'flash'|'deep'|'host'; blocked?:string; integrated?:string };
+export type Task = { id:string; title:string; goal:string; phase:string; deps:string[]; resources:string[]; criteria:string[]; checks:Check[]; kind:'code'|'research'|'plan'; skills?:string[]; references?:string[]; noProbe?:string; status:'ready'|'running'|'review'|'repair'|'accepted'|'blocked'; workspace?:string; activity?:{kind:'check'|'review';owner:{pid:number;coordinatorPid?:number;host:string;operation:string};checkId?:string}; owner?:{pid:number;coordinatorPid?:number;host:string;operation:string}; execution?:{kind:'routed-worker'|'coordinator-exception';authorization:string}; author?:string; family?:string; fingerprint?:string; output?:string; receipts:{id:string;code:number;fingerprint:string;artifact:string;isolated?:boolean}[]; review?:{family:string;fingerprint:string;findings:Finding[];artifact:string;coverage?:ReviewCoverage[]}; cycles:number; deepCycles?:number; ladderBase?:number; depth:'flash'|'deep'|'host'; blocked?:string; integrated?:string };
 export type Decision = { purpose?:'requirement'|'workflow'; id:string; question:string; criteria:Record<string,string>; state:unknown; revision:number; choice?:string; source?:string; confidence?:number; reason?:string; artifact?:string };
 export type TaskInput = Pick<Task,'id'|'title'|'goal'|'phase'|'deps'|'resources'|'criteria'|'checks'|'kind'|'skills'|'references'> & { noProbe?:string };
 export type ModelPool = { role:string; models:string[]; requiredInputs:string[]; requiresTools:boolean; notes:string };
@@ -66,6 +68,12 @@ export function openDelegations(s:Run):OpenDelegation[]{
  for(const e of s.events){const d=e.detail as {id:string;pid?:number;host?:string};if(e.type==='delegate-started')open.set(d.id,{pid:d.pid,host:d.host,at:e.at});else if(e.type==='delegate-finished')open.delete(d.id);}
  const legacyAlive=(id:string)=>{const t=s.tasks.find(t=>t.id===id),owner=t?.activity?.owner??t?.owner;return !!owner&&ownerAlive(owner);};
  return [...open].map(([id,d])=>({id,...d,alive:d.pid!==undefined&&d.host?ownerAlive({pid:d.pid,host:d.host}):legacyAlive(id)}));
+}
+export function openDrive(s:Run){
+ const at=s.events.findLastIndex(e=>e.type==='drive-started');
+ if(at<0||s.events.slice(at).some(e=>e.type==='drive-finished'))return undefined;
+ const owner=s.events[at].detail as {pid:number;host:string};
+ return {...owner,at:s.events[at].at,alive:ownerAlive(owner)};
 }
 export function reopenReasons(s:Run,id:string):string[]{
  let reasons:string[]=[];
@@ -187,8 +195,33 @@ function validateReviewCoverage(s:Run,t:Task,coverage:ReviewCoverage[],findings:
 }
 export function reviewCoverageDebt(s:Run,t:Task){return reviewObligations(s,t).filter(required=>{
  const matches=t.review?.coverage?.filter(c=>c.id===required.id)??[];
- return matches.length!==1||!matches[0].evidence?.trim()||!(matches[0].status==='covered'||matches[0].status==='not-applicable'&&!ownObligation.test(required.id));
+ return matches.length!==1||!matches[0].evidence?.trim()||!(matches[0].status==='covered'||matches[0].status==='not-applicable'&&!ownObligation.test(required.id)||matches[0].status==='finding'&&everyFindingSettled(t));
 });}
+// See references/review.md#the-jev-gate
+const everyFindingSettled=(t:Task)=>!!t.review?.findings.length&&t.review.findings.every(f=>f.settled);
+export function findingPaths(location:string,workspace?:string){
+ const root=workspace?workspace.replace(/\\/g,'/').replace(/\/$/,'').toLowerCase()+'/':undefined;
+ return [...new Set(location.split(/[\s,;'"`]+/).map(raw=>{
+  let path=raw.replace(/\\/g,'/').replace(/^[(\[<]+/,'').replace(/[.:>]+$/,'');
+  if(!path.includes('('))path=path.replace(/\)+$/,'');
+  if(!path.includes('['))path=path.replace(/\]+$/,'');
+  path=path.replace(/(?::\d+(?:-\d+)?){1,2}$/,'').replace(/#L\d+.*$/,'').replace(/^(?:\.\/)+/,'');
+  return root&&path.toLowerCase().startsWith(root)?path.slice(root.length):path;
+ }).filter(path=>path.includes('/')||/\.[A-Za-z0-9]{1,8}$/.test(path)))];
+}
+export type FindingOwner={owner:'task'}|{owner:'other';task:string;paths:string[]}|{owner:'none';paths:string[]};
+export function findingOwner(s:Run,t:Task,finding:{location:string}):FindingOwner{
+ const paths=findingPaths(finding.location,t.workspace);
+ if(!paths.length||paths.some(p=>t.resources.some(r=>inScope(r,p))))return {owner:'task'};
+ const other=s.tasks.find(o=>o.id!==t.id&&paths.some(p=>o.resources.some(r=>inScope(r,p))));
+ return other?{owner:'other',task:other.id,paths}:{owner:'none',paths};
+}
+export type HandedFinding={from:string;finding:Pick<Finding,'id'|'lens'|'location'|'scenario'|'evidence'|'consequence'>};
+export function handedFindings(s:Run,id:string):HandedFinding[]{
+ const seen=s.events.findLastIndex(e=>e.type==='claimed'&&(e.detail as {id?:string}).id===id);
+ return s.events.slice(seen+1).filter(e=>e.type==='finding-settled'&&(e.detail as {owner?:string}).owner===id).map(e=>{const d=e.detail as {id:string;finding:HandedFinding['finding']};return {from:d.id,finding:d.finding};});
+}
+export const lastRepairCause=(s:Run,id:string)=>(s.events.findLast(e=>e.type==='repair'&&(e.detail as {id?:string}).id===id)?.detail as {cause?:RepairCause}|undefined)?.cause;
 export const hostAuthored=(t:Task)=>t.execution?.kind==='coordinator-exception';
 const openBlocking=(t:Task)=>!!t.review?.findings.some(f=>f.blocking&&f.disposition==='open');
 const scopeEvents=(s:Run,id:string)=>s.events.filter(e=>(e.type==='scope-question'||e.type==='scope-answered')&&(e.detail as {id?:string}).id===id);
@@ -251,7 +284,7 @@ export async function hostException(store:Store,input:{id:string;reason:'user-re
  const authorization=randomUUID();await store.transaction(s=>{const t=taskOf(s,input.id);
  invariant(['ready','repair'].includes(t.status),'Exception requires an executable task');
  invariant(['user-request','repair-escalation'].includes(input.reason)&&typeof input.evidence==='string'&&!!input.evidence.trim(),'Explicit user request or exhausted repair escalation evidence required');
- if(input.reason==='repair-escalation')invariant(t.depth==='host'&&t.cycles>s.config.flashRepairCycles+s.config.deepRepairCycles,'Repair escalation not exhausted');
+ if(input.reason==='repair-escalation')invariant(t.depth==='host'&&(t.cycles-(t.ladderBase??0)>s.config.flashRepairCycles+s.config.deepRepairCycles||(t.deepCycles??0)>0),'Repair escalation not exhausted');
  event(s,'host-exception-granted',{authorization,id:t.id,key:hostExceptionKey(s,t),model:s.host.model,reason:input.reason,evidence:input.evidence});
  });return {authorization};
 }
@@ -313,8 +346,32 @@ export async function addReviewCheck(store:Store,id:string,check:Check){await st
  t.checks.push(check);t.review=undefined;event(s,'review-check-added',{id,check});
 });}
 export async function review(store:Store,id:string,input:{model:string;findings:Finding[];fingerprint:string;report:string;coverage?:ReviewCoverage[]}){const artifact=await store.artifact(input);await store.transaction(async s=>{const t=taskOf(s,id);invariant(t.status==='review'&&t.workspace,'Task not awaiting review');invariant(input.model&&family(input.model)!==t.family,'Review requires another model family');invariant(input.fingerprint===await fingerprint(t.workspace),'Review evidence is stale');invariant(Array.isArray(input.findings)&&typeof input.report==='string'&&input.report.length>0,'Review report required');for(const f of input.findings)invariant(f.id&&f.lens&&f.location&&f.scenario&&f.evidence&&f.consequence&&typeof f.blocking==='boolean','Finding lacks evidence');if(input.coverage!==undefined)validateReviewCoverage(s,t,input.coverage,input.findings);const findings=input.findings.map(f=>({...f,disposition:'open' as const}));t.review={family:family(input.model),fingerprint:input.fingerprint,findings,artifact,coverage:input.coverage};event(s,'review',{id,artifact});});}
-function chargeCycle(s:Run,t:Task){t.cycles++;t.depth=t.cycles>s.config.flashRepairCycles+s.config.deepRepairCycles?'host':t.cycles>s.config.flashRepairCycles?'deep':'flash';}
-export async function repair(store:Store,id:string){await store.transaction(s=>{const t=taskOf(s,id);invariant(t.status==='review'&&!t.activity,'Task is not in review or verification remains active');invariant(openBlocking(t)||t.receipts.some(r=>r.code!==0),'No blocking review or failing check');t.status='repair';if(hostAuthored(t)){event(s,'host-checks-failed',{id,failing:t.receipts.filter(r=>r.code!==0).map(r=>r.id)});return;}chargeCycle(s,t);event(s,'repair',{id,cycle:t.cycles,depth:t.depth});});}
+// See references/runtime.md#the-repair-ladder
+function chargeCycle(s:Run,t:Task,sameDefect=false){
+ const {flashRepairCycles:flash,deepRepairCycles:deep}=s.config,spent=t.cycles-(t.ladderBase??0),deepSpent=t.deepCycles??0,survivedDeep=sameDefect&&spent>0&&t.depth==='deep';
+ t.cycles++;
+ t.depth=spent>=flash+deep||survivedDeep?'host':sameDefect&&spent>0&&deepSpent<deep||spent-deepSpent>=flash?'deep':'flash';
+ if(t.depth==='deep')t.deepCycles=deepSpent+1;
+}
+const restartLadder=(t:Task)=>{t.ladderBase=t.cycles;t.deepCycles=0;t.depth='flash';};
+const repairCause=(t:Task):RepairCause=>({failingChecks:t.receipts.filter(r=>r.code!==0).map(r=>r.id),findings:(t.review?.findings??[]).filter(f=>f.blocking&&f.disposition==='open').map(f=>({id:f.id,lens:f.lens,location:f.location,scenario:f.scenario}))});
+export async function repair(store:Store,id:string,input:{sameDefect?:boolean}={}){await store.transaction(s=>{const t=taskOf(s,id);invariant(t.status==='review'&&!t.activity,'Task is not in review or verification remains active');invariant(openBlocking(t)||t.receipts.some(r=>r.code!==0),'No blocking review or failing check');t.status='repair';if(hostAuthored(t)){event(s,'host-checks-failed',{id,failing:t.receipts.filter(r=>r.code!==0).map(r=>r.id)});return;}const sameDefect=input.sameDefect===true;chargeCycle(s,t,sameDefect);event(s,'repair',{id,cycle:t.cycles,depth:t.depth,cause:repairCause(t),...(sameDefect?{sameDefect}:{})});});}
+export type FindingSettlement={index:number;verdict:FindingVerdict;confidence:number};
+export async function settleFindings(store:Store,id:string,settlements:FindingSettlement[]){
+ return store.transaction(s=>{const t=taskOf(s,id);invariant(t.status==='review'&&t.review&&!t.activity,'Findings are settled on an idle task awaiting review');
+  return settlements.flatMap(({index,verdict,confidence})=>{
+   const f=t.review!.findings[index];invariant(f,`Task ${id} has no review finding at index ${index}`);
+   if(!f.blocking||f.disposition!=='open')return [];
+   const owned=findingOwner(s,t,f);
+   if(verdict==='other-owner'&&owned.owner==='task')return [];
+   const owner=verdict==='other-owner'?owned.owner==='other'?owned.task:'host':undefined;
+   f.blocking=false;f.settled={verdict,confidence,...(owner?{owner}:{})};
+   const finding={id:f.id,lens:f.lens,location:f.location,scenario:f.scenario,evidence:f.evidence,consequence:f.consequence};
+   event(s,'finding-settled',{id,verdict,confidence,finding,...(owner?{owner}:{})});
+   return [{verdict,finding,...(owner?{owner}:{})}];
+  });
+ });
+}
 export async function accept(store:Store,id:string){await store.transaction(async s=>{const t=taskOf(s,id),hostFinal=hostAuthored(t);invariant(t.status==='review'&&t.workspace&&t.output&&(t.review||hostFinal)&&!t.activity,'Result and independent review required; verification must be idle');invariant(!unmetDependencies(s,t).length,'Unmet dependencies; reconcile upstream evidence before acceptance');const fp=await fingerprint(t.workspace);if(!hostFinal){invariant(t.review!.fingerprint===fp,'Review stale');invariant(!t.review!.findings.some(f=>f.blocking&&f.disposition==='open'),'Blocking findings remain');}invariant(t.checks.every(c=>t.receipts.some(r=>r.id===c.id&&r.code===0&&r.fingerprint===fp)),'Required checks missing, failed, or stale');if(!hostFinal)invariant(!reviewCoverageDebt(s,t).length,'Review coverage incomplete; obtain missing evidence and a corrected independent report');t.status='accepted';t.fingerprint=fp;event(s,'accepted',{id,fp,hostFinal:hostFinal||undefined});});}
 async function acceptedWorkspaceFingerprint(t:Task){
  invariant(t.workspace,'Accepted task has no workspace');
@@ -344,6 +401,7 @@ export async function resume(store:Store,host?:Run['host']){
   for(const t of s.tasks)if(t.status==='running'&&t.owner&&!ownerAlive(t.owner)){t.status='blocked';t.blocked='Interrupted operation: reconcile artifacts and side effects before requeue';t.owner=undefined;}
   for(const t of s.tasks)if(t.activity&&!ownerAlive(t.activity.owner)){event(s,'activity-interrupted',{id:t.id,activity:t.activity});t.activity=undefined;t.status='blocked';t.blocked='Interrupted verification: reconcile artifacts and side effects before requeue';}
   for(const d of openDelegations(s))if(!d.alive)event(s,'delegate-finished',{id:d.id,outcome:'interrupted'});
+  if(openDrive(s)?.alive===false)event(s,'drive-finished',{outcome:'interrupted'});
   const stale:string[]=[],unavailable:{id:string;reason:string}[]=[];for(const t of s.tasks)if(['review','accepted'].includes(t.status)&&t.workspace){try{const fp=await fingerprint(t.workspace);if(t.status==='accepted'&&t.fingerprint!==fp)stale.push(t.id);}catch(error){if(!workspaceUnavailable(error))throw error;unavailable.push({id:t.id,reason:(error as Error).message});}}
   for(const fault of unavailable)if(['review','accepted'].includes(taskOf(s,fault.id).status))quarantineWorkspace(s,fault.id,fault.reason);
   for(const id of stale)if(taskOf(s,id).status==='accepted')invalidateTree(s,id,'Accepted workspace changed since verification',undefined,true);
@@ -356,7 +414,7 @@ export async function packet(store:Store,id?:string){
  const common={run:s.id,host:s.host,intent:s.intent,constraints:s.constraints,artifactDirectory:join(store.root,'artifacts')};
  if(t){
   const relevant=new Set([t.id]);const visit=(id:string)=>{for(const dep of taskOf(s,id).deps)if(!relevant.has(dep)){relevant.add(dep);visit(dep);}};visit(t.id);
-  return {...common,runOutcomes:s.criteria,task:t,otherTasks:s.tasks.filter(o=>o.id!==t.id).map(o=>({id:o.id,goal:o.goal,resources:o.resources,status:o.status})),reopened:reopenReasons(s,t.id),decisions:s.decisions.filter(d=>{
+  return {...common,runOutcomes:s.criteria,task:t,otherTasks:s.tasks.filter(o=>o.id!==t.id).map(o=>({id:o.id,goal:o.goal,resources:o.resources,status:o.status})),reopened:reopenReasons(s,t.id),handedFindings:handedFindings(s,t.id),decisions:s.decisions.filter(d=>{
    const routing=(d.state as any)?.routing;
    // Unscoped intent/technical decisions are retained; never discard them by recency.
    return d.choice&&(!routing?.scope?.taskId||relevant.has(routing.scope.taskId));
@@ -378,6 +436,7 @@ export function invalidateTree(s:Run,id:string,reason:string,feedback?:number,is
   // because its next worker run repairs that failure; otherwise it keeps its output.
   const charged=feedback===undefined&&(own?!!(t.output||t.review)&&isDefect!==false:failed);
   const keepsOutput=!own&&!!t.output&&(t.status==='accepted'||t.status==='review'&&!failed);
+  if(own&&t.status==='accepted')restartLadder(t);
   if(charged)chargeCycle(s,t);
   t.status=keepsOutput?'review':'ready';t.integrated=undefined;t.receipts=[];t.review=undefined;
   if(keepsOutput)reverified.push(t.id);

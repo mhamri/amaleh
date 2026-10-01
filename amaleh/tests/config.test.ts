@@ -50,7 +50,7 @@ test('each field is validated with a message naming the field and the file',asyn
 
 test('the optional wall-clock limits default when absent and accept 0 to disable them',async t=>{
  const defaults=await loadModelConfig(await written(t,valid));
- assert.equal(defaults.workerTimeoutMs,5400000,'a worker call needs a default wall-clock limit');
+ assert.equal(defaults.workerTimeoutMs,2700000,'a worker call needs a default wall-clock limit');
  assert.equal(defaults.reviewerTimeoutMs,2400000,'a reviewer call needs a default wall-clock limit');
  const explicit=await loadModelConfig(await written(t,{...valid,workerTimeoutMs:120000,reviewerTimeoutMs:0}));
  assert.equal(explicit.workerTimeoutMs,120000);

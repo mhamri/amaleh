@@ -33,7 +33,7 @@ export async function loadModelConfig(path=configPath()):Promise<ModelConfig>{
   providerFailovers:whole(parsed.providerFailovers,'providerFailovers',path,1,10),
   launchAttempts:whole(parsed.launchAttempts,'launchAttempts',path,1,5),
   idleTimeoutMs:whole(parsed.idleTimeoutMs,'idleTimeoutMs',path,0,7200000),
-  workerTimeoutMs:optionalWhole(parsed.workerTimeoutMs,'workerTimeoutMs',path,0,86400000,5400000),
+  workerTimeoutMs:optionalWhole(parsed.workerTimeoutMs,'workerTimeoutMs',path,0,86400000,2700000),
   reviewerTimeoutMs:optionalWhole(parsed.reviewerTimeoutMs,'reviewerTimeoutMs',path,0,86400000,2400000),
   slowModelWindowMs:whole(parsed.slowModelWindowMs,'slowModelWindowMs',path,0,2592000000),
   reviewerMaxTurns:whole(parsed.reviewerMaxTurns,'reviewerMaxTurns',path,5,500)};

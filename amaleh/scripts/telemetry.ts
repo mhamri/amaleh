@@ -72,7 +72,7 @@ export function slowModels(speeds:ModelSpeed[],peers:readonly string[],minimumCa
  });
 }
 type SpendTally={key:string;calls:number;pricedCalls:number;turns:number;estimatedCost:number;piEstimate:number;inputTokens:number;cacheReadTokens:number;cacheWriteTokens:number;outputTokens:number};
-const reviewSession=/-review-\d+$/;
+const reviewSession=/-review-\d+(?:-[0-9a-f]{8})?$/;
 const dollars=(n:number)=>Math.round(n*1000)/1000;
 const amount=(value:unknown)=>{const n=Number(value);return Number.isFinite(n)&&n>0?n:0;};
 const costSource=(t:SpendTally)=>t.pricedCalls===t.calls?'openrouter-catalog':t.pricedCalls?'mixed':'pi-estimate';

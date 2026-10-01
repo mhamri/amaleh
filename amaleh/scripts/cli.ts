@@ -7,7 +7,8 @@ import * as core from './core.ts';
 import * as adapters from './adapters.ts';
 import { preflight } from './preflight.ts';
 import {recordHostAction,hostActions,exportDiagnostics,processHealth} from './host-diagnostics.ts';
-import {delegate,delegateBatch,validateBatch,waitForDelegations,type BatchInput} from './delegate.ts';
+import {delegate,delegateBatch,validateBatch,waitForDelegations,waitForDrive,type BatchInput} from './delegate.ts';
+import {drive,validateDrive,type DriveInput} from './drive.ts';
 import {bench,renderScorecard} from './bench.ts';
 import { selectModel } from './routing.ts';
 import * as effort from './effort.ts';
@@ -35,22 +36,32 @@ export async function finishGate(store:core.Store,input:{claims:string[];acknowl
   await core.finish(store,input.claims);
  }
 }
-// See references/runtime.md (delegate-batch, wait)
-async function launchBatch(store:core.Store,args:{workspace:string;runId:string;inputPath?:string},input:BatchInput,startupMs=30000){
- validateBatch(input);core.invariant(args.inputPath,'delegate-batch needs an input file');
+type LaunchArgs={workspace:string;runId:string;inputPath?:string};
+async function launchDetached(store:core.Store,operation:string,args:LaunchArgs,begun:(events:core.Run['events'])=>boolean,startupMs=30000){
  const cursor=(await store.load()).events.length,logs=join(store.root,'delegations');
  await mkdir(logs,{recursive:true});
  const log=join(logs,new Date().toISOString().replace(/[:.]/g,'-')+'-'+process.pid+'.log'),out=await open(log,'a');
  let exit:number|null|undefined;
- const child=spawn(process.execPath,[fileURLToPath(import.meta.url),'delegate-batch',args.workspace,args.runId,resolve(args.inputPath),attachedFlag],{detached:true,stdio:['ignore',out.fd,out.fd],windowsHide:true,shell:false});
+ const child=spawn(process.execPath,[fileURLToPath(import.meta.url),operation,args.workspace,args.runId,...(args.inputPath?[resolve(args.inputPath)]:[]),attachedFlag],{detached:true,stdio:['ignore',out.fd,out.fd],windowsHide:true,shell:false});
  child.on('exit',code=>{exit=code;});child.unref();await out.close();
  for(const deadline=Date.now()+startupMs;;){
-  const begun=(await store.load()).events.slice(cursor).some(e=>(e.type==='delegate-started'||e.type==='delegate-finished')&&input.ids.includes((e.detail as {id:string}).id));
-  if(begun)return {launched:true,pid:child.pid,ids:input.ids,cursor,log,follow:'Run wait with after set to this cursor until it reports idle; act on each finished chunk as it arrives.'};
-  if(exit!==undefined)throw new Error(`delegate-batch exited with code ${exit} before starting any chunk: ${(await readFile(log,'utf8')).trim().slice(-2000)}`);
-  core.invariant(Date.now()<deadline,`delegate-batch process ${child.pid} started no chunk within ${startupMs} ms; inspect ${log}`);
+  if(begun((await store.load()).events.slice(cursor)))return {launched:true,pid:child.pid,cursor,log};
+  if(exit!==undefined)throw new Error(`${operation} exited with code ${exit} before starting any chunk: ${(await readFile(log,'utf8')).trim().slice(-2000)}`);
+  core.invariant(Date.now()<deadline,`${operation} process ${child.pid} started no chunk within ${startupMs} ms; inspect ${log}`);
   await new Promise(r=>setTimeout(r,200));
  }
+}
+// See references/runtime.md (delegate-batch, wait)
+async function launchBatch(store:core.Store,args:LaunchArgs,input:BatchInput){
+ validateBatch(input);core.invariant(args.inputPath,'delegate-batch needs an input file');
+ const launched=await launchDetached(store,'delegate-batch',args,events=>events.some(e=>(e.type==='delegate-started'||e.type==='delegate-finished')&&input.ids.includes((e.detail as {id:string}).id)));
+ return {...launched,ids:input.ids,follow:'Run wait with after set to this cursor until it reports idle; act on each finished chunk as it arrives.'};
+}
+// See references/execution.md#drive
+async function launchDrive(store:core.Store,args:LaunchArgs,input:DriveInput){
+ validateDrive(await store.load(),input);
+ const launched=await launchDetached(store,'drive',args,events=>events.some(e=>e.type==='drive-started'||e.type==='drive-finished'));
+ return {...launched,follow:'Run wait with "until":"drive" and after set to this cursor until its outcome is finished; it returns the drive report.'};
 }
 const attachedFlag='--attached';
 async function executeMain(args=process.argv.slice(2),attached=false){
@@ -85,7 +96,8 @@ async function executeMain(args=process.argv.slice(2),attached=false){
  case 'decide-batch':return adapters.decideBatch(store,input);
  case 'delegate':return delegate(store,input.id,input);
  case 'delegate-batch':return attached||input.foreground===true?delegateBatch(store,input):launchBatch(store,{workspace,runId,inputPath},input);
- case 'wait':return waitForDelegations(store,input);
+ case 'wait':{const {until,...waitInput}=input;core.invariant(until===undefined||until==='chunk'||until==='drive','wait until must be "chunk" or "drive"');return until==='drive'?waitForDrive(store,waitInput):waitForDelegations(store,waitInput);}
+ case 'drive':{const {foreground,...driveInput}=input;return attached||foreground===true?drive(store,driveInput):launchDrive(store,{workspace,runId,inputPath},driveInput);}
  case 'health':return processHealth(store);
  case 'host-decision':await adapters.hostDecision(store,input.id,input.choice,input.reason);break;
  case 'effort-configure':await effort.configureEffort(store,input);break;

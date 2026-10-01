@@ -1,4 +1,4 @@
-import {fixtureClaim,clearCut} from './execution-fixture.ts';
+import {fixtureClaim,clearCut,jevGate,noJev} from './execution-fixture.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,rm,writeFile,readFile} from 'node:fs/promises';
@@ -40,7 +40,7 @@ test('a coverage gap without blocking findings gets exactly one fresh reviewer f
  const {dir,store}=await fixture(t);
  const calls:string[]=[],routings:unknown[]=[];
  const runReviewer=syntheticReviews(dir,[{model:'z-ai/glm-flash',debt:true},{model:'moonshot/kimi-x'}],calls,routings);
- const out=await delegate(store,'a',{workspace:dir},{runWorker:syntheticWorker(dir) as any,runReviewer:runReviewer as any});
+ const out=await delegate(store,'a',{workspace:dir},{runWorker:syntheticWorker(dir) as any,runReviewer:runReviewer as any,fetcher:noJev});
  assert.equal(out.outcome,'accepted');
  assert.deepEqual(calls,['z-ai/glm-flash','moonshot/kimi-x'],'the loop must obtain exactly one second review');
  assert.equal(routings[0],undefined,'the first review uses the caller routing unchanged');
@@ -54,7 +54,7 @@ test('a second coverage gap escalates as host work and leaves the task actionabl
  const {dir,store}=await fixture(t);
  const calls:string[]=[],routings:unknown[]=[];
  const runReviewer=syntheticReviews(dir,[{model:'z-ai/glm-flash',debt:true},{model:'moonshot/kimi-x',debt:true}],calls,routings);
- const out=await delegate(store,'a',{workspace:dir},{runWorker:syntheticWorker(dir) as any,runReviewer:runReviewer as any});
+ const out=await delegate(store,'a',{workspace:dir},{runWorker:syntheticWorker(dir) as any,runReviewer:runReviewer as any,fetcher:noJev});
  assert.equal(out.outcome,'escalated');
  assert.equal(out.stage,'review-evidence');
  assert.deepEqual(calls,['z-ai/glm-flash','moonshot/kimi-x'],'a second gap must not buy another review');
@@ -71,7 +71,7 @@ test('a task left in review is delegated again straight to checks and review, wi
  const calls:string[]=[],routings:unknown[]=[];
  let workerRuns=0;
  const countingWorker=async(...args:unknown[])=>{workerRuns++;return (syntheticWorker(dir) as any)(...args);};
- const out=await delegate(store,'a',{workspace:dir},{runWorker:countingWorker as any,runReviewer:syntheticReviews(dir,[{model:'z-ai/glm-flash'}],calls,routings) as any});
+ const out=await delegate(store,'a',{workspace:dir},{runWorker:countingWorker as any,runReviewer:syntheticReviews(dir,[{model:'z-ai/glm-flash'}],calls,routings) as any,fetcher:noJev});
  assert.equal(out.outcome,'accepted');
  assert.equal(workerRuns,0,'the finished worker output is reused, not bought again');
  assert.deepEqual(calls,['z-ai/glm-flash']);
@@ -80,9 +80,9 @@ test('a task left in review is delegated again straight to checks and review, wi
 test('a blocking finding from the retry drives repair rather than escalation',async t=>{
  const {dir,store}=await fixture(t);
  const calls:string[]=[],routings:unknown[]=[];
- const blocking=[{id:'f1',lens:'Spec',location:'app.txt',scenario:'the criterion still fails',evidence:'observed expected-versus-actual',consequence:'the gap is not closed',blocking:true}];
+ const blocking=[{id:'f1',lens:'Spec',location:'review-loop/app.txt',scenario:'the criterion still fails',evidence:'observed expected-versus-actual',consequence:'the gap is not closed',blocking:true}];
  const runReviewer=syntheticReviews(dir,[{model:'z-ai/glm-flash',debt:true},{model:'moonshot/kimi-x',findings:blocking},{model:'z-ai/glm-flash'}],calls,routings);
- const out=await delegate(store,'a',{workspace:dir},{runWorker:syntheticWorker(dir) as any,runReviewer:runReviewer as any});
+ const out=await delegate(store,'a',{workspace:dir},{runWorker:syntheticWorker(dir) as any,runReviewer:runReviewer as any,fetcher:jevGate()});
  assert.equal(out.outcome,'accepted');
  assert.deepEqual(calls,['z-ai/glm-flash','moonshot/kimi-x','z-ai/glm-flash'],'the retry defect is repaired before a fresh review');
  assert.equal(c.taskOf(await store.load(),'a').cycles,1);
@@ -91,7 +91,7 @@ test('a retry that cannot be routed hands the retained gap back instead of fakin
  const {dir,store}=await fixture(t);
  const calls:string[]=[],routings:unknown[]=[];
  const runReviewer=syntheticReviews(dir,[{model:'z-ai/glm-flash',debt:true},{model:'none',pending:'route-blocked'}],calls,routings);
- const out=await delegate(store,'a',{workspace:dir},{runWorker:syntheticWorker(dir) as any,runReviewer:runReviewer as any});
+ const out=await delegate(store,'a',{workspace:dir},{runWorker:syntheticWorker(dir) as any,runReviewer:runReviewer as any,fetcher:noJev});
  assert.equal(out.outcome,'route-pending');
  assert.equal((out.route as any).action,'route-blocked');
  assert.equal(c.taskOf(await store.load(),'a').status,'review');
