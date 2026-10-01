@@ -2,22 +2,23 @@ import models from '../../../amaleh/models.json' with { type: 'json' };
 import { family } from '../../../amaleh/scripts/family.ts';
 import { MODELS, type ModelIdentity } from './models.ts';
 
-function identity(key: string): ModelIdentity {
+function identity(id: string): ModelIdentity {
+  const key = family(id);
   const found = (MODELS as Record<string, ModelIdentity | undefined>)[key];
   if (!found) {
     throw new Error(
-      `amaleh/models.json routes a routed model to the family '${key}', which website/src/lib/models.ts has no identity for. ` +
+      `amaleh/models.json routes ${id} to the family '${key}', which website/src/lib/models.ts has no identity for. ` +
       `Add a '${key}' identity to MODELS in website/src/lib/models.ts before building.`,
     );
   }
   return found;
 }
 
-function keys(ids: string[]): string[] {
-  const out: string[] = [];
+function list(ids: string[]): ModelIdentity[] {
+  const out: ModelIdentity[] = [];
   for (const id of ids) {
-    const key = family(id);
-    if (!out.includes(key)) out.push(key);
+    const found = identity(id);
+    if (!out.includes(found)) out.push(found);
   }
   return out;
 }
@@ -32,8 +33,7 @@ function required(value: unknown, field: string): string {
   return value;
 }
 
-export const WORKER_FAMILIES: string[] = keys(models.flash ?? []);
-export const WORKERS: ModelIdentity[] = WORKER_FAMILIES.map(identity);
+export const WORKERS: ModelIdentity[] = list(models.flash ?? []);
 if (WORKERS.length < 2) {
   throw new Error(
     `amaleh/models.json routes ${WORKERS.length} flash famil${WORKERS.length === 1 ? 'y' : 'ies'} for website/src/lib/pool.ts to name, and the site's cross-family review text needs at least two. ` +
@@ -41,10 +41,8 @@ if (WORKERS.length < 2) {
   );
 }
 export const WORKER_NAMES: string[] = WORKERS.map((worker) => worker.name);
-export const REPAIR_FAMILY: string = family(required(models.deep?.[0], 'deep'));
-export const REPAIR: ModelIdentity = identity(REPAIR_FAMILY);
-export const DECISION_FAMILY: string = family(required(models.jev, 'jev'));
-export const DECISION: ModelIdentity = identity(DECISION_FAMILY);
+export const REPAIR: ModelIdentity = identity(required(models.deep?.[0], 'deep'));
+export const DECISION: ModelIdentity = identity(required(models.jev, 'jev'));
 
 function joinWith(names: string[], conjunction: string): string {
   if (names.length < 2) return names.join('');
