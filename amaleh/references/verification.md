@@ -34,6 +34,21 @@ Workspace fingerprints are conservative whole-tree content hashes excluding runt
 
 Secrets are read from existing credential configuration or environment and are not intentionally placed into logs or command-line arguments. Original tool artifacts are retained; their contents still depend on the commands the user authorizes.
 
+## Open measurements
+
+These behaviours are built and tested against synthetic models, but no real run has yet shown the saving they exist for. The next diagnostic of a real run settles each one; until then, treat the saving as unproven.
+
+**The light review is not yet shown to cost less.** See [review effort](review.md#review-effort). The baseline is a full review of a change under 200 lines: about 13,500 output tokens and 4 minutes, measured over 84 reviews of past runs. In the one real run that had a light review, it used 8,963 output tokens, and a full review in the same run used 8,515. pi applied `--thinking low`, but `xiaomi/mimo-v2.6-flash` wrote as much thinking as at its default level (25,715 characters against 20,419). `~deepseek/deepseek-flash-latest`, `~z-ai/glm-flash-latest` and `stealth/space-bunny-alpha` have not been measured as light reviewers. To judge it, run `health` on a real run and compare:
+
+- `metrics.reviews.light` with `metrics.reviews.total`, and the `reason` of each `review-effort` event whose effort is `full`. Jev answered `light` at confidence 0.79 for a pure function of 19 lines, below the 0.85 bar; a bar that makes almost every review full is itself a finding.
+- The minutes and output tokens of light and full reviewer calls in `.amaleh/model-speed.jsonl`.
+
+When light reviews are not cheaper on real work, set `lightReviewLines` to `0` in `models.json`, which makes every review full.
+
+**New files in the reviewer's diff have not run on a real model.** See [the review coverage contract](runtime.md#review-coverage-contract). Before the diff held new files, a reviewer of a task that added one file spent about 10 of its 17 tool calls on `ls`, `find` and `grep` to find what had changed. Check the reviewer session of a new-file task: those searches should be gone.
+
+**Reviewer time varies for the same work, and the cause is not known.** The same reviewer model took 12 minutes and then 2.7 minutes to review the same ten-line function in two runs. One comparison of two runs therefore proves nothing about speed; compare medians over several reviews.
+
 ## Reproducible verification
 
 From `amaleh/`, run `bun install --frozen-lockfile`, `bun run check`, `bun run test` and `bun run test:node`. `bun run test` is the suite of record; Bun is the default runtime and Node is the fallback, so `test:node` proves the same files pass there too.
