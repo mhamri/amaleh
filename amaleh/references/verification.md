@@ -36,7 +36,11 @@ Secrets are read from existing credential configuration or environment and are n
 
 ## Reproducible verification
 
-From `amaleh/`, run `bun install --frozen-lockfile`, `bun run check`, `bun run test` and `bun run test:node`. `test:node` runs Node's test runner over the same files, at most half the machine's threads at a time: every file at once pushes the timing-tight tests past their limits.
+From `amaleh/`, run `bun install --frozen-lockfile`, `bun run check`, `bun run test` and `bun run test:node`. `bun run test` is the suite of record; Bun is the default runtime and Node is the fallback, so `test:node` proves the same files pass there too.
+
+### The Node test runner
+
+`test:node` runs Node's test runner over the same files in two passes. The files that do not start Git run first, at most half the machine's threads at a time: every file at once pushes the timing-tight tests past their limits. The files that start Git (any test file whose source names `'git'`) then run one file at a time, because several Git fixtures that clone, commit and merge at once slow each other past their test time limits on Windows. The exit code is a failure when either pass fails.
 
 The offline suite covers routing, lifecycle recovery, parallel ownership, review coverage, context isolation and startup preflight. Latest development check, 2026-09-28: 287 Bun tests and 298 Node tests (including nested cases) passed. Live probes above are historical development observations, not offline-suite requirements or general model-quality claims. Raw development artifacts and review reports are not distributed.
 

@@ -86,10 +86,12 @@ test('the review after a repair continues the first reviewer\'s session and read
 const efforts=async(store:c.Store)=>(await store.load()).events.filter(e=>e.type==='review-effort').map(e=>e.detail as {effort:string;reason:string;changedLines?:number});
 
 test('a small change that Jev judges self-contained gets a light review, and the review of its repair stays light',{timeout:120000},async t=>{
- const {store,calls,work,jevCalls,script}=await fixture(t,{choice:'light',confidence:.95});
+ const {dir,store,calls,work,jevCalls,script}=await fixture(t,{choice:'light',confidence:.95});
  await script([[blocking],[]]);
+ await writeFile(join(dir,'a','new.txt'),'brand new\n');
  await work('first attempt\n');
  await reviewer(store,'a',undefined,['Spec']);
+ assert.match(await readFile(join(dirname(handoffOf((await calls())[0].prompt)),'review-diff.patch'),'utf8'),/a\/new\.txt[\s\S]*\+brand new/,'the diff holds the content of a new file Git does not track yet');
  await c.repair(store,'a');
  await work('repaired\n');
  await reviewer(store,'a',undefined,['Spec']);
@@ -98,8 +100,8 @@ test('a small change that Jev judges self-contained gets a light review, and the
  assert.match(first.prompt,/small, self-contained change.*at most 20 turns/s);
  assert.deepEqual([followUp.continued,followUp.thinking],[true,'low'],'the review of the repair inherits the effort of the first review');
  assert.equal(jevCalls.length,1,'the review of the repair asks Jev nothing');
- assert.deepEqual([jevCalls[0].state.changedLines,jevCalls[0].state.changedFiles],[2,['a/app.txt']]);
- assert.deepEqual((await efforts(store)).map(e=>[e.effort,e.changedLines]),[['light',2]]);
+ assert.deepEqual([jevCalls[0].state.changedLines,jevCalls[0].state.changedFiles],[3,['a/app.txt','a/new.txt']]);
+ assert.deepEqual((await efforts(store)).map(e=>[e.effort,e.changedLines]),[['light',3]]);
  const health=await processHealth(store);
  if(!health.available)throw new Error(health.reason);
  assert.deepEqual([(health.metrics.reviews as any).light,(health.metrics.reviews as any).ofRepairOnly],[2,1]);

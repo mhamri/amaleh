@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { readdir } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { availableParallelism } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
@@ -16,15 +16,27 @@ if (files.length === 0) {
   process.exit(1);
 }
 
-const code = await new Promise((done, fail) => {
-  const child = spawn(process.execPath, ['--test', `--test-concurrency=${Math.max(1, Math.floor(availableParallelism() / 2))}`, ...files], {
-    cwd: skillDir,
-    stdio: 'inherit',
-    shell: false,
-    windowsHide: true,
-  });
-  child.on('error', fail);
-  child.on('close', done);
-});
+const spawnsGit = async (file) => /['"]git['"]/.test(await readFile(new URL(`../${file}`, import.meta.url), 'utf8'));
+const gitFiles = [];
+const otherFiles = [];
+for (const file of files) ((await spawnsGit(file)) ? gitFiles : otherFiles).push(file);
 
-process.exit(code ?? 1);
+const run = (concurrency, batch) =>
+  batch.length === 0
+    ? 0
+    : new Promise((done, fail) => {
+        const child = spawn(process.execPath, ['--test', `--test-concurrency=${concurrency}`, ...batch], {
+          cwd: skillDir,
+          stdio: 'inherit',
+          shell: false,
+          windowsHide: true,
+        });
+        child.on('error', fail);
+        child.on('close', (code) => done(code ?? 1));
+      });
+
+// See references/verification.md#the-node-test-runner
+const parallelCode = await run(Math.max(1, Math.floor(availableParallelism() / 2)), otherFiles);
+const serialCode = await run(1, gitFiles);
+
+process.exit(parallelCode || serialCode);

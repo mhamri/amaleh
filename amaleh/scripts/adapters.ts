@@ -287,9 +287,10 @@ export async function taskDiff(mainWorkspace:string,workspace:string){
  const main=(await git(['rev-parse','HEAD'],mainWorkspace))?.trim();
  const base=(main&&(await git(['merge-base','HEAD',main],workspace))?.trim())||(await git(['rev-parse','HEAD'],workspace))?.trim();
  if(!base)return undefined;
- const [stat,patch,names,untracked]=await Promise.all([git(['diff','--relative','--stat',base],workspace),git(['diff','--relative',base],workspace),git(['diff','--relative','--name-only',base],workspace),git(['ls-files','--others','--exclude-standard'],workspace)]);
+ const tree=await snapshotTree(workspace),target=tree?[base,tree]:[base];
+ const [stat,patch,names,untracked]=await Promise.all([git(['diff','--relative','--stat',...target],workspace),git(['diff','--relative',...target],workspace),git(['diff','--relative','--name-only',base],workspace),git(['ls-files','--others','--exclude-standard'],workspace)]);
  if(patch===undefined)return undefined;
- return {base,stat:stat?.trim()??'',paths:(names??'').split(/\r?\n/).filter(Boolean),untracked:(untracked??'').split(/\r?\n/).filter(Boolean),patch:patch.length>diffLimit?patch.slice(0,diffLimit)+`\n[diff truncated at ${diffLimit} characters; read the remaining changed files named in stat directly]`:patch};
+ return {base,holdsNewFiles:!!tree,stat:stat?.trim()??'',paths:(names??'').split(/\r?\n/).filter(Boolean),untracked:(untracked??'').split(/\r?\n/).filter(Boolean),patch:patch.length>diffLimit?patch.slice(0,diffLimit)+`\n[diff truncated at ${diffLimit} characters; read the remaining changed files named in stat directly]`:patch};
 }
 // See references/runtime.md#worker-failover
 export async function trackedContent(workspace:string){
@@ -318,7 +319,7 @@ export async function reviewPacket(store:Store,id:string,lenses:string[]=[],chan
   decisions:s.decisions.filter(d=>d.purpose==='requirement'&&d.choice&&context.decisions.some(ref=>ref.id===d.id)).map(d=>({id:d.id,question:d.question,choice:d.choice,answer:d.criteria[d.choice!]})),
   dependencies:s.tasks.filter(d=>('dependencies' in context && context.dependencies.some(ref=>ref.id===d.id))).map(d=>({id:d.id,goal:d.goal,criteria:d.criteria,workspace:d.workspace,integrated:d.integrated})),
   inspection:{standards:'Read applicable repository AGENTS.md and existing conventions. Context files are not automatically injected.',
-   scope:changes?`The task's changes against ${changes.base} are in changes.patchFile, with a file summary in changes.stat and new files in changes.untracked. Start from that diff. Read other files only to trace callers and consumers of what changed, or to check a criterion the diff alone cannot show.`:'No Git diff is available for this workspace. Trace changed behavior to its callers and consumers; locate trustworthy scope evidence or mark the relevant boundary unreviewed.',
+   scope:changes?`The task's changes against ${changes.base} are in changes.patchFile, with a file summary in changes.stat. The diff holds the full content of every new file; changes.untracked names the new files Git does not track yet. Start from that diff. Read other files only to trace callers and consumers of what changed, or to check a criterion the diff alone cannot show.`:'No Git diff is available for this workspace. Trace changed behavior to its callers and consumers; locate trustworthy scope evidence or mark the relevant boundary unreviewed.',
    unstable:'A check that carries unstable failed while other checks ran on the same machine, then passed when it ran alone on the same content; failedOutput is the end of the failed run. Judge from it whether this task\'s changes cause that failure, for example a race, a shared file or port, or a timing dependency the change added. If they do, file a blocking regression. A timeout in code this task did not change is machine load, not a defect of this task.',
    probes:'Read registered command receipts via artifactDirectory. You cannot execute tests yourself, but a registered check whose receipt carries exit code 0 at the task fingerprint below did execute and did pass: that receipt is executed evidence, so cite it as covered rather than marking the obligation unreviewed. A nonzero or fingerprint-mismatched receipt is not evidence. Reserve unreviewed for behaviour no receipt covers, and name the exact host probe you need.'}};
 }
@@ -368,7 +369,8 @@ const lightReviewNote='This is a small, self-contained change, so review it in p
 async function changedSize(workspace:string,diff:NonNullable<Awaited<ReturnType<typeof taskDiff>>>){
  if(diff.patch.length>=diffLimit)return undefined;
  let lines=diff.patch.split('\n').filter(l=>/^[+-]/.test(l)&&!/^(\+\+\+|---) /.test(l)).length;
- for(const path of diff.untracked){
+ if(/^Binary files /m.test(diff.patch))return undefined;
+ for(const path of diff.holdsNewFiles?[]:diff.untracked){
   const content=await readFile(join(workspace,path)).catch(()=>undefined);
   if(!content||content.includes(0))return undefined;
   lines+=content.toString('utf8').split('\n').length;
