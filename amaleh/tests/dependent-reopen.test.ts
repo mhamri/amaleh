@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as c from '../scripts/core.ts';
 import { delegate } from '../scripts/delegate.ts';
-import { fixtureClaim, clearCut } from './execution-fixture.ts';
+import { fixtureClaim, clearCut, noJev } from './execution-fixture.ts';
 
 const task=(id:string,deps:string[]=[]):c.TaskInput=>({
  id,title:id,goal:'Correct observable behavior',phase:'one',deps,resources:[id],criteria:['correct result'],kind:'code',
@@ -55,12 +55,12 @@ test('a dependent waiting on its upstream is not verified early, and is verified
  let workers=0;
  const noWorker=(async()=>{workers++;throw new Error('a kept output must not start a worker');}) as any;
  const reviewer=(async(s:c.Store,id:string)=>{await review(s,dir,id);return {findings:[]};}) as any;
- const early=await delegate(store,'down',{},{runWorker:noWorker,runReviewer:reviewer});
+ const early=await delegate(store,'down',{},{runWorker:noWorker,runReviewer:reviewer,fetcher:noJev});
  assert.equal(early.outcome,'route-pending');
  assert.deepEqual((early.route as {tasks:string[]}).tasks,['up']);
  assert.equal(c.taskOf(await store.load(),'down').status,'review');
  await deliver(store,dir,'up');
- const verified=await delegate(store,'down',{},{runWorker:noWorker,runReviewer:reviewer});
+ const verified=await delegate(store,'down',{},{runWorker:noWorker,runReviewer:reviewer,fetcher:noJev});
  assert.equal(verified.outcome,'accepted',String(verified.reason??''));
  assert.equal(workers,0);
  assert.ok(verified.trail.some(s=>s.stage==='resume-verification'));
@@ -102,13 +102,13 @@ test('a kept dependent whose checkout lacks the integrated upstream commit is no
  let workers=0;
  const noWorker=(async()=>{workers++;throw new Error('a kept output must not start a worker');}) as any;
  const reviewer=(async(s:c.Store,id:string)=>{await review(s,down,id);return {findings:[]};}) as any;
- const stale=await delegate(store,'down',{},{runWorker:noWorker,runReviewer:reviewer});
+ const stale=await delegate(store,'down',{},{runWorker:noWorker,runReviewer:reviewer,fetcher:noJev});
  assert.equal(stale.outcome,'escalated');
  assert.equal(stale.stage,'refresh-checkout');
  assert.match(String(stale.reason),/does not contain the run's integrated commit .* Merge the run branch into that checkout/);
  assert.equal((await c.next(store)).action,'refresh-checkout');
  git(down,['merge','--no-edit',git(main,['rev-parse','--abbrev-ref','HEAD']).trim()]);
- const verified=await delegate(store,'down',{},{runWorker:noWorker,runReviewer:reviewer});
+ const verified=await delegate(store,'down',{},{runWorker:noWorker,runReviewer:reviewer,fetcher:noJev});
  assert.equal(verified.outcome,'accepted',String(verified.reason??''));
  assert.equal(workers,0);
 });

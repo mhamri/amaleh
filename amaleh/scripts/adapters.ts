@@ -1,11 +1,12 @@
-import { readFile, writeFile, mkdir, access, realpath, lstat, readlink } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, access, realpath, lstat, readlink, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { join, delimiter, dirname, basename, isAbsolute, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { homedir } from 'node:os';
-import { spawn } from 'node:child_process';
+import { homedir, tmpdir } from 'node:os';
+import { spawn, execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { invariant, execute, Store, event, claim, result, review, packet, fingerprint, hash, taskOf, family, acquireActivity, releaseActivity, activitySpawned, reviewObligations, reopenReasons, unstableChecks } from './core.ts';
-import type { Decision, Command, Guidance, Run } from './core.ts';
+import { invariant, execute, Store, event, claim, result, review, packet, fingerprint, hash, taskOf, family, acquireActivity, releaseActivity, activitySpawned, reviewObligations, reopenReasons, unstableChecks, handedFindings } from './core.ts';
+import type { Decision, Command, Guidance, Run, Finding } from './core.ts';
 import { selectModel, consumeRoute } from './routing.ts';
 import type { RoutingRequest } from './routing.ts';
 import { trace, registerSecret, sanitize, recordSpeed } from './telemetry.ts';
@@ -45,7 +46,7 @@ export async function requestJson(url:string,body?:unknown,fetcher:typeof fetch=
  throw new Error('OpenRouter request failed');
  }catch(error){await telemetry.end('failed',{message:(error as Error).message});throw error;}
 }
-function choiceAnswerFor(raw:any,key:string,criteria:Record<string,string>,threshold=.7){const a=raw?.answers?.[key];invariant(a?.type==='choice'&&typeof a.choice==='string'&&Object.hasOwn(criteria,a.choice),'Invalid Jev choice');invariant(Number.isFinite(a.confidence)&&a.confidence>=0&&a.confidence<=1,'Invalid Jev confidence');invariant(a.probabilities&&Object.keys(a.probabilities).length===Object.keys(criteria).length&&Object.keys(criteria).every(k=>Number.isFinite(a.probabilities[k])&&a.probabilities[k]>=0&&a.probabilities[k]<=1),'Invalid Jev probabilities');invariant(Math.abs(Object.values(a.probabilities as Record<string,number>).reduce((a,b)=>a+b,0)-1)<.02,'Invalid Jev probability sum');return {choice:a.confidence>=threshold?a.choice:undefined,confidence:a.confidence,source:String(raw.model??'OpenRouter Jev')};}
+export function choiceAnswerFor(raw:any,key:string,criteria:Record<string,string>,threshold=.7){const a=raw?.answers?.[key];invariant(a?.type==='choice'&&typeof a.choice==='string'&&Object.hasOwn(criteria,a.choice),'Invalid Jev choice');invariant(Number.isFinite(a.confidence)&&a.confidence>=0&&a.confidence<=1,'Invalid Jev confidence');invariant(a.probabilities&&Object.keys(a.probabilities).length===Object.keys(criteria).length&&Object.keys(criteria).every(k=>Number.isFinite(a.probabilities[k])&&a.probabilities[k]>=0&&a.probabilities[k]<=1),'Invalid Jev probabilities');invariant(Math.abs(Object.values(a.probabilities as Record<string,number>).reduce((a,b)=>a+b,0)-1)<.02,'Invalid Jev probability sum');return {choice:a.confidence>=threshold?a.choice:undefined,confidence:a.confidence,source:String(raw.model??'OpenRouter Jev')};}
 export function choiceAnswer(raw:any,criteria:Record<string,string>,threshold=.7){return choiceAnswerFor(raw,'selection',criteria,threshold);}
 // One HTTP round trip settles many independent questions; use instead of repeated decide calls.
 export async function decideBatch(store:Store,input:{decisions:Omit<Decision,'revision'>[]},fetcher?:typeof fetch){
@@ -103,7 +104,7 @@ export class CallStopped extends Error{readonly stage:string;constructor(stage:s
 export const resolveWrites=(workspace:string,paths:(string|undefined)[])=>{const root=resolve(workspace),writes:string[]=[],outside:string[]=[];for(const p of paths){if(typeof p!=='string'||!p.trim())continue;const full=resolve(root,p);writes.push(full);if(escapedTarget(root,p))outside.push(full);}return {paths:writes,outside};};
 type CallUsage={at:string;ms:number;outputTokens:number};
 const recordCallSpeed=(speedDir:string,model:string,role:'worker'|'reviewer',usage:CallUsage,failed=false)=>recordSpeed(speedDir,{...usage,model,role,...(failed?{failed:true}:{})}).catch(()=>{});
-export async function piRun(input:{workspace:string;model:string;prompt:string;sessionDir:string;continueSession?:boolean;readOnly?:boolean;diagnosticRoot?:string;speedDir?:string;speedCarry?:CallUsage;deferSpeedOnSuccess?:boolean;onSpawn?:(pid:number)=>Promise<void>;attempts?:number;idleTimeoutMs?:number;maxTurns?:number}){
+export async function piRun(input:{workspace:string;model:string;prompt:string;sessionDir:string;continueSession?:boolean;readOnly?:boolean;diagnosticRoot?:string;speedDir?:string;speedCarry?:CallUsage;deferSpeedOnSuccess?:boolean;onSpawn?:(pid:number)=>Promise<void>;attempts?:number;idleTimeoutMs?:number;maxTurns?:number;thinking?:'low'}){
  const telemetry=await trace(input.diagnosticRoot,'pi',{model:input.model,workspace:input.workspace,readOnly:!!input.readOnly,sessionDir:input.sessionDir});
  const started=Date.now(),role=input.readOnly?'reviewer' as const:'worker' as const;let outputTokens=0;
  const usageSoFar=():CallUsage=>({at:input.speedCarry?.at??new Date(started).toISOString(),ms:(input.speedCarry?.ms??0)+Date.now()-started,outputTokens:(input.speedCarry?.outputTokens??0)+outputTokens});
@@ -117,7 +118,7 @@ export async function piRun(input:{workspace:string;model:string;prompt:string;s
   const pi=await piCommand();await mkdir(input.sessionDir,{recursive:true});const key=await credential();
   const continuePrompt='Your previous reply was cut off by the output length limit. Continue the task from where you stopped and bring it to completion; end with the final answer exactly as the original prompt asked.';
   const launch=(prompt:string,continueSession:boolean)=>new Promise<{events:any[];text:string;model:string;code:number;stopReason:string;writes:{paths:string[];outside:string[]}}>((done,fail)=>{
-   const args=[...pi.args,'--mode','json','--print',...(continueSession?['--continue']:[]),'--provider','openrouter','--model',input.model,'--session-dir',input.sessionDir,'--no-extensions','--no-skills','--no-prompt-templates','--no-context-files','--offline','--tools',input.readOnly?'read,grep,find,ls':'read,grep,find,ls,edit,write,bash,powershell','--',prompt];
+   const args=[...pi.args,'--mode','json','--print',...(continueSession?['--continue']:[]),'--provider','openrouter','--model',input.model,...(input.thinking?['--thinking',input.thinking]:[]),'--session-dir',input.sessionDir,'--no-extensions','--no-skills','--no-prompt-templates','--no-context-files','--offline','--tools',input.readOnly?'read,grep,find,ls':'read,grep,find,ls,edit,write,bash,powershell','--',prompt];
    // Synchronous spawn errors reject this ordinary Promise executor; no async-executor hang.
    const child=spawn(pi.command,args,{cwd:input.workspace,windowsHide:true,shell:false,stdio:['ignore','pipe','pipe'],env:{...process.env,OPENROUTER_API_KEY:key,PI_TELEMETRY:'0'}});
    let buffer='',stderr='',events:any[]=[],text='',actual='',protocolError='',providerError='',ended=false,turns=0,stopReason='';
@@ -272,6 +273,7 @@ export async function worker(store:Store,id:string,input:{workspace:string;model
  const briefPath=await handoffFile(store,id,'brief.md',[`# Task ${id}\n\n## Your brief\n${brief}`,
   runShare(s,id),
   reopened.length?`## Why this task was reopened\nIt was accepted before and then sent back. Fix each defect below and keep the rest of the accepted work as it is; a fresh reviewer verifies each one against the actual artifact.\n${reopened.map(r=>`- ${r}`).join('\n')}`:'',
+  handedFindings(s,id).length?'## Defects handed to this task\nhandedFindings in the context below lists defects that reviewers of other tasks found in files this task owns. Fix each one that is real, inside task.resources, as part of this work.':'',
   `## Task and run context\n\`\`\`json\n${JSON.stringify(context,null,1)}\n\`\`\``,guidance].filter(Boolean).join('\n\n'));
  const prompt=workerPrompt({workspace,briefPath,artifacts:join(store.root,'artifacts'),runtime,jev:join(scripts,'jev.ts'),question:join(scripts,'question.ts'),runWorkspace:s.workspace,runId,taskId:id,nested:nestedRunCheckout(s.workspace,workspace)});
  await claim(store,id,{...input,workspace,model,pid:process.pid,routeDecisionId:route.decisionId});try{const out=await piRun({...input,workspace,model,prompt,diagnosticRoot:store.root,speedDir:store.amalehDir,sessionDir:join(store.root,'sessions',id),onSpawn:async pid=>{await store.transaction(s=>{taskOf(s,id).owner!.pid=pid;});}});await result(store,id,out);return {artifact:taskOf(await store.load(),id).output};}catch(e){await store.transaction(s=>{const t=taskOf(s,id);t.status='blocked';t.owner=undefined;t.blocked=(e as Error).message;event(s,'worker-blocked',{id,reason:t.blocked});if(transientProvider(t.blocked))event(s,'provider-unavailable',{model,family:family(model),taskId:id,purpose:'worker'});});throw e;}
@@ -285,9 +287,10 @@ export async function taskDiff(mainWorkspace:string,workspace:string){
  const main=(await git(['rev-parse','HEAD'],mainWorkspace))?.trim();
  const base=(main&&(await git(['merge-base','HEAD',main],workspace))?.trim())||(await git(['rev-parse','HEAD'],workspace))?.trim();
  if(!base)return undefined;
- const [stat,patch,names,untracked]=await Promise.all([git(['diff','--relative','--stat',base],workspace),git(['diff','--relative',base],workspace),git(['diff','--relative','--name-only',base],workspace),git(['ls-files','--others','--exclude-standard'],workspace)]);
+ const tree=await snapshotTree(workspace),target=tree?[base,tree]:[base];
+ const [stat,patch,names,untracked]=await Promise.all([git(['diff','--relative','--stat',...target],workspace),git(['diff','--relative',...target],workspace),git(['diff','--relative','--name-only',base],workspace),git(['ls-files','--others','--exclude-standard'],workspace)]);
  if(patch===undefined)return undefined;
- return {base,stat:stat?.trim()??'',paths:(names??'').split(/\r?\n/).filter(Boolean),untracked:(untracked??'').split(/\r?\n/).filter(Boolean),patch:patch.length>diffLimit?patch.slice(0,diffLimit)+`\n[diff truncated at ${diffLimit} characters; read the remaining changed files named in stat directly]`:patch};
+ return {base,holdsNewFiles:!!tree,stat:stat?.trim()??'',paths:(names??'').split(/\r?\n/).filter(Boolean),untracked:(untracked??'').split(/\r?\n/).filter(Boolean),patch:patch.length>diffLimit?patch.slice(0,diffLimit)+`\n[diff truncated at ${diffLimit} characters; read the remaining changed files named in stat directly]`:patch};
 }
 // See references/runtime.md#worker-failover
 export async function trackedContent(workspace:string){
@@ -309,13 +312,14 @@ export async function reviewPacket(store:Store,id:string,lenses:string[]=[],chan
  const checks=await Promise.all(t.checks.map(async command=>{const receipt=t.receipts.find(r=>r.id===command.id),unstable=receipt&&unstableChecks(s,id,receipt.fingerprint).filter(u=>u.checkId===command.id).at(-1);
   return {command,receipt,executed:!!receipt,passed:receipt?.code===0,current:receipt?.fingerprint===t.fingerprint,output:receipt?await receiptTail(store,receipt.artifact):undefined,unstable:unstable?{failedOutput:await receiptTail(store,unstable.failed)}:undefined};}));
  return {intent:s.intent,constraints:s.constraints,goal:t.goal,criteria:t.criteria,outcomes:s.criteria,references:references??t.references??[],
+  resources:t.resources,otherTasks:s.tasks.filter(o=>o.id!==t.id).map(o=>({id:o.id,resources:o.resources})),
   workspace:t.workspace,fingerprint:t.workspace?await fingerprint(t.workspace):undefined,lenses,
   obligations:reviewObligations(s,t),artifactDirectory:join(store.root,'artifacts'),
   checks,changes,
   decisions:s.decisions.filter(d=>d.purpose==='requirement'&&d.choice&&context.decisions.some(ref=>ref.id===d.id)).map(d=>({id:d.id,question:d.question,choice:d.choice,answer:d.criteria[d.choice!]})),
   dependencies:s.tasks.filter(d=>('dependencies' in context && context.dependencies.some(ref=>ref.id===d.id))).map(d=>({id:d.id,goal:d.goal,criteria:d.criteria,workspace:d.workspace,integrated:d.integrated})),
   inspection:{standards:'Read applicable repository AGENTS.md and existing conventions. Context files are not automatically injected.',
-   scope:changes?`The task's changes against ${changes.base} are in changes.patchFile, with a file summary in changes.stat and new files in changes.untracked. Start from that diff. Read other files only to trace callers and consumers of what changed, or to check a criterion the diff alone cannot show.`:'No Git diff is available for this workspace. Trace changed behavior to its callers and consumers; locate trustworthy scope evidence or mark the relevant boundary unreviewed.',
+   scope:changes?`The task's changes against ${changes.base} are in changes.patchFile, with a file summary in changes.stat. The diff holds the full content of every new file; changes.untracked names the new files Git does not track yet. Start from that diff. Read other files only to trace callers and consumers of what changed, or to check a criterion the diff alone cannot show.`:'No Git diff is available for this workspace. Trace changed behavior to its callers and consumers; locate trustworthy scope evidence or mark the relevant boundary unreviewed.',
    unstable:'A check that carries unstable failed while other checks ran on the same machine, then passed when it ran alone on the same content; failedOutput is the end of the failed run. Judge from it whether this task\'s changes cause that failure, for example a race, a shared file or port, or a timing dependency the change added. If they do, file a blocking regression. A timeout in code this task did not change is machine load, not a defect of this task.',
    probes:'Read registered command receipts via artifactDirectory. You cannot execute tests yourself, but a registered check whose receipt carries exit code 0 at the task fingerprint below did execute and did pass: that receipt is executed evidence, so cite it as covered rather than marking the obligation unreviewed. A nonzero or fingerprint-mismatched receipt is not evidence. Reserve unreviewed for behaviour no receipt covers, and name the exact host probe you need.'}};
 }
@@ -355,23 +359,92 @@ export function reviewReport(text:string){
  invariant(report,'Reviewer did not return a JSON report object; re-request the exact output shape');
  return report;
 }
-export async function reviewer(store:Store,id:string,model:string|undefined,lenses:string[],routing?:RoutingRequest,references?:string[]){const original=taskOf(await store.load(),id);invariant(original.workspace,'Task workspace missing');const route=await selectModel(store,id,'reviewer',original.workspace,routing);if(route.action!=='launch')return route;invariant(!model||model===route.model,'Explicit reviewer disagrees with recorded route; omit model for automatic selection');model=route.model;const s=await store.load(),t=taskOf(s,id);invariant(t.status==='review'&&t.workspace,'Task not awaiting review');invariant(family(model)!==t.family,'Reviewer must use a different model family');const fp=await fingerprint(t.workspace);invariant(fp===route.scope.content,'Review content changed after routing; route again');
+export type ReviewEffort='light'|'full';
+type ReviewSession={id:string;model:string;sessionDir:string;tree?:string;review:string;followUp?:boolean;effort?:ReviewEffort};
+type EffortDecision={id:string;fingerprint:string;effort:ReviewEffort;reason:string;changedLines?:number;files?:number;confidence?:number};
+const reviewRisk={
+ light:'The change is self-contained: a defect in it cannot lose money or data, weaken authentication or authorization, corrupt stored state, or break a contract that other code or another task relies on',
+ full:'The change touches money, authentication or authorization, stored data or its migration, concurrency, or a contract that other code or another task relies on; or the task contract does not say enough to rule those out'};
+const lightReviewNote='This is a small, self-contained change, so review it in proportion. Read the review packet, the diff, the changed files and the code that directly calls them or that they call; do not explore the rest of the repository. One sentence of evidence for each obligation is enough. The blocking definition and the coverage rules do not change.';
+async function changedSize(workspace:string,diff:NonNullable<Awaited<ReturnType<typeof taskDiff>>>){
+ if(diff.patch.length>=diffLimit)return undefined;
+ let lines=diff.patch.split('\n').filter(l=>/^[+-]/.test(l)&&!/^(\+\+\+|---) /.test(l)).length;
+ if(/^Binary files /m.test(diff.patch))return undefined;
+ for(const path of diff.holdsNewFiles?[]:diff.untracked){
+  const content=await readFile(join(workspace,path)).catch(()=>undefined);
+  if(!content||content.includes(0))return undefined;
+  lines+=content.toString('utf8').split('\n').length;
+ }
+ return {lines,files:diff.paths.length+diff.untracked.length};
+}
+// See references/review.md#review-effort
+async function reviewEffort(store:Store,id:string,fp:string,diff:Awaited<ReturnType<typeof taskDiff>>,fetcher?:typeof fetch):Promise<ReviewEffort>{
+ const s=await store.load(),t=taskOf(s,id);
+ const decided=s.events.findLast(e=>e.type==='review-effort'&&(e.detail as EffortDecision).id===id&&(e.detail as EffortDecision).fingerprint===fp)?.detail as EffortDecision|undefined;
+ if(decided)return decided.effort;
+ const {lightReviewLines}=await loadModelConfig(),size=diff&&await changedSize(t.workspace!,diff);
+ const decide=async():Promise<Omit<EffortDecision,'id'|'fingerprint'>>=>{
+  if(!lightReviewLines)return {effort:'full',reason:'lightReviewLines is 0, so every review is a full review'};
+  if(!size)return {effort:'full',reason:'The size of the change cannot be measured'};
+  const measured={changedLines:size.lines,files:size.files};
+  if(size.lines>lightReviewLines)return {effort:'full',reason:`${size.lines} changed lines exceed lightReviewLines (${lightReviewLines})`,...measured};
+  try{
+   const raw=await requestJson('https://openrouter.ai/api/alpha/decisions',{model:await jevModel(),state:{intent:s.intent,constraints:s.constraints,task:{id:t.id,goal:t.goal,criteria:t.criteria,resources:t.resources,kind:t.kind},changedFiles:[...diff!.paths,...diff!.untracked],changedLines:size.lines,stat:diff!.stat},questions:{risk:{type:'choice',instructions:'Judge what a defect in this change could harm. Choose light only when you are sure.',criteria:reviewRisk}}},fetcher,store.root);
+   const answer=choiceAnswerFor(raw,'risk',reviewRisk,.85);
+   return answer.choice==='light'?{effort:'light',reason:'A small change that Jev judged self-contained',confidence:answer.confidence,...measured}:{effort:'full',reason:answer.choice==='full'?'Jev judged the change risky':'Jev was not sure the change is self-contained',confidence:answer.confidence,...measured};
+  }catch(error){return {effort:'full',reason:`Jev gave no usable answer: ${(error as Error).message}`,...measured};}
+ };
+ const decision=await decide();
+ await store.transaction(s=>event(s,'review-effort',{id,fingerprint:fp,...decision} satisfies EffortDecision));
+ return decision.effort;
+}
+type SettledFinding={verdict:string;owner?:string;finding:{id:string;location:string;scenario:string}};
+type PriorReview=ReviewSession&{tree:string;settled:SettledFinding[];open:Finding[]};
+// See references/review.md#the-review-after-a-repair
+async function snapshotTree(workspace:string){
+ const index=join(tmpdir(),`amaleh-index-${randomUUID()}`),env={...process.env,GIT_INDEX_FILE:index};
+ const run=(args:string[])=>new Promise<string|undefined>(done=>execFile('git',args,{cwd:workspace,env,windowsHide:true,maxBuffer:104857600},(error,stdout)=>done(error?undefined:String(stdout).trim())));
+ try{return await run(['read-tree','HEAD'])!==undefined&&await run(['add','-A','.'])!==undefined?await run(['write-tree'])||undefined:undefined;}
+ finally{await rm(index,{force:true}).catch(()=>{});}
+}
+async function reviewedBefore(store:Store,id:string,routing?:RoutingRequest):Promise<PriorReview|undefined>{
+ const s=await store.load(),at=s.events.findLastIndex(e=>e.type==='review-session'&&(e.detail as {id?:string}).id===id);
+ if(at<0)return undefined;
+ const session=s.events[at].detail as ReviewSession,later=s.events.slice(at+1);
+ const about=(e:Run['events'][number])=>e.detail as {id?:string;affected?:string[]};
+ const contractMoved=later.some(e=>['contract-amended','review-check-added'].includes(e.type)&&about(e).id===id||e.type==='invalidated'&&(about(e).affected??[about(e).id]).includes(id));
+ const repaired=later.some(e=>e.type==='repair'&&about(e).id===id);
+ if(contractMoved||!repaired||!session.tree||routing?.excludeFamilies?.includes(family(session.model))||!existsSync(session.sessionDir))return undefined;
+ const settled=later.filter(e=>e.type==='finding-settled'&&about(e).id===id).map(e=>e.detail as SettledFinding);
+ const findings=(JSON.parse(await store.readArtifact(session.review)) as {findings:Finding[]}).findings;
+ return {...session,tree:session.tree,settled,open:findings.filter(f=>f.blocking&&!settled.some(x=>x.finding.id===f.id&&x.finding.location===f.location))};
+}
+const repairReviewBrief=(prior:PriorReview,patchFile:string)=>`# Review of the repair\n\nThe repair diff is in "${patchFile}". It holds every change the author made since your review.\n\n## Blocking findings you filed, to verify\n\`\`\`json\n${JSON.stringify(prior.open.map(f=>({id:f.id,location:f.location,scenario:f.scenario,consequence:f.consequence})),null,1)}\n\`\`\`\n\n## Findings the run settled, which you must not file again\n\`\`\`json\n${JSON.stringify(prior.settled.map(x=>({...x.finding,settledAs:x.verdict,owner:x.owner})),null,1)}\n\`\`\``;
+const repairReviewPrompt=(briefPath:string,maxTurns:number)=>`The author repaired the work after your review. Verify the repair; do not review the whole task again. You have at most ${maxTurns} turns. Read "${briefPath}" in full first. For each blocking finding it lists, read the changed code and decide whether the defect is gone: a defect that is still there stays in findings under its earlier id. Then read the repair diff that file names, and file a new finding only for a blocking defect which that diff introduces. Never file a finding the run settled. ${blockingDefinition}\nThe review packet you read before now holds the receipts of the checks that ran on the repaired work. Return ONLY JSON in the same shape as your first report: report, coverage and findings. Coverage needs exactly one entry for every obligation id of the review packet: repeat your earlier entry unless the repair changes it, and use the status finding only for an obligation whose defect you file now.`;
+export async function reviewer(store:Store,id:string,model:string|undefined,lenses:string[],routing?:RoutingRequest,references?:string[],fetcher?:typeof fetch){const original=taskOf(await store.load(),id);invariant(original.workspace,'Task workspace missing');const prior=await reviewedBefore(store,id,routing);const route=await selectModel(store,id,'reviewer',original.workspace,prior?{...routing,pin:prior.model}:routing);if(route.action!=='launch')return route;invariant(!model||model===route.model,'Explicit reviewer disagrees with recorded route; omit model for automatic selection');model=route.model;const s=await store.load(),t=taskOf(s,id);invariant(t.status==='review'&&t.workspace,'Task not awaiting review');invariant(family(model)!==t.family,'Reviewer must use a different model family');const fp=await fingerprint(t.workspace);invariant(fp===route.scope.content,'Review content changed after routing; route again');
  const diff=await taskDiff(s.workspace,t.workspace);
  const changes=diff&&{base:diff.base,stat:diff.stat,untracked:diff.untracked,patchFile:await handoffFile(store,id,'review-diff.patch',diff.patch)};
  const clean=await reviewPacket(store,id,lenses,changes,references);
  const {reviewerMaxTurns}=await loadModelConfig();
- const prompt=`You are an independent read-only reviewer. You have at most ${reviewerMaxTurns} turns; a reply that arrives later is discarded, so spend them on the diff and the consumers it touches, not on rereading the repository. Inspect actual files and affected consumers. Report only supported reachable defects, not hypothetical requirements. Find every blocking defect you can in one pass; do not omit defects that share a root cause. Keep Spec and Standards coverage distinct. Do not invoke other skills. Return ONLY JSON with report (nonempty string explaining coverage), coverage (array), and findings (array). For EVERY supplied obligation return exactly one coverage entry {id,status,evidence}. Status is covered, finding, unreviewed, or not-applicable. Use covered when you inspected the obligation and found no defect — that is the normal result. Use finding ONLY when you are also filing that defect in the findings array; a finding status with an empty findings array is rejected. Use unreviewed only when you genuinely could not inspect it, naming the exact host probe you need. Evidence must name inspected files/consumers or executed receipt paths and observed results, or the exact missing host probe. This task's own criteria can never be not-applicable: they are what it was asked to deliver. A run outcome may be not-applicable only when no change in this workspace could affect it either way, and the evidence must name the task or component that owns it; otherwise explain this task's contribution or preservation. Other nonapplicability needs a concrete reason. A finding entry remains unresolved until a corrected review. Enumerate reachable failure/recovery exits, protocol boundaries, shared ownership and affected consumers before judging these obligations. Never invent execution evidence or treat no findings as complete coverage. Every finding must be located in a file inside this task's workspace and must describe a defect in the changes under review. The status of other tasks, provider or model availability, coordinator behaviour and run orchestration are outside your scope: never report them as findings, and never let them make an obligation a finding. Judging this task means judging what is in this workspace. Each finding requires id,lens,location,scenario,evidence,consequence,blocking (boolean). Trace every vendor snippet, vendor call and vendor console step the change adds to the file it was copied from, in the workspace or among the packet's references. ${blockingDefinition} Group multiple lenses describing the same root defect into one finding; keep each lens and its evidence in the report. An empty findings array is allowed only after inspection.\nThe task contract, its obligations, the registered checks and their receipts are in "${await handoffFile(store,id,'review-packet.md',`# Review packet for ${id}\n\n\`\`\`json\n${JSON.stringify(clean,null,1)}\n\`\`\``)}". Read that file in full before inspecting anything. It sits outside the workspace: read it, never edit it.`;
+ const tree=await snapshotTree(t.workspace);
+ const repairPatch=prior&&model===prior.model&&tree?await git(['diff','--relative',prior.tree,tree],t.workspace):undefined;
+ const followUp=prior&&repairPatch!==undefined?prior:undefined;
+ const effort=followUp?followUp.effort??'full':await reviewEffort(store,id,fp,diff,fetcher);
+ const maxTurns=effort==='light'?Math.max(5,Math.ceil(reviewerMaxTurns/3)):reviewerMaxTurns;
+ const fullPrompt=`You are an independent read-only reviewer. ${effort==='light'?lightReviewNote+' ':''}You have at most ${maxTurns} turns; a reply that arrives later is discarded, so spend them on the diff and the consumers it touches, not on rereading the repository. Inspect actual files and affected consumers. Report only supported reachable defects, not hypothetical requirements. Find every blocking defect you can in one pass; do not omit defects that share a root cause. Keep Spec and Standards coverage distinct. Do not invoke other skills. Return ONLY JSON with report (nonempty string explaining coverage), coverage (array), and findings (array). For EVERY supplied obligation return exactly one coverage entry {id,status,evidence}. Status is covered, finding, unreviewed, or not-applicable. Use covered when you inspected the obligation and found no defect — that is the normal result. Use finding ONLY when you are also filing that defect in the findings array; a finding status with an empty findings array is rejected. Use unreviewed only when you genuinely could not inspect it, naming the exact host probe you need. Evidence must name inspected files/consumers or executed receipt paths and observed results, or the exact missing host probe. This task's own criteria can never be not-applicable: they are what it was asked to deliver. A run outcome may be not-applicable only when no change in this workspace could affect it either way, and the evidence must name the task or component that owns it; otherwise explain this task's contribution or preservation. Other nonapplicability needs a concrete reason. A finding entry remains unresolved until a corrected review. Enumerate reachable failure/recovery exits, protocol boundaries, shared ownership and affected consumers before judging these obligations. Never invent execution evidence or treat no findings as complete coverage. Every finding must be located in a file inside this task's workspace and must describe a defect in the changes under review. The packet's resources lists the files this task owns, and otherTasks lists the files each other task owns. A defect in a file outside resources that this task's changes did not cause belongs to the owner of that file: file it with blocking false and name the owner in its consequence. A regression that this task's changes cause is this task's defect wherever its symptom shows. The status of other tasks, provider or model availability, coordinator behaviour and run orchestration are outside your scope: never report them as findings, and never let them make an obligation a finding. Judging this task means judging what is in this workspace. Each finding requires id,lens,location,scenario,evidence,consequence,blocking (boolean). Trace every vendor snippet, vendor call and vendor console step the change adds to the file it was copied from, in the workspace or among the packet's references. ${blockingDefinition} Group multiple lenses describing the same root defect into one finding; keep each lens and its evidence in the report. An empty findings array is allowed only after inspection.\nThe task contract, its obligations, the registered checks and their receipts are in "${await handoffFile(store,id,'review-packet.md',`# Review packet for ${id}\n\n\`\`\`json\n${JSON.stringify(clean,null,1)}\n\`\`\``)}". Read that file in full before inspecting anything. It sits outside the workspace: read it, never edit it.`;
+ const prompt=followUp?repairReviewPrompt(await handoffFile(store,id,'repair-review.md',repairReviewBrief(followUp,await handoffFile(store,id,'repair-diff.patch',repairPatch!))),maxTurns):fullPrompt;
  const operation=await acquireActivity(store,id,'review',undefined,async current=>{invariant(fp===await fingerprint(t.workspace!),'Review workspace changed during routing');consumeRoute(current,route);});
  try{
- const sessionDir=join(store.root,'sessions',`${id}-review-${Date.now()}-${randomUUID().slice(0,8)}`);
+ const sessionDir=followUp?.sessionDir??join(store.root,'sessions',`${id}-review-${Date.now()}-${randomUUID().slice(0,8)}`);
  let correction:string|undefined,lastFormatError='',usage:CallUsage|undefined;
  for(let attempt=1;;attempt++){
   // One review is one speed sample: a correction continues the same session and adds to it.
-  const out=await piRun({workspace:t.workspace,model,prompt:correction??prompt,continueSession:correction!==undefined,diagnosticRoot:store.root,speedDir:store.amalehDir,speedCarry:usage,deferSpeedOnSuccess:true,sessionDir,readOnly:true,maxTurns:reviewerMaxTurns,onSpawn:pid=>activitySpawned(store,id,operation,pid)});
+  const out=await piRun({workspace:t.workspace,model,prompt:correction??prompt,continueSession:!!followUp||correction!==undefined,diagnosticRoot:store.root,speedDir:store.amalehDir,speedCarry:usage,deferSpeedOnSuccess:true,sessionDir,readOnly:true,maxTurns,...(effort==='light'?{thinking:'low' as const}:{}),onSpawn:pid=>activitySpawned(store,id,operation,pid)});
   usage=out.usage;
   try{
    const report=reviewReport(out.text);
    await review(store,id,{model,findings:report.findings,coverage:report.coverage,report:report.report,fingerprint:fp});
+   await store.transaction(s=>event(s,'review-session',{id,model,sessionDir,tree,review:taskOf(s,id).review!.artifact,effort,...(followUp?{followUp:true}:{})} satisfies ReviewSession));
    await recordCallSpeed(store.amalehDir,model,'reviewer',usage);
    return {findings:report.findings,artifact:await store.artifact(out)};
   }catch(error){

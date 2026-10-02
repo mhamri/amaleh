@@ -7,7 +7,7 @@ import { loadModelConfig, configPath } from './config.ts';
 import { recentSpeeds, slowModels } from './telemetry.ts';
 import { priceBook, type CatalogPricing, type PriceBook } from './pricing.ts';
 
-export type RoutingRequest = { role?:string; requiredInputs?:string[]; contextTokens?:number; evidence?:string; excludeFamilies?:string[] };
+export type RoutingRequest = { role?:string; requiredInputs?:string[]; contextTokens?:number; evidence?:string; excludeFamilies?:string[]; pin?:string };
 type Purpose = 'worker'|'reviewer';
 type Scope = { taskId:string; purpose:Purpose; workspace:string; request:RoutingRequest; content?:string };
 type Grant = { action:'launch'; model:string; decisionId:string; key:string; scope:Scope };
@@ -37,6 +37,7 @@ export async function selectModel(store:Store,id:string,purpose:Purpose,workspac
  invariant(!request.role||typeof request.role==='string','Invalid routing role');
  invariant(!request.requiredInputs||(Array.isArray(request.requiredInputs)&&request.requiredInputs.every(x=>typeof x==='string')),'Invalid required input modalities');
  invariant(request.contextTokens===undefined||(Number.isInteger(request.contextTokens)&&request.contextTokens>0),'Invalid context requirement');
+ invariant(request.pin===undefined||typeof request.pin==='string'&&!!request.pin.trim(),'Invalid pinned model');
  invariant(request.excludeFamilies===undefined||(Array.isArray(request.excludeFamilies)&&request.excludeFamilies.every(x=>typeof x==='string'&&!!x.trim())),'Invalid excluded model families');
  const s=await store.load(),t=taskOf(s,id);
  invariant(s.status==='active','Run is not active');
@@ -85,6 +86,8 @@ export async function selectModel(store:Store,id:string,purpose:Purpose,workspac
  const brisk=eligible.filter((m:any)=>!slow.some(x=>x.model===m.id));
  const skippedSlow=brisk.length&&brisk.length<eligible.length?slow.filter(x=>eligible.some((m:any)=>m.id===x.model)).map(x=>({model:x.model,averageMinutes:x.averageMinutes,medianMinutes:x.medianMinutes})):[];
  if(skippedSlow.length)eligible=brisk;
+ const pinned=request.pin?eligible.filter((m:any)=>m.id===request.pin):[];
+ if(pinned.length)eligible=pinned;
  if(!eligible.length)return {action:'route-blocked',reason:`No configured model is routable for this ${purpose}. Configured in ${configPath()}: ${listed.join(', ')}.`
   +(absent.length?` Absent from the OpenRouter catalog: ${absent.join(', ')}.`:'')
   +(unfit.length?` Lacking tool support, the required input modalities (${inputs.join(', ')}) or ${request.contextTokens??0} context tokens: ${unfit.join(', ')}.`:'')
