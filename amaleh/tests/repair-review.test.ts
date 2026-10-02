@@ -7,14 +7,16 @@ import {tmpdir} from 'node:os';
 import {dirname,join} from 'node:path';
 import * as c from '../scripts/core.ts';
 import {reviewer} from '../scripts/adapters.ts';
+import {processHealth} from '../scripts/host-diagnostics.ts';
 
 const git=(cwd:string,...args:string[])=>execFileSync('git',['-c','user.email=fixture@example.invalid','-c','user.name=fixture',...args],{cwd,encoding:'utf8'});
 const card=(id:string)=>({id,created:1,context_length:64000,architecture:{input_modalities:['text']},supported_parameters:['tools'],pricing:{prompt:'0.000001',completion:'0.000002'},description:'Synthetic test card'});
 const models={flash:['z-ai/glm-new-flash','deepseek/new-flash','xiaomi/new-flash'],deep:['moonshot/kimi-specialist'],jev:'typesafe/jev-1.13',providerCooldownMs:300000,providerFailovers:3,launchAttempts:3,idleTimeoutMs:900000,slowModelWindowMs:604800000,reviewerMaxTurns:60};
 const blocking={id:'f1',lens:'Spec',location:'a/app.txt',scenario:'charges 11 instead of 10',evidence:'observed expected-versus-actual',consequence:'overcharge',blocking:true};
-type Call={model:string;continued:boolean;sessionDir:string;prompt:string};
+type Call={model:string;continued:boolean;sessionDir:string;prompt:string;thinking?:string};
+type Risk={choice:'light'|'full';confidence:number};
 
-async function fixture(t:any){
+async function fixture(t:any,risk?:Risk){
  const dir=await realpath(await mkdtemp(join(tmpdir(),'amaleh-repair-review-'))),outside=await mkdtemp(join(tmpdir(),'amaleh-repair-review-pi-'));
  t.after(()=>Promise.all([rm(dir,{recursive:true,force:true}),rm(outside,{recursive:true,force:true})]));
  git(dir,'init','-q');await mkdir(join(dir,'a'));await writeFile(join(dir,'a','app.txt'),'original\n');await writeFile(join(dir,'.gitignore'),'/.amaleh/\n');
@@ -25,7 +27,7 @@ async function fixture(t:any){
 import {dirname,join} from 'node:path';
 const argv=process.argv,prompt=argv.at(-1),model=argv[argv.indexOf('--model')+1],sessionDir=argv[argv.indexOf('--session-dir')+1];
 const calls=existsSync(${JSON.stringify(log)})?readFileSync(${JSON.stringify(log)},'utf8').split('\\n').filter(Boolean).length:0;
-appendFileSync(${JSON.stringify(log)},JSON.stringify({model,continued:argv.includes('--continue'),sessionDir,prompt})+'\\n');
+appendFileSync(${JSON.stringify(log)},JSON.stringify({model,continued:argv.includes('--continue'),sessionDir,prompt,thinking:argv.includes('--thinking')?argv[argv.indexOf('--thinking')+1]:undefined})+'\\n');
 const handoff=prompt.match(/"([^"]*\\.md)"/)[1];
 const packet=JSON.parse(readFileSync(join(dirname(handoff),'review-packet.md'),'utf8').match(/\`\`\`json\\n([\\s\\S]*?)\\n\`\`\`/)[1]);
 const script=JSON.parse(readFileSync(${JSON.stringify(script)},'utf8'));
@@ -35,12 +37,18 @@ console.log(JSON.stringify({type:'agent_end'}));`);
  const old={fetch:globalThis.fetch,models:process.env.AMALEH_MODELS,key:process.env.OPENROUTER_API_KEY,entry:process.env.AMALEH_PI_ENTRY,node:process.env.AMALEH_NODE};
  t.after(()=>{globalThis.fetch=old.fetch;for(const [name,value] of [['AMALEH_MODELS',old.models],['OPENROUTER_API_KEY',old.key],['AMALEH_PI_ENTRY',old.entry],['AMALEH_NODE',old.node]] as const)if(value===undefined)delete process.env[name];else process.env[name]=value;});
  process.env.AMALEH_MODELS=join(outside,'models.json');process.env.OPENROUTER_API_KEY='sk-repair-review-fixture-not-real';process.env.AMALEH_PI_ENTRY=entry;process.env.AMALEH_NODE=process.execPath;
- globalThis.fetch=(async()=>Response.json({data:models.flash.map(card)})) as typeof fetch;
+ const jevCalls:any[]=[];
+ globalThis.fetch=(async(url:any,init:any)=>{
+  if(!String(url).endsWith('/decisions')||!risk)return Response.json({data:models.flash.map(card)});
+  jevCalls.push(JSON.parse(init.body));
+  const other=risk.choice==='light'?'full':'light';
+  return Response.json({model:'test/jev',answers:{risk:{type:'choice',choice:risk.choice,confidence:risk.confidence,probabilities:{[risk.choice]:risk.confidence,[other]:1-risk.confidence}}}});
+ }) as typeof fetch;
  const store=await c.start(dir,{shape:clearCut,id:'repair-review',host:{kind:'codex',model:'gpt-6-astra'},intent:'Review only the repair',criteria:['The repair is verified']});
  await c.plan(store,{tasks:[{id:'a',title:'a',goal:'Charge the correct amount',phase:'one',deps:[],resources:['a'],criteria:['correct amount'],checks:[],kind:'code',noProbe:'Test fixture; the review flow is asserted by the test'}],integrationChecks:[]});
  const calls=async():Promise<Call[]>=>(await readFile(log,'utf8')).split('\n').filter(Boolean).map(line=>JSON.parse(line));
  const work=async(content:string)=>{await fixtureClaim(store,'a',{workspace:dir,model:'z-ai/glm-new-flash'});await writeFile(join(dir,'a','app.txt'),content);await c.result(store,'a',{});};
- return {dir,store,calls,work,script:(findings:unknown[][])=>writeFile(script,JSON.stringify(findings))};
+ return {dir,store,calls,work,jevCalls,script:(findings:unknown[][])=>writeFile(script,JSON.stringify(findings))};
 }
 const handoffOf=(prompt:string)=>prompt.match(/"([^"]*\.md)"/)![1];
 
@@ -73,6 +81,54 @@ test('the review after a repair continues the first reviewer\'s session and read
  await c.accept(store,'a');
  assert.equal(c.taskOf(await store.load(),'a').status,'accepted');
  assert.equal(await readFile(join(dir,'a','app.txt'),'utf8'),'repaired\n');
+});
+
+const efforts=async(store:c.Store)=>(await store.load()).events.filter(e=>e.type==='review-effort').map(e=>e.detail as {effort:string;reason:string;changedLines?:number});
+
+test('a small change that Jev judges self-contained gets a light review, and the review of its repair stays light',{timeout:120000},async t=>{
+ const {store,calls,work,jevCalls,script}=await fixture(t,{choice:'light',confidence:.95});
+ await script([[blocking],[]]);
+ await work('first attempt\n');
+ await reviewer(store,'a',undefined,['Spec']);
+ await c.repair(store,'a');
+ await work('repaired\n');
+ await reviewer(store,'a',undefined,['Spec']);
+ const [first,followUp]=await calls();
+ assert.equal(first.thinking,'low');
+ assert.match(first.prompt,/small, self-contained change.*at most 20 turns/s);
+ assert.deepEqual([followUp.continued,followUp.thinking],[true,'low'],'the review of the repair inherits the effort of the first review');
+ assert.equal(jevCalls.length,1,'the review of the repair asks Jev nothing');
+ assert.deepEqual([jevCalls[0].state.changedLines,jevCalls[0].state.changedFiles],[2,['a/app.txt']]);
+ assert.deepEqual((await efforts(store)).map(e=>[e.effort,e.changedLines]),[['light',2]]);
+ const health=await processHealth(store);
+ if(!health.available)throw new Error(health.reason);
+ assert.deepEqual([(health.metrics.reviews as any).light,(health.metrics.reviews as any).ofRepairOnly],[2,1]);
+});
+
+for(const [name,risk] of [['Jev can raise a small change to a full review',{choice:'full',confidence:.95}],['a Jev answer that is not sure gives a full review',{choice:'light',confidence:.6}]] as [string,Risk][])
+ test(name,{timeout:120000},async t=>{
+  const {store,calls,work,script}=await fixture(t,risk);
+  await script([[]]);
+  await work('first attempt\n');
+  await reviewer(store,'a',undefined,['Spec']);
+  const [first]=await calls();
+  assert.equal(first.thinking,undefined);
+  assert.match(first.prompt,/at most 60 turns/);
+  assert.doesNotMatch(first.prompt,/small, self-contained change/);
+  assert.equal((await efforts(store))[0].effort,'full');
+ });
+
+test('a change over the line limit gets a full review without asking Jev, and one decision serves one content',{timeout:120000},async t=>{
+ const {store,calls,work,jevCalls,script}=await fixture(t,{choice:'light',confidence:.95});
+ await script([[]]);
+ await work(Array.from({length:201},(_,i)=>`line ${i}`).join('\n')+'\n');
+ await reviewer(store,'a',undefined,['Spec']);
+ assert.equal((await calls())[0].thinking,undefined);
+ assert.equal(jevCalls.length,0,'size is a fact that code measures; Jev is not asked');
+ assert.match((await efforts(store))[0].reason,/202 changed lines exceed lightReviewLines \(200\)/);
+ await store.transaction(s=>{c.taskOf(s,'a').review=undefined;});
+ await reviewer(store,'a',undefined,['Spec']);
+ assert.equal((await efforts(store)).length,1,'a second review of the same content reuses the decision');
 });
 
 test('a changed contract gets a fresh full review, not a review of the repair',{timeout:120000},async t=>{

@@ -44,7 +44,8 @@ test('each field is validated with a message naming the field and the file',asyn
   [{...valid,workerTimeoutMs:1.5},/workerTimeoutMs in .* must be a whole number/],
   [{...valid,workerTimeoutMs:86400001},/workerTimeoutMs in .* must be a whole number between 0 and 86400000/],
   [{...valid,reviewerTimeoutMs:-1},/reviewerTimeoutMs in .* must be a whole number between 0 and 86400000/],
-  [{...valid,reviewerMaxTurns:2},/reviewerMaxTurns in .* must be a whole number between 5 and 500/]];
+  [{...valid,reviewerMaxTurns:2},/reviewerMaxTurns in .* must be a whole number between 5 and 500/],
+  [{...valid,lightReviewLines:-1},/lightReviewLines in .* must be a whole number between 0 and 100000/]];
  for(const [value,message] of cases){const path=await written(t,value);await assert.rejects(()=>loadModelConfig(path),message);}
 });
 
@@ -52,6 +53,7 @@ test('the optional wall-clock limits default when absent and accept 0 to disable
  const defaults=await loadModelConfig(await written(t,valid));
  assert.equal(defaults.workerTimeoutMs,2700000,'a worker call needs a default wall-clock limit');
  assert.equal(defaults.reviewerTimeoutMs,2400000,'a reviewer call needs a default wall-clock limit');
+ assert.equal(defaults.lightReviewLines,200,'an existing configuration gets the light review limit');
  const explicit=await loadModelConfig(await written(t,{...valid,workerTimeoutMs:120000,reviewerTimeoutMs:0}));
  assert.equal(explicit.workerTimeoutMs,120000);
  assert.equal(explicit.reviewerTimeoutMs,0,'0 disables the reviewer limit');

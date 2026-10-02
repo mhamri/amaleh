@@ -16,5 +16,6 @@
   "workerTimeoutMs": 2700000,
   "reviewerTimeoutMs": 2400000,
   "slowModelWindowMs": 604800000,
-  "reviewerMaxTurns": 60
+  "reviewerMaxTurns": 60,
+  "lightReviewLines": 200
 }

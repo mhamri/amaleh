@@ -78,13 +78,13 @@ export async function processHealth(store:Store):Promise<{available:false;reason
  const deepSpend=costs.byModel.filter(r=>config?.deep.includes(r.key)),deepCost=deepSpend.reduce((total,r)=>total+r.estimatedCost,0),deepShare=estimatedTotal?deepCost/estimatedTotal:0;
  const speeds=windowMs?await recentSpeeds(store.amalehDir,windowMs):modelSpeed(await readSpeedSamples(store.amalehDir)),slow=slowModels(speeds,config?.flash??[]);
  const skipNote=(role:string)=>windowMs?` Routing skips it as ${role} while this holds over the last ${Math.round(windowMs/86400000*10)/10} day(s), unless no other model is eligible.`:' slowModelWindowMs is 0, so routing still uses it.';
- const about=(e:{detail:unknown})=>e.detail as {id?:string;cause?:RepairCause;sameDefect?:boolean;followUp?:boolean;verdict?:string};
+ const about=(e:{detail:unknown})=>e.detail as {id?:string;cause?:RepairCause;sameDefect?:boolean;followUp?:boolean;verdict?:string;effort?:string};
  const repairs=s.events.filter(e=>e.type==='repair'),causes=repairs.map(e=>about(e).cause);
  const repairsByCheck:Record<string,number>={};
  for(const cause of causes)for(const check of cause?.failingChecks??[])repairsByCheck[check]=(repairsByCheck[check]??0)+1;
  const repairCauses={afterFailedCheck:causes.filter(c=>c?.failingChecks.length).length,afterReview:causes.filter(c=>c&&!c.failingChecks.length).length,notRecorded:causes.filter(c=>!c).length,sameDefectAgain:repairs.filter(e=>about(e).sameDefect).length,byCheck:repairsByCheck};
  const settled=s.events.filter(e=>e.type==='finding-settled');
- const reviews={total:s.events.filter(e=>e.type==='review').length,ofRepairOnly:s.events.filter(e=>e.type==='review-session'&&about(e).followUp).length,findingsSettledNotBlocking:settled.filter(e=>about(e).verdict==='not-blocking').length,findingsHandedToOwner:settled.filter(e=>about(e).verdict==='other-owner').length};
+ const reviews={total:s.events.filter(e=>e.type==='review').length,ofRepairOnly:s.events.filter(e=>e.type==='review-session'&&about(e).followUp).length,light:s.events.filter(e=>e.type==='review-session'&&about(e).effort==='light').length,findingsSettledNotBlocking:settled.filter(e=>about(e).verdict==='not-blocking').length,findingsHandedToOwner:settled.filter(e=>about(e).verdict==='other-owner').length};
  const firstPassAccepted=s.tasks.filter(t=>t.status==='accepted'&&!s.events.some(e=>(e.type==='repair'||e.type==='invalidated')&&about(e).id===t.id)).length;
  const span=s.events.map(e=>Date.parse(e.at)).filter(Number.isFinite);
  const mainModel=await hostUsage(s.host,s.workspace,Math.min(...span),s.status==='complete'?Math.max(...span):Date.now());

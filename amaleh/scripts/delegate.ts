@@ -224,7 +224,7 @@ export async function delegate(store:Store,id:string,input:{workspace?:string;br
     const lenses=input.lenses??['Spec','Standards','Correctness','Omissions'];
     const obtainReview=async(excludeFamilies:string[]=[])=>{
      const routing=excludeFamilies.length?{...input.routing,excludeFamilies:[...(input.routing?.excludeFamilies??[]),...excludeFamilies]}:input.routing;
-     const rev=await reviewFailover(store,id,trail,routing,next=>d.runReviewer(store,id,undefined,lenses,next,input.references));
+     const rev=await reviewFailover(store,id,trail,routing,next=>d.runReviewer(store,id,undefined,lenses,next,input.references,d.fetcher));
      const pending=routePending(rev);
      if(pending)return pending;
      trail.push({stage:'review',detail:{findings:(rev as {findings?:unknown[]}).findings?.length??0}});
