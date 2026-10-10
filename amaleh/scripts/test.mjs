@@ -7,10 +7,10 @@ import '../tests/isolated-host.ts';
 const skillDir = fileURLToPath(new URL('../', import.meta.url));
 const testDir = new URL('../tests/', import.meta.url);
 
-const files = (await readdir(testDir))
+const files = (await readdir(testDir, { recursive: true }))
   .filter((name) => name.endsWith('.test.ts'))
-  .sort()
-  .map((name) => `tests/${name}`);
+  .map((name) => `tests/${name.replaceAll('\\', '/')}`)
+  .sort();
 
 if (files.length === 0) {
   console.error('No test files found under amaleh/tests.');

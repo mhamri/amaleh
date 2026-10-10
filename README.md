@@ -95,16 +95,16 @@ cd amaleh
 bun install --frozen-lockfile
 bun run check
 bun run test:node
-bun test tests/*.test.ts
+bun run test
 ```
 
-Tests use local fixtures, not paid model calls. Behaviour that only a real run shows, such as whether a cheap worker builds what a picture shows, is measured by the scenario pool in `amaleh/scenarios/`. This runs one scenario with real, paid models and prints a scorecard:
+Tests use local fixtures, not paid model calls. Behaviour that only a real run shows, such as whether a cheap worker builds what a picture shows, is measured by the scenario pool in `amaleh/tests/scenarios/`. This runs one scenario with real, paid models and prints a scorecard:
 
 ```sh
-bun amaleh/scripts/run.ts bench <scratch-folder> <run-id> <input.json>
+bun amaleh/tests/scenarios/bench.ts <scratch-folder> <run-id> <input.json>
 ```
 
-`bench` writes the scenario under `<scratch-folder>/.amaleh/scenarios/<scenario>/` and keeps the run records beside it. `<input.json>` is `{"host":{"kind":"claude","model":"<your model>"},"scenario":"design-card"}`. See [the scenario pool](amaleh/references/runtime.md#the-scenario-pool).
+`bench.ts` writes the scenario under `<scratch-folder>/.amaleh/scenarios/<scenario>/` and keeps the run records beside it. `<input.json>` is `{"host":{"kind":"claude","model":"<your model>"},"scenario":"design-card"}`. See [the scenario pool](amaleh/references/verification.md#the-scenario-pool).
 
 Build and preview the graph from the repository root:
 

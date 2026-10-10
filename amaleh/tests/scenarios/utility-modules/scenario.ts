@@ -1,4 +1,4 @@
-import type { Scenario } from '../../scripts/scenarios.ts';
+import type { Scenario } from '../bench.ts';
 
 type Unit = { id:string; title:string; goal:string; module:string; criteria:string[]; spec:string };
 

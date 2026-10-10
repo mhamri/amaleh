@@ -1,15 +1,15 @@
 import { mkdir, writeFile, rm, readFile, readdir, realpath } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { start, plan, taskOf, invariant, hash, execute, type TaskInput, type Run } from './core.ts';
-import { delegateBatch } from './delegate.ts';
-import { processHealth } from './host-diagnostics.ts';
-import { diagnostics } from './telemetry.ts';
+import { start, plan, taskOf, invariant, hash, execute, type TaskInput, type Run } from '../../scripts/core.ts';
+import { delegateBatch } from '../../scripts/delegate.ts';
+import { processHealth } from '../../scripts/host-diagnostics.ts';
+import { diagnostics } from '../../scripts/telemetry.ts';
 
 type Health=Extract<Awaited<ReturnType<typeof processHealth>>,{available:true}>;
 export type ScorecardRow={name:string;value:string;pass:boolean};
-export type ScenarioRun={root:string;spaces:Record<string,string>;state:Run;health:Health};
-export type ModelUse={worker:number;reviewer:number;judge:number;unavailable:number};
+type ScenarioRun={root:string;spaces:Record<string,string>;state:Run;health:Health};
+type ModelUse={worker:number;reviewer:number;judge:number;unavailable:number};
 export type Scenario={
  intent:string;
  criteria:string[];
@@ -19,7 +19,7 @@ export type Scenario={
  verdict:(run:ScenarioRun)=>Promise<ScorecardRow[]>;
 };
 
-export const scenariosDir=join(dirname(fileURLToPath(import.meta.url)),'..','scenarios');
+export const scenariosDir=dirname(fileURLToPath(import.meta.url));
 const scenarioName=/^[a-z0-9][a-z0-9-]{0,63}$/;
 const contentHash=(bytes:Buffer)=>hash(bytes.toString('base64'));
 
@@ -76,7 +76,7 @@ async function changedFixtures(root:string,fixtures:Record<string,string>){
  return changed;
 }
 
-export function scorecard(health:Health,tasks:number,accepted:number,green:number,changed:string[],verdict:ScorecardRow[],totals:Record<string,unknown>,elapsedMs:number){
+function scorecard(health:Health,tasks:number,accepted:number,green:number,changed:string[],verdict:ScorecardRow[],totals:Record<string,unknown>,elapsedMs:number){
  const metric=(name:string)=>Number(health.metrics[name]??0);
  const rows=[
   {name:'fixtures left unmodified',value:changed.length?`changed: ${changed.join(', ')}`:'all',pass:changed.length===0},
@@ -91,7 +91,7 @@ export function scorecard(health:Health,tasks:number,accepted:number,green:numbe
  return {passed:rows.filter(r=>r.pass).length,total:rows.length,rows,notes,warnings:health.warnings,cost:totals,elapsedMs};
 }
 
-export async function bench(workspace:string,runId:string,host:{kind:string;model:string},scenarioId:unknown){
+async function bench(workspace:string,runId:string,host:{kind:string;model:string},scenarioId:unknown){
  invariant(host?.kind&&host?.model,'Bench needs the actual host kind and model');
  const scenario=await loadScenario(scenarioId),id=scenarioId as string;
  const {root,tasks,spaces,fixtures}=await prepare(workspace,id,scenario);
@@ -113,7 +113,7 @@ export async function bench(workspace:string,runId:string,host:{kind:string;mode
  return {scenario:id,run:runId,outcomes:outcome.outcomes.map(o=>({task:o.task,outcome:o.outcome,reason:(o as {reason?:string}).reason,stage:(o as {stage?:string}).stage})),models:modelUse(state),...scorecard(health,tasks.length,accepted,green,await changedFixtures(root,fixtures),verdict,totals,elapsedMs)};
 }
 
-export function renderScorecard(result:Awaited<ReturnType<typeof bench>>){
+function renderScorecard(result:Awaited<ReturnType<typeof bench>>){
  const width=Math.max(...result.rows.map(r=>r.name.length));
  const lines=result.rows.map(r=>`${r.pass?'PASS':'FAIL'}  ${r.name.padEnd(width)}  ${r.value}`);
  const unreliable=Object.entries(result.models).filter(([,m])=>m.unavailable>0).sort((a,b)=>b[1].unavailable-a[1].unavailable);
@@ -125,3 +125,12 @@ export function renderScorecard(result:Awaited<ReturnType<typeof bench>>){
   ...(unreliable.length?['','Models that went unavailable:',...unreliable.map(([id,m])=>`- ${id}: ${m.unavailable} provider failure(s) in ${m.worker+m.reviewer} worker and reviewer call(s)`)]:[]),
   ...(result.warnings.length?['','Warnings:',...result.warnings.map(w=>'- '+w)]:[])].join('\n');
 }
+
+async function main([workspace,runId,inputPath]:string[]){
+ invariant(workspace&&runId&&inputPath,'Usage: bun tests/scenarios/bench.ts <workspace> <run-id> <input.json>, with a new run id per measurement');
+ const input=JSON.parse(await readFile(resolve(inputPath),'utf8'));
+ const result=await bench(workspace,runId,input.host,input.scenario);
+ console.error(renderScorecard(result));
+ return result;
+}
+if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url))main(process.argv.slice(2)).then(result=>console.log(JSON.stringify(result,null,2))).catch(e=>{console.error(JSON.stringify({error:e.message}));process.exitCode=1;});

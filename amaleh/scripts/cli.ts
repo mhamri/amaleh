@@ -9,7 +9,6 @@ import { preflight } from './preflight.ts';
 import {recordHostAction,hostActions,exportDiagnostics,processHealth} from './host-diagnostics.ts';
 import {delegate,delegateBatch,validateBatch,waitForDelegations,waitForDrive,type BatchInput} from './delegate.ts';
 import {drive,validateDrive,type DriveInput} from './drive.ts';
-import {bench,renderScorecard} from './scenarios.ts';
 import {runFolders} from './records.ts';
 import { selectModel } from './routing.ts';
 import * as effort from './effort.ts';
@@ -77,7 +76,6 @@ async function executeMain(args=process.argv.slice(2),attached=false){
  if(operation==='start'){const {base,...rest}=input;const check=await verifyStartBase(workspace,base),folder=await ensureWorktreeFolder(workspace,check);const store=await core.start(workspace,{...rest,id:runId});await recordBase(store,'start',check);await recordWorktreeFolder(store,folder);return core.packet(store);}
  if(operation==='worktrees')return listWorktrees(workspace);
  if(operation==='clean-worktrees')return cleanWorktrees(workspace,input);
- if(operation==='bench'){core.invariant(runId,'Bench needs a run id; use a new one per measurement');const result=await bench(workspace,runId,input.host,input.scenario);console.error(renderScorecard(result));return result;}
  core.invariant(runId,'Usage: bun scripts/cli.ts <operation> <workspace> <run-id> [input.json]');
  const store=new core.Store(workspace,runId);
  switch(operation){

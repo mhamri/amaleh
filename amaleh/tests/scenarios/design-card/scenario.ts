@@ -1,12 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Scenario, ScorecardRow } from '../../scripts/scenarios.ts';
-import { screenshot } from '../../scripts/screenshot.ts';
-import { decodePng, hexDistance, measuredPalette, meanDifference } from '../../scripts/png.ts';
-import { describeMeasuredElements, everyElementHolds, measuredElements } from '../../scripts/design.ts';
+import type { Scenario, ScorecardRow } from '../bench.ts';
+import { screenshot } from '../../../scripts/screenshot.ts';
+import { decodePng, hexDistance, measuredPalette, meanDifference } from '../../../scripts/png.ts';
+import { describeMeasuredElements, everyElementHolds, measuredElements } from '../../../scripts/design.ts';
 
-const screenshotScript=fileURLToPath(new URL('../../scripts/screenshot.ts',import.meta.url));
+const screenshotScript=fileURLToPath(new URL('../../../scripts/screenshot.ts',import.meta.url));
 const pictureAt=(root:string)=>join(root,'design','card.png');
 const expectedText=['Monthly revenue','$48,250','+12.4%','Jan','Feb','Mar','Apr','May','Jun'];
 const keyColorShare=0.02;

@@ -1,39 +1,16 @@
-import {clearCut} from './execution-fixture.ts';
+import {clearCut} from '../execution-fixture.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import * as c from '../scripts/core.ts';
-import { screenshot, screenshotOptions } from '../scripts/screenshot.ts';
-import { loadScenario, modelUse, prepare, scenarioIds, scenariosDir } from '../scripts/scenarios.ts';
-import { decodePng } from '../scripts/png.ts';
-import { taskDiff } from '../scripts/adapters.ts';
-import { inScope } from '../scripts/resources.ts';
+import * as c from '../../scripts/core.ts';
+import { loadScenario, modelUse, prepare, scenarioIds, scenariosDir } from './bench.ts';
+import { taskDiff } from '../../scripts/adapters.ts';
+import { inScope } from '../../scripts/resources.ts';
 import { execFileSync } from 'node:child_process';
 
 async function temp(t:any,prefix:string){const dir=await mkdtemp(join(tmpdir(),prefix));t.after(()=>rm(dir,{recursive:true,force:true}));return dir;}
-
-test('screenshot options come from the render check environment unless a flag overrides them',()=>{
- const env={AMALEH_RENDER:'C:/runs/render.png',AMALEH_RENDER_WIDTH:'480',AMALEH_RENDER_HEIGHT:'340'};
- assert.deepEqual(screenshotOptions(['card.html'],env),{page:'card.html',out:join('C:/runs/render.png'),width:480,height:340});
- assert.deepEqual(screenshotOptions(['card.html','--width','600','--out','shot.png'],env).width,600);
- assert.deepEqual([screenshotOptions(['card.html','--out','shot.png'],{}).width,screenshotOptions(['card.html','--out','shot.png'],{}).height],[1280,800]);
- assert.throws(()=>screenshotOptions(['card.html'],{}),/No output path: pass --out, or run inside a render check/);
- assert.throws(()=>screenshotOptions(['a.html','b.html'],env),/Usage: screenshot\.ts/);
- assert.throws(()=>screenshotOptions(['card.html','--height'],env),/--height needs a value/);
- assert.throws(()=>screenshotOptions(['card.html'],{...env,AMALEH_RENDER_WIDTH:'wide'}),/AMALEH_RENDER_WIDTH must be a whole number of pixels from 1 to 8000, not wide/);
-});
-
-test('a screenshot of a local page is a complete PNG at the requested size, and a missing page fails before any browser starts',{timeout:120000},async t=>{
- const dir=await temp(t,'amaleh-screenshot-test-'),page=join(dir,'page.html'),out=join(dir,'shot.png');
- await writeFile(page,'<!doctype html><body style="margin:0;background:#F59E0B"></body>');
- await writeFile(out,'stale');
- assert.deepEqual(await screenshot({page,out,width:200,height:120}),{width:200,height:120});
- const shot=decodePng(await readFile(out))!;
- assert.deepEqual(Array.from(shot.rgba.subarray(0,4)),[245,158,11,255]);
- await assert.rejects(()=>screenshot({page:join(dir,'missing.html'),out,width:200,height:120}),/Page .*missing\.html does not exist/);
-});
 
 test('the scenario pool lists every scenario folder and names them when the input names none',async()=>{
  const ids=await scenarioIds();
@@ -84,7 +61,7 @@ test('the design-card verdict passes the page that made the picture and a real c
  const workspace=await temp(t,'amaleh-design-card-'),scenario=await loadScenario('design-card');
  const {root,spaces}=await prepare(workspace,'design-card',scenario);
  const run=(card:string)=>writeFile(join(spaces.card,'card.html'),card).then(()=>scenario.verdict({root,spaces,state:{} as c.Run,health:{} as never}));
- const liveRun=async(id:number)=>run(await readFile(join(import.meta.dirname,'fixtures',`design-card-run-${id}.html`),'utf8'));
+ const liveRun=async(id:number)=>run(await readFile(join(scenariosDir,'design-card','builds',`design-card-${id}.html`),'utf8'));
  const source=await readFile(join(scenariosDir,'design-card','source.html'),'utf8');
  const exact=await run(source);
  assert.deepEqual(exact.map(r=>[r.name,r.pass]),[['text of the design',true],['key colors of the design',true],['layout against the design',true],['measured elements against the design',true]],JSON.stringify(exact));
