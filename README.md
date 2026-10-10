@@ -74,7 +74,7 @@ bun <skill>/scripts/run.ts health . <run-id>
 - `warnings` — empty means none of the six anti-patterns fired: manual loop stepping, coordinator micro-decisions, no worker-side Jev, recording ceremony, single-vendor fixation, or one task carrying the whole feature.
 - `coordinatorDecisions` — should be at or near zero, and `delegations` should be at least `tasks`.
 
-`health` deliberately stays quiet about chunks that failed and recovered, because a run that stumbles and retries is still a healthy run. To see what the stumbles cost, read the outcomes and the check receipts from the newest revision:
+`health` deliberately stays quiet about chunks that failed and recovered, because a run that stumbles and retries is still a healthy run. To see what the stumbles cost, read the outcomes and the check receipts from the newest revision. A run started in a linked Git worktree keeps its records in the repository's main checkout, so run these commands there:
 
 ```sh
 last=$(ls .amaleh/runs/<run-id>/revision-*.json | tail -1)
