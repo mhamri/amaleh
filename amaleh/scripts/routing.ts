@@ -16,7 +16,7 @@ type Route = {action:'dispatch-blocked';reason:string;tasks:string[]} | Grant | 
 export function scopeKey(s:Run,scope:Scope){
  const t=taskOf(s,scope.taskId);
  return hash(JSON.stringify({scope,host:s.host,intent:s.intent,constraints:s.constraints,pools:s.modelPools,
-  task:{id:t.id,goal:t.goal,criteria:t.criteria,checks:t.checks,kind:t.kind,deps:t.deps,resources:t.resources,status:t.status,cycles:t.cycles,depth:t.depth,author:t.author,output:t.output},
+  task:{id:t.id,goal:t.goal,criteria:t.criteria,checks:t.checks,kind:t.kind,deps:t.deps,resources:t.resources,images:t.images,status:t.status,cycles:t.cycles,depth:t.depth,author:t.author,output:t.output},
   dependencies:t.deps.map(id=>{const d=taskOf(s,id);return [id,d.status,d.integrated];})}));
 }
 const used=(s:Run,id:string)=>s.events.some(e=>e.type==='route-used'&&(e.detail as any).decisionId===id);
@@ -70,7 +70,7 @@ export async function selectModel(store:Store,id:string,purpose:Purpose,workspac
  if(existing)return resolve(existing);
  const pool=request.role?s.modelPools?.find(p=>p.role===request.role):s.modelPools?.find(p=>p.role===purpose);
  invariant(!request.role||pool,`No configured model pool for role ${request.role}`);
- const inputs=[...new Set(['text',...(pool?.requiredInputs??[]),...(request.requiredInputs??[])])];
+ const inputs=[...new Set(['text',...(t.images?.length?['image']:[]),...(pool?.requiredInputs??[]),...(request.requiredInputs??[])])];
  const cards=await catalog(store,fetcher);
  const config=await loadModelConfig();
  const listed=pool?pool.models:purpose==='worker'&&t.depth==='deep'?config.deep:config.flash;

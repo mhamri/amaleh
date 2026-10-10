@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=480, initial-scale=1">
+<title>Monthly revenue</title>
+<style>
+  /* Theme tokens taken from the design picture's measured colors */
+  :root {
+    --color-page: #0F172A;        /* page background */
+    --color-card: #1E293B;        /* card surface */
+    --color-text: #F7FAFB;        /* primary text */
+    --color-series: #38BDF8;      /* chart series (Jan-May) */
+    --color-series-accent: #F59E0B; /* chart accent (Jun) */
+    --color-badge-bg: #14532D;    /* badge surface */
+    --color-badge-text: #4ADE80;  /* badge text */
+    --color-axis: #94A3B8;        /* month labels */
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    background: var(--color-page);
+  }
+
+  body {
+    font-family: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* 480x340 stage, matching the design picture's size */
+  .stage {
+    position: relative;
+    width: 480px;
+    height: 340px;
+    background: var(--color-page);
+    overflow: hidden;
+  }
+
+  /* Card: 400x281 at x46, y30 */
+  .card {
+    position: absolute;
+    left: 46px;
+    top: 30px;
+    width: 400px;
+    height: 281px;
+    background: var(--color-card);
+    border-radius: 14px;
+  }
+
+  /* Title: muted slate gray, matching the design picture (same as month labels) */
+  .title {
+    position: absolute;
+    left: 24px;
+    top: 26px;
+    font-size: 14px;
+    line-height: 16px;
+    font-weight: 400;
+    color: var(--color-axis);
+  }
+
+  /* Value */
+  .value {
+    position: absolute;
+    left: 24px;
+    top: 54px;
+    font-size: 30px;
+    line-height: 36px;
+    font-weight: 700;
+    color: var(--color-text);
+  }
+
+  /* Badge: 63x25 at x216, y92 (page) -> x170, y62 (card) */
+  .badge {
+    position: absolute;
+    left: 170px;
+    top: 62px;
+    width: 63px;
+    height: 25px;
+    background: var(--color-badge-bg);
+    border-radius: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    line-height: 25px;
+    font-weight: 600;
+    color: var(--color-badge-text);
+  }
+
+  /* Bar chart: bars bottom at page y263 -> card y233; labels below */
+  .chart {
+    position: absolute;
+    left: 24px;
+    top: 123px;
+    width: 352px;
+    height: 130px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+  }
+
+  .col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .bar {
+    width: 49px;
+    border-radius: 6px 6px 0 0;
+    background: var(--color-series);
+  }
+
+  .bar.accent { background: var(--color-series-accent); }
+
+  .month {
+    margin-top: 7px;
+    font-size: 12px;
+    line-height: 13px;
+    color: var(--color-axis);
+  }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="card">
+      <div class="title">Monthly revenue</div>
+      <div class="value">$48,250</div>
+      <div class="badge">+12.4%</div>
+      <div class="chart">
+        <div class="col"><div class="bar" style="height:50px"></div><div class="month">Jan</div></div>
+        <div class="col"><div class="bar" style="height:66px"></div><div class="month">Feb</div></div>
+        <div class="col"><div class="bar" style="height:58px"></div><div class="month">Mar</div></div>
+        <div class="col"><div class="bar" style="height:83px"></div><div class="month">Apr</div></div>
+        <div class="col"><div class="bar" style="height:75px"></div><div class="month">May</div></div>
+        <div class="col"><div class="bar accent" style="height:110px"></div><div class="month">Jun</div></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

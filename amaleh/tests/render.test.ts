@@ -107,7 +107,7 @@ test('spend names where each price came from, beside the pi estimate', () => {
 
 test('an operation without a renderer pretty-prints the same JSON detail', () => {
   const value = { score: 1, checks: ['a', 'b'] };
-  assert.equal(renderHuman('bench', value), JSON.stringify(value, null, 2));
+  assert.equal(renderHuman('accept', value), JSON.stringify(value, null, 2));
 });
 
 test('the readable report is opt-in by terminal, and --json forces the machine record', () => {

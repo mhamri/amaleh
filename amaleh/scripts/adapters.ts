@@ -6,12 +6,14 @@ import { homedir, tmpdir } from 'node:os';
 import { spawn, execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { invariant, execute, Store, event, claim, result, review, packet, fingerprint, hash, taskOf, family, acquireActivity, releaseActivity, activitySpawned, reviewObligations, reopenReasons, unstableChecks, handedFindings } from './core.ts';
-import type { Decision, Command, Guidance, Run, Finding } from './core.ts';
+import type { Decision, Command, Guidance, Run, Finding, Task } from './core.ts';
+import { designBriefSection } from './design.ts';
 import { selectModel, consumeRoute } from './routing.ts';
 import type { RoutingRequest } from './routing.ts';
 import { trace, registerSecret, sanitize, recordSpeed } from './telemetry.ts';
 import { jsRuntime } from './runtime.ts';
 import { jevModel, isAlias, loadModelConfig } from './config.ts';
+import { ownProcessGroup, stopProcessGroup, stopStrays } from './strays.ts';
 
 export async function piCommand():Promise<Command>{
  const runtime=await jsRuntime();
@@ -39,7 +41,7 @@ export async function requestJson(url:string,body?:unknown,fetcher:typeof fetch=
   await telemetry.write('attempt',{attempt:attempt+1});
   try{response=await fetcher(url,{method:body?'POST':'GET',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(options.timeoutMs??60000)});}catch(error){await telemetry.write('transport-error',{attempt:attempt+1,message:(error as Error).message});if(attempt===attempts-1)throw new Error('OpenRouter unreachable after bounded retries');await new Promise(r=>setTimeout(r,500*(attempt+1)));continue;}
   await telemetry.write('response',{status:response.status,requestId:response.headers.get('x-request-id')});
-  if(response.ok){const value=await response.json();if(value.usage)await telemetry.write('usage',{inputTokens:value.usage.input_tokens,outputTokens:value.usage.output_tokens,cost:value.usage.cost,costSource:'openrouter-response'});await telemetry.end('success',{model:value.model,provider:value.provider,requestId:value.id});return value;}
+  if(response.ok){const value=await response.json();if(value.usage)await telemetry.write('usage',{inputTokens:value.usage.input_tokens??value.usage.prompt_tokens,outputTokens:value.usage.output_tokens??value.usage.completion_tokens,cost:value.usage.cost,costSource:'openrouter-response'});await telemetry.end('success',{model:value.model,provider:value.provider,requestId:value.id});return value;}
   if((response.status===429||response.status>=500)&&attempt<attempts-1){const seconds=Number(response.headers.get('retry-after'));await new Promise(r=>setTimeout(r,Math.min(10000,Number.isFinite(seconds)&&seconds>0?seconds*1000:1000*(attempt+1))));continue;}
   throw new Error(`OpenRouter HTTP ${response.status}${response.status===402?': credits exhausted; top up and resume':''}`);
  }
@@ -104,7 +106,7 @@ export class CallStopped extends Error{readonly stage:string;constructor(stage:s
 export const resolveWrites=(workspace:string,paths:(string|undefined)[])=>{const root=resolve(workspace),writes:string[]=[],outside:string[]=[];for(const p of paths){if(typeof p!=='string'||!p.trim())continue;const full=resolve(root,p);writes.push(full);if(escapedTarget(root,p))outside.push(full);}return {paths:writes,outside};};
 type CallUsage={at:string;ms:number;outputTokens:number};
 const recordCallSpeed=(speedDir:string,model:string,role:'worker'|'reviewer',usage:CallUsage,failed=false)=>recordSpeed(speedDir,{...usage,model,role,...(failed?{failed:true}:{})}).catch(()=>{});
-export async function piRun(input:{workspace:string;model:string;prompt:string;sessionDir:string;continueSession?:boolean;readOnly?:boolean;diagnosticRoot?:string;speedDir?:string;speedCarry?:CallUsage;deferSpeedOnSuccess?:boolean;onSpawn?:(pid:number)=>Promise<void>;attempts?:number;idleTimeoutMs?:number;maxTurns?:number;thinking?:'low'}){
+export async function piRun(input:{workspace:string;model:string;prompt:string;sessionDir:string;continueSession?:boolean;readOnly?:boolean;attachments?:string[];diagnosticRoot?:string;speedDir?:string;speedCarry?:CallUsage;deferSpeedOnSuccess?:boolean;onSpawn?:(pid:number)=>Promise<void>;attempts?:number;idleTimeoutMs?:number;maxTurns?:number;thinking?:'low'}){
  const telemetry=await trace(input.diagnosticRoot,'pi',{model:input.model,workspace:input.workspace,readOnly:!!input.readOnly,sessionDir:input.sessionDir});
  const started=Date.now(),role=input.readOnly?'reviewer' as const:'worker' as const;let outputTokens=0;
  const usageSoFar=():CallUsage=>({at:input.speedCarry?.at??new Date(started).toISOString(),ms:(input.speedCarry?.ms??0)+Date.now()-started,outputTokens:(input.speedCarry?.outputTokens??0)+outputTokens});
@@ -117,10 +119,11 @@ export async function piRun(input:{workspace:string;model:string;prompt:string;s
   invariant(input.prompt.length<=promptLimit,`Prompt is ${input.prompt.length} characters; the command line cannot carry more than ${promptLimit}. Hand large material to the model as a file path it reads, rather than inlining it.`);
   const pi=await piCommand();await mkdir(input.sessionDir,{recursive:true});const key=await credential();
   const continuePrompt='Your previous reply was cut off by the output length limit. Continue the task from where you stopped and bring it to completion; end with the final answer exactly as the original prompt asked.';
-  const launch=(prompt:string,continueSession:boolean)=>new Promise<{events:any[];text:string;model:string;code:number;stopReason:string;writes:{paths:string[];outside:string[]}}>((done,fail)=>{
-   const args=[...pi.args,'--mode','json','--print',...(continueSession?['--continue']:[]),'--provider','openrouter','--model',input.model,...(input.thinking?['--thinking',input.thinking]:[]),'--session-dir',input.sessionDir,'--no-extensions','--no-skills','--no-prompt-templates','--no-context-files','--offline','--tools',input.readOnly?'read,grep,find,ls':'read,grep,find,ls,edit,write,bash,powershell','--',prompt];
+  const launch=(prompt:string,continueSession:boolean,attachments:string[])=>new Promise<{events:any[];text:string;model:string;code:number;stopReason:string;writes:{paths:string[];outside:string[]}}>((done,fail)=>{
+   const args=[...pi.args,'--mode','json','--print',...(continueSession?['--continue']:[]),'--provider','openrouter','--model',input.model,...(input.thinking?['--thinking',input.thinking]:[]),'--session-dir',input.sessionDir,'--no-extensions','--no-skills','--no-prompt-templates','--no-context-files','--offline','--tools',input.readOnly?'read,grep,find,ls':'read,grep,find,ls,edit,write,bash,powershell','--',...attachments.map(path=>'@'+path),prompt];
    // Synchronous spawn errors reject this ordinary Promise executor; no async-executor hang.
-   const child=spawn(pi.command,args,{cwd:input.workspace,windowsHide:true,shell:false,stdio:['ignore','pipe','pipe'],env:{...process.env,OPENROUTER_API_KEY:key,PI_TELEMETRY:'0'}});
+   const launchedAt=Date.now();
+   const child=spawn(pi.command,args,{cwd:input.workspace,windowsHide:true,shell:false,detached:ownProcessGroup,stdio:['ignore','pipe','pipe'],env:{...process.env,OPENROUTER_API_KEY:key,PI_TELEMETRY:'0'}});
    let buffer='',stderr='',events:any[]=[],text='',actual='',protocolError='',providerError='',ended=false,turns=0,stopReason='';
    const writeArgs:(string|undefined)[]=[];
    let spawnError:Error|undefined;
@@ -183,6 +186,7 @@ export async function piRun(input:{workspace:string;model:string;prompt:string;s
    child.on('error',error=>{spawnError=error;});
    child.on('close',(code,signal)=>{clearInterval(idleTimer);clearTimeout(callTimer);void (async()=>{
     if(buffer.trim())parse(buffer.replace(/\r$/,''));
+    if(!input.readOnly){const strays=await stopStrays({workspace:input.workspace,since:launchedAt,callPid:child.pid}).catch(()=>[]);if(strays.length)record('strays-stopped',{strays});}
     await ownership;await writes;
     await telemetry.write('process-exit',{code,signal,stderr,protocolError,providerError,ended,actualModel:actual});
     if(spawnError)throw spawnError;
@@ -196,10 +200,10 @@ export async function piRun(input:{workspace:string;model:string;prompt:string;s
     done({events,text,model:actual,code:0,stopReason,writes:resolveWrites(input.workspace,writeArgs)});
    })().catch(fail);});
   });
-  const run=async(prompt:string,continueSession:boolean)=>{
+  const run=async(prompt:string,continueSession:boolean,attachments:string[]=[])=>{
    for(let attempt=1;;attempt++){
     await telemetry.write('attempt',{attempt,of:attempts});
-    try{return await launch(prompt,continueSession);}
+    try{return await launch(prompt,continueSession,attachments);}
     catch(error){
      const message=(error as Error).message;
      if(attempt>=attempts||!transientProvider(message))throw error;
@@ -208,7 +212,7 @@ export async function piRun(input:{workspace:string;model:string;prompt:string;s
     }
    }
   };
-  let output=await run(input.prompt,!!input.continueSession);
+  let output=await run(input.prompt,!!input.continueSession,input.attachments);
   if(!input.readOnly&&output.stopReason==='length'){
    await telemetry.write('length-continue',{sessionDir:input.sessionDir});
    output=await run(continuePrompt,true);
@@ -249,7 +253,7 @@ type WorkerPromptInput={workspace:string;briefPath:string;artifacts:string;runti
 export const nestedRunCheckout=(runWorkspace:string,workspace:string)=>{const inside=relative(resolve(runWorkspace),resolve(workspace));return inside!==''&&!inside.startsWith('..')&&!isAbsolute(inside);};
 export const workerPrompt=({workspace,briefPath,artifacts,runtime,jev,question,runWorkspace,runId,taskId,nested}:WorkerPromptInput)=>`You are an Amaleh worker owning this task end to end inside the task workspace "${workspace}". Do not invoke other skills or delegate. Do not add hypothetical features.
 Every edit and write must stay under "${workspace}".
-${nested?`The run's main checkout at "${runWorkspace}" contains this task workspace, so everything in it outside "${workspace}" is read-only: read it, never edit it or copy it in. The brief at "${briefPath}" and the run's artifacts at "${artifacts}" sit outside this workspace as read-only run records kept under that main checkout: read them, never edit them or copy them into your work. The Jev helper at "${jev}" and the contract question helper at "${question}" sit outside it and are read-only: read them, never edit or copy them in.`:`The brief at "${briefPath}", the run's artifacts at "${artifacts}", the Jev helper at "${jev}", the contract question helper at "${question}" and the run's main checkout at "${runWorkspace}" sit outside it and are read-only: read them, never edit or copy them in.`}
+${nested?`The run's main checkout at "${runWorkspace}" contains this task workspace, so everything in it outside "${workspace}" is read-only: read it, never edit it or copy it in. The brief at "${briefPath}" and the run's artifacts at "${artifacts}" sit outside this workspace as read-only run records: read them, never edit them or copy them into your work. The Jev helper at "${jev}" and the contract question helper at "${question}" sit outside it and are read-only: read them, never edit or copy them in.`:`The brief at "${briefPath}", the run's artifacts at "${artifacts}", the Jev helper at "${jev}", the contract question helper at "${question}" and the run's main checkout at "${runWorkspace}" sit outside it and are read-only: read them, never edit or copy them in.`}
 Your brief, the run context and any binding guidance are in "${briefPath}". Read that file in full before you touch anything, and follow it as part of your instructions.
 When you face an uncertain semantic choice inside this task (approach, trade-off, interpretation), consult Jev instead of guessing or stalling: "${runtime}" "${jev}" "${runWorkspace}" ${runId} ${taskId} "<question>" "<optionA>|<optionB>|...". Follow its choice; on low confidence pick the safest option, record why, and continue.
 Jev chooses between options inside the task contract; it cannot repair the contract. When the contract itself is wrong, do not bend the work to fit it: a registered check that cannot pass for a reason outside this task (for example it compares text the platform rewrites), criteria that contradict each other, or vendor code you would have to write without a source. Raise a contract question instead: "${runtime}" "${question}" "${runWorkspace}" ${runId} ${taskId} "<what is wrong, with the evidence you observed>" [check id]. Then stop working on that part and finish your run; the coordinator answers before any more work on this task.
@@ -269,14 +273,17 @@ export async function worker(store:Store,id:string,input:{workspace:string;model
  const scripts=dirname(fileURLToPath(import.meta.url)),runId=basename(store.root),runtime=await jsRuntime();
  const brief=input.brief??'Own this task end to end: satisfy every criterion in task.criteria and make every check in task.checks pass. Stay within task.resources, and do not add hypothetical features.';
  const guidance=await guidanceBlock(t.workspace??input.workspace,{skills:input.skills??t.skills,references:input.references??t.references});
- const reopened=reopenReasons(s,id);
+ const reopened=reopenReasons(s,id),renders=await latestRenders(store,t);
  const briefPath=await handoffFile(store,id,'brief.md',[`# Task ${id}\n\n## Your brief\n${brief}`,
+  await designBriefSection(t.imageCopies??[],t.checks.flatMap(c=>c.render?[{id:c.id,render:c.render}]:[])),
+  renders.length?`## Your last renders\nThe last visual check run wrote these screenshots of your work. Each one is attached after the design pictures. Compare it with its design picture and fix what differs.\n${renders.map(r=>`- ${r.path}: check ${r.check}, design picture ${r.design}, ${r.passed?'passed':'failed'}`).join('\n')}`:'',
   runShare(s,id),
   reopened.length?`## Why this task was reopened\nIt was accepted before and then sent back. Fix each defect below and keep the rest of the accepted work as it is; a fresh reviewer verifies each one against the actual artifact.\n${reopened.map(r=>`- ${r}`).join('\n')}`:'',
   handedFindings(s,id).length?'## Defects handed to this task\nhandedFindings in the context below lists defects that reviewers of other tasks found in files this task owns. Fix each one that is real, inside task.resources, as part of this work.':'',
   `## Task and run context\n\`\`\`json\n${JSON.stringify(context,null,1)}\n\`\`\``,guidance].filter(Boolean).join('\n\n'));
  const prompt=workerPrompt({workspace,briefPath,artifacts:join(store.root,'artifacts'),runtime,jev:join(scripts,'jev.ts'),question:join(scripts,'question.ts'),runWorkspace:s.workspace,runId,taskId:id,nested:nestedRunCheckout(s.workspace,workspace)});
- await claim(store,id,{...input,workspace,model,pid:process.pid,routeDecisionId:route.decisionId});try{const out=await piRun({...input,workspace,model,prompt,diagnosticRoot:store.root,speedDir:store.amalehDir,sessionDir:join(store.root,'sessions',id),onSpawn:async pid=>{await store.transaction(s=>{taskOf(s,id).owner!.pid=pid;});}});await result(store,id,out);return {artifact:taskOf(await store.load(),id).output};}catch(e){await store.transaction(s=>{const t=taskOf(s,id);t.status='blocked';t.owner=undefined;t.blocked=(e as Error).message;event(s,'worker-blocked',{id,reason:t.blocked});if(transientProvider(t.blocked))event(s,'provider-unavailable',{model,family:family(model),taskId:id,purpose:'worker'});});throw e;}
+ const attachments=[...(t.imageCopies??[]).map(i=>i.path),...renders.map(r=>r.path)];
+ await claim(store,id,{...input,workspace,model,pid:process.pid,routeDecisionId:route.decisionId});try{const out=await piRun({...input,workspace,model,prompt,attachments,diagnosticRoot:store.root,speedDir:store.amalehDir,sessionDir:join(store.root,'sessions',id),onSpawn:async pid=>{await store.transaction(s=>{taskOf(s,id).owner!.pid=pid;});}});await result(store,id,out);return {artifact:taskOf(await store.load(),id).output};}catch(e){await store.transaction(s=>{const t=taskOf(s,id);t.status='blocked';t.owner=undefined;t.blocked=(e as Error).message;event(s,'worker-blocked',{id,reason:t.blocked});if(transientProvider(t.blocked))event(s,'provider-unavailable',{model,family:family(model),taskId:id,purpose:'worker'});});throw e;}
 }
 const diffLimit=400000;
 const receiptTailLimit=3000;
@@ -303,29 +310,40 @@ export async function trackedContent(workspace:string){
   return hash([head.trim(),changes,...bodies].join('\n'));
  }catch{return fingerprint(workspace);}
 }
-async function receiptTail(store:Store,artifact:string){
- try{const r=JSON.parse(await store.readArtifact(artifact));const tail=(text:unknown)=>String(text??'').slice(-receiptTailLimit);return {stdout:tail(r.stdout),stderr:tail(r.stderr)};}catch{return undefined;}
+export async function receiptTail(store:Store,artifact:string,limit=receiptTailLimit){
+ try{const r=JSON.parse(await store.readArtifact(artifact));const tail=(text:unknown)=>String(text??'').slice(-limit);return {stdout:tail(r.stdout),stderr:tail(r.stderr)};}catch{return undefined;}
+}
+export async function latestRenders(store:Store,t:Task){
+ const renders:{check:string;design:string;path:string;passed:boolean}[]=[];
+ for(const c of t.checks.filter(c=>c.render)){
+  const receipt=t.receipts.find(r=>r.id===c.id);if(!receipt)continue;
+  try{const r=JSON.parse(await store.readArtifact(receipt.artifact));if(typeof r.render?.path==='string'&&existsSync(r.render.path))renders.push({check:c.id,design:String(r.render.design),path:r.render.path,passed:receipt.code===0});}catch{}
+ }
+ return renders;
 }
 // Factual projection: never forward author output, verdicts or decision rationale.
 export async function reviewPacket(store:Store,id:string,lenses:string[]=[],changes?:{base:string;stat:string;untracked:string[];patchFile:string},references?:string[]){
- const s=await store.load(),t=taskOf(s,id),context=await packet(store,id);
+ const s=await store.load(),t=taskOf(s,id),context=await packet(store,id),renders=await latestRenders(store,t);
+ const design=t.imageCopies?.length?{pictures:t.imageCopies.map(i=>({source:i.source,path:i.path})),renders}:undefined;
  const checks=await Promise.all(t.checks.map(async command=>{const receipt=t.receipts.find(r=>r.id===command.id),unstable=receipt&&unstableChecks(s,id,receipt.fingerprint).filter(u=>u.checkId===command.id).at(-1);
   return {command,receipt,executed:!!receipt,passed:receipt?.code===0,current:receipt?.fingerprint===t.fingerprint,output:receipt?await receiptTail(store,receipt.artifact):undefined,unstable:unstable?{failedOutput:await receiptTail(store,unstable.failed)}:undefined};}));
  return {intent:s.intent,constraints:s.constraints,goal:t.goal,criteria:t.criteria,outcomes:s.criteria,references:references??t.references??[],
   resources:t.resources,otherTasks:s.tasks.filter(o=>o.id!==t.id).map(o=>({id:o.id,resources:o.resources})),
   workspace:t.workspace,fingerprint:t.workspace?await fingerprint(t.workspace):undefined,lenses,
   obligations:reviewObligations(s,t),artifactDirectory:join(store.root,'artifacts'),
-  checks,changes,
+  checks,changes,design,
   decisions:s.decisions.filter(d=>d.purpose==='requirement'&&d.choice&&context.decisions.some(ref=>ref.id===d.id)).map(d=>({id:d.id,question:d.question,choice:d.choice,answer:d.criteria[d.choice!]})),
   dependencies:s.tasks.filter(d=>('dependencies' in context && context.dependencies.some(ref=>ref.id===d.id))).map(d=>({id:d.id,goal:d.goal,criteria:d.criteria,workspace:d.workspace,integrated:d.integrated})),
   inspection:{standards:'Read applicable repository AGENTS.md and existing conventions. Context files are not automatically injected.',
    scope:changes?`The task's changes against ${changes.base} are in changes.patchFile, with a file summary in changes.stat. The diff holds the full content of every new file; changes.untracked names the new files Git does not track yet. Start from that diff. Read other files only to trace callers and consumers of what changed, or to check a criterion the diff alone cannot show.`:'No Git diff is available for this workspace. Trace changed behavior to its callers and consumers; locate trustworthy scope evidence or mark the relevant boundary unreviewed.',
    unstable:'A check that carries unstable failed while other checks ran on the same machine, then passed when it ran alone on the same content; failedOutput is the end of the failed run. Judge from it whether this task\'s changes cause that failure, for example a race, a shared file or port, or a timing dependency the change added. If they do, file a blocking regression. A timeout in code this task did not change is machine load, not a defect of this task.',
-   probes:'Read registered command receipts via artifactDirectory. You cannot execute tests yourself, but a registered check whose receipt carries exit code 0 at the task fingerprint below did execute and did pass: that receipt is executed evidence, so cite it as covered rather than marking the obligation unreviewed. A nonzero or fingerprint-mismatched receipt is not evidence. Reserve unreviewed for behaviour no receipt covers, and name the exact host probe you need.'}};
+   probes:'Read registered command receipts via artifactDirectory. You cannot execute tests yourself, but a registered check whose receipt carries exit code 0 at the task fingerprint below did execute and did pass: that receipt is executed evidence, so cite it as covered rather than marking the obligation unreviewed. A nonzero or fingerprint-mismatched receipt is not evidence. Reserve unreviewed for behaviour no receipt covers, and name the exact host probe you need.',
+   ...(design?{design:'design.pictures are the approved design pictures and design.renders are the latest screenshots of this work that the visual checks took. All of them are attached to your prompt: first the pictures, then the renders, in the listed order. For each design obligation, look at the render beside its picture yourself. A passing visual check receipt is evidence, but it does not replace your own comparison. A missing render, or a visible difference in layout, content, color or proportion, is a failed task criterion.'}:{})}};
 }
 // Killing pi alone leaves a hung grandchild running, holding the pipe open, so
 // the close event never arrives. Windows needs the whole tree taken down.
 export function killTree(child:{pid?:number;kill:(signal?:NodeJS.Signals)=>boolean}){
+ if(child.pid&&ownProcessGroup&&stopProcessGroup(child.pid))return;
  if(!child.pid||process.platform!=='win32'){child.kill('SIGKILL');return;}
  const killer=spawn('taskkill',['/pid',String(child.pid),'/T','/F'],{windowsHide:true,shell:false,stdio:'ignore'});
  killer.on('error',()=>{child.kill('SIGKILL');});
@@ -432,14 +450,16 @@ export async function reviewer(store:Store,id:string,model:string|undefined,lens
  const effort=followUp?followUp.effort??'full':await reviewEffort(store,id,fp,diff,fetcher);
  const maxTurns=effort==='light'?Math.max(5,Math.ceil(reviewerMaxTurns/3)):reviewerMaxTurns;
  const fullPrompt=`You are an independent read-only reviewer. ${effort==='light'?lightReviewNote+' ':''}You have at most ${maxTurns} turns; a reply that arrives later is discarded, so spend them on the diff and the consumers it touches, not on rereading the repository. Inspect actual files and affected consumers. Report only supported reachable defects, not hypothetical requirements. Find every blocking defect you can in one pass; do not omit defects that share a root cause. Keep Spec and Standards coverage distinct. Do not invoke other skills. Return ONLY JSON with report (nonempty string explaining coverage), coverage (array), and findings (array). For EVERY supplied obligation return exactly one coverage entry {id,status,evidence}. Status is covered, finding, unreviewed, or not-applicable. Use covered when you inspected the obligation and found no defect — that is the normal result. Use finding ONLY when you are also filing that defect in the findings array; a finding status with an empty findings array is rejected. Use unreviewed only when you genuinely could not inspect it, naming the exact host probe you need. Evidence must name inspected files/consumers or executed receipt paths and observed results, or the exact missing host probe. This task's own criteria can never be not-applicable: they are what it was asked to deliver. A run outcome may be not-applicable only when no change in this workspace could affect it either way, and the evidence must name the task or component that owns it; otherwise explain this task's contribution or preservation. Other nonapplicability needs a concrete reason. A finding entry remains unresolved until a corrected review. Enumerate reachable failure/recovery exits, protocol boundaries, shared ownership and affected consumers before judging these obligations. Never invent execution evidence or treat no findings as complete coverage. Every finding must be located in a file inside this task's workspace and must describe a defect in the changes under review. The packet's resources lists the files this task owns, and otherTasks lists the files each other task owns. A defect in a file outside resources that this task's changes did not cause belongs to the owner of that file: file it with blocking false and name the owner in its consequence. A regression that this task's changes cause is this task's defect wherever its symptom shows. The status of other tasks, provider or model availability, coordinator behaviour and run orchestration are outside your scope: never report them as findings, and never let them make an obligation a finding. Judging this task means judging what is in this workspace. Each finding requires id,lens,location,scenario,evidence,consequence,blocking (boolean). Trace every vendor snippet, vendor call and vendor console step the change adds to the file it was copied from, in the workspace or among the packet's references. ${blockingDefinition} Group multiple lenses describing the same root defect into one finding; keep each lens and its evidence in the report. An empty findings array is allowed only after inspection.\nThe task contract, its obligations, the registered checks and their receipts are in "${await handoffFile(store,id,'review-packet.md',`# Review packet for ${id}\n\n\`\`\`json\n${JSON.stringify(clean,null,1)}\n\`\`\``)}". Read that file in full before inspecting anything. It sits outside the workspace: read it, never edit it.`;
- const prompt=followUp?repairReviewPrompt(await handoffFile(store,id,'repair-review.md',repairReviewBrief(followUp,await handoffFile(store,id,'repair-diff.patch',repairPatch!))),maxTurns):fullPrompt;
+ const renderPaths=clean.design?.renders.map(r=>r.path)??[];
+ const attachments=followUp?renderPaths:[...(clean.design?.pictures.map(p=>p.path)??[]),...renderPaths];
+ const prompt=followUp?repairReviewPrompt(await handoffFile(store,id,'repair-review.md',repairReviewBrief(followUp,await handoffFile(store,id,'repair-diff.patch',repairPatch!))),maxTurns)+(renderPaths.length?'\nThe latest renders of the repaired work are attached to this prompt. Compare each one with its design picture again.':''):fullPrompt;
  const operation=await acquireActivity(store,id,'review',undefined,async current=>{invariant(fp===await fingerprint(t.workspace!),'Review workspace changed during routing');consumeRoute(current,route);});
  try{
  const sessionDir=followUp?.sessionDir??join(store.root,'sessions',`${id}-review-${Date.now()}-${randomUUID().slice(0,8)}`);
  let correction:string|undefined,lastFormatError='',usage:CallUsage|undefined;
  for(let attempt=1;;attempt++){
   // One review is one speed sample: a correction continues the same session and adds to it.
-  const out=await piRun({workspace:t.workspace,model,prompt:correction??prompt,continueSession:!!followUp||correction!==undefined,diagnosticRoot:store.root,speedDir:store.amalehDir,speedCarry:usage,deferSpeedOnSuccess:true,sessionDir,readOnly:true,maxTurns,...(effort==='light'?{thinking:'low' as const}:{}),onSpawn:pid=>activitySpawned(store,id,operation,pid)});
+  const out=await piRun({workspace:t.workspace,model,prompt:correction??prompt,continueSession:!!followUp||correction!==undefined,attachments:correction===undefined?attachments:[],diagnosticRoot:store.root,speedDir:store.amalehDir,speedCarry:usage,deferSpeedOnSuccess:true,sessionDir,readOnly:true,maxTurns,...(effort==='light'?{thinking:'low' as const}:{}),onSpawn:pid=>activitySpawned(store,id,operation,pid)});
   usage=out.usage;
   try{
    const report=reviewReport(out.text);

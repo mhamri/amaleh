@@ -11,6 +11,7 @@ How the division of labor works:
 - **Coordinator (expensive model, minimal turns):** clarifies intent, chunks the work, defines acceptance criteria, integrates results. One `delegate` call per chunk; no per-step instructions, no hand-written briefs, no micro-management.
 - **Workers (cheap Flash models via pi/OpenRouter):** own a chunk end to end — implementation, checks, repair cycles. When uncertain, they consult **Jev** directly through a bundled helper instead of escalating to the coordinator.
 - **Reviewer (the other Flash family, read-only):** independently verifies each chunk with structured coverage; findings route back into the worker's repair loop, not to the coordinator.
+- **Design pictures:** for a screen built from an approved picture, the coordinator adds the PNG to the task as `images` and one render check that screenshots the built page. Only image-capable Flash models work on it, the worker and the reviewer both receive the picture, and a visual judge from another family compares the screenshot with the picture. The runtime also measures each solid element of the picture, such as a card or a bar, and each text line with its ink color, in the screenshot, so a squashed, shifted or resized build, or text in the wrong color, fails with exact numbers even when the judge calls it a match. The coordinator writes no design description.
 - **Jev (cheap decision model):** answers bounded either/or questions for workers and the coordinator; TypeScript code — not any model — enforces dependencies, ownership, checks and review coverage.
 - **Routing:** deterministic round-robin across eligible model families seeded by the run's session hash, so work spreads across vendors instead of fixating on one.
 - **Escalation:** only genuine boundaries reach the expensive model — exhausted repair allowances (Flash → Kimi → host), missing evidence, ambiguous intent.
@@ -74,7 +75,7 @@ bun <skill>/scripts/run.ts health . <run-id>
 - `warnings` — empty means none of the six anti-patterns fired: manual loop stepping, coordinator micro-decisions, no worker-side Jev, recording ceremony, single-vendor fixation, or one task carrying the whole feature.
 - `coordinatorDecisions` — should be at or near zero, and `delegations` should be at least `tasks`.
 
-`health` deliberately stays quiet about chunks that failed and recovered, because a run that stumbles and retries is still a healthy run. To see what the stumbles cost, read the outcomes and the check receipts from the newest revision:
+`health` deliberately stays quiet about chunks that failed and recovered, because a run that stumbles and retries is still a healthy run. To see what the stumbles cost, read the outcomes and the check receipts from the newest revision. A run started in a linked Git worktree keeps its records in the repository's main checkout, so run these commands there:
 
 ```sh
 last=$(ls .amaleh/runs/<run-id>/revision-*.json | tail -1)
@@ -94,10 +95,18 @@ cd amaleh
 bun install --frozen-lockfile
 bun run check
 bun run test:node
-bun test tests/*.test.ts
+bun run test
 ```
 
-Tests use local fixtures, not paid model calls. Build and preview the graph from the repository root:
+Tests use local fixtures, not paid model calls. Behaviour that only a real run shows, such as whether a cheap worker builds what a picture shows, is measured by the scenario pool in `amaleh/tests/scenarios/`. This runs one scenario with real, paid models and prints a scorecard:
+
+```sh
+bun amaleh/tests/scenarios/bench.ts <scratch-folder> <run-id> <input.json>
+```
+
+`bench.ts` writes the scenario under `<scratch-folder>/.amaleh/scenarios/<scenario>/` and keeps the run records beside it. `<input.json>` is `{"host":{"kind":"claude","model":"<your model>"},"scenario":"design-card"}`. See [the scenario pool](amaleh/references/verification.md#the-scenario-pool).
+
+Build and preview the graph from the repository root:
 
 ```sh
 bun design/build.ts

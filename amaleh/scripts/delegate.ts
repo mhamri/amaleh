@@ -1,7 +1,7 @@
 // See references/runtime.md (delegate) and references/review.md#the-jev-gate
 import { hostname } from 'node:os';
-import { Store, taskOf, invariant, check, repair, accept, fingerprint, family, scopeCheckId, event, reviewCoverageDebt, openDelegations, next, requireShaped, execute, hostAuthored, scopeQuestion, askedScopePaths, answerScopeQuestion, unmetDependencies, contractQuestions, answerContractQuestions, keptForUpstream, runCommitMissingFromCheckout, refreshCheckoutReason, unstableChecks, jevTaskContext, settleFindings, findingOwner, lastRepairCause, openDrive, type Check, type Task, type Finding, type FindingSettlement, type FindingVerdict } from './core.ts';
-import { worker, reviewer, requestJson, choiceAnswerFor, blockingDefinition, transientProvider, settledProviderFailure, taskDiff, trackedContent, WorkspaceEscape, CallStopped } from './adapters.ts';
+import { Store, taskOf, invariant, check, repair, accept, fingerprint, family, scopeCheckId, event, reviewCoverageDebt, openDelegations, next, requireShaped, passingProbes, hostAuthored, scopeQuestion, askedScopePaths, answerScopeQuestion, unmetDependencies, contractQuestions, answerContractQuestions, keptForUpstream, runCommitMissingFromCheckout, refreshCheckoutReason, unstableChecks, jevTaskContext, settleFindings, findingOwner, lastRepairCause, openDrive, type Task, type Finding, type FindingSettlement, type FindingVerdict } from './core.ts';
+import { worker, reviewer, requestJson, choiceAnswerFor, blockingDefinition, transientProvider, settledProviderFailure, taskDiff, trackedContent, receiptTail, WorkspaceEscape, CallStopped } from './adapters.ts';
 import type { RoutingRequest } from './routing.ts';
 import { jevModel, loadModelConfig } from './config.ts';
 import { inScope, resourceSetsOverlap } from './resources.ts';
@@ -49,17 +49,15 @@ async function repairGate(store:Store,id:string,failing:string[],fetcher?:typeof
  }catch{return undefined;}
 }
 
-async function passingProbes(checks:Check[],workspace:string){
- const passing:string[]=[];
- for(const probe of checks.filter(c=>c.role==='probe')){
-  let code:number;try{code=(await execute(probe,workspace)).code;}catch{code=1;}
-  if(code===0)passing.push(probe.id);
- }
- return passing;
+type FailingOutput={id:string;stdout:string;stderr:string};
+const failingOutputLimit=1500;
+async function failingOutput(store:Store,t:Task,failing:string[]):Promise<FailingOutput[]>{
+ const tails=await Promise.all(failing.filter(id=>id!==scopeCheckId).map(async id=>{const receipt=t.receipts.find(r=>r.id===id);const tail=receipt&&await receiptTail(store,receipt.artifact,failingOutputLimit);return tail?{id,...tail}:undefined;}));
+ return tails.filter((tail):tail is FailingOutput=>!!tail);
 }
-
-const repairBrief=(findings:unknown[],failing:string[],guidance?:{confidence?:number;meaning:string},scope?:string,coordinator?:string)=>
- `Repair this task: verification failed. ${guidance?`Course guidance (Jev, confidence ${guidance.confidence}): ${guidance.meaning}`:'Apply the smallest correct fixes.'}${coordinator?`\nCoordinator guidance for this chunk: ${coordinator}`:''}\nBlocking review findings: ${JSON.stringify(findings)}\nFailing checks: ${JSON.stringify(failing)}${scope?`\nOut-of-scope changed paths (scope check):\n${scope}\nRevert every path outside the task's resources, or redo the work inside them`:''}\nResolve every listed defect, keep the task contract and scope, and do not run checks yourself; verification follows automatically. Consult the Jev helper for uncertain choices as instructed.`;
+const outputBlock=(outputs:FailingOutput[])=>outputs.map(o=>`--- ${o.id} (last ${failingOutputLimit} characters of each stream) ---${o.stdout.trim()?`\nstdout:\n${o.stdout.trim()}`:''}${o.stderr.trim()?`\nstderr:\n${o.stderr.trim()}`:''}`).join('\n');
+const repairBrief=(findings:unknown[],failing:string[],outputs:FailingOutput[],guidance?:{confidence?:number;meaning:string},scope?:string,coordinator?:string)=>
+ `Repair this task: verification failed. ${guidance?`Course guidance (Jev, confidence ${guidance.confidence}): ${guidance.meaning}`:'Apply the smallest correct fixes.'}${coordinator?`\nCoordinator guidance for this chunk: ${coordinator}`:''}\nBlocking review findings: ${JSON.stringify(findings)}\nFailing checks: ${JSON.stringify(failing)}${outputs.length?`\nOutput of the failing checks:\n${outputBlock(outputs)}`:''}${scope?`\nOut-of-scope changed paths (scope check):\n${scope}\nRevert every path outside the task's resources, or redo the work inside them`:''}\nResolve every listed defect, keep the task contract and scope, and do not run checks yourself; verification follows automatically. Consult the Jev helper for uncertain choices as instructed.`;
 
 type ScopeVerdict={ran:boolean;code:number;outOfScope:string[];changedPaths:string[];resources:string[];fingerprint:string;reason?:string};
 export async function scopeVerdict(store:Store,id:string,fingerprint:string,mainWorkspace?:string):Promise<ScopeVerdict>{
@@ -152,7 +150,7 @@ export async function delegate(store:Store,id:string,input:{workspace?:string;br
  if(runCommit)return finish({outcome:'escalated',stage:'refresh-checkout',workspace:t0.workspace,runCommit,reason:refreshCheckoutReason(t0,runCommit)});
  if(!resumeAtVerification&&t0.depth==='host')return finish(hostTakeover(s0.host.model));
  if(t0.status==='ready'&&!t0.output){
-  const passing=await passingProbes(t0.checks,input.workspace??t0.workspace!);
+  const passing=await passingProbes(store,t0,input.workspace??t0.workspace!);
   if(passing.length)return finish({outcome:'refused',passing,reason:`Probe check${passing.length>1?'s':''} ${passing.join(', ')} already pass${passing.length===1?'es':''} on the unchanged checkout; a probe that passes there cannot detect the task defect, so no worker is launched`});
  }
  try{
@@ -177,10 +175,10 @@ export async function delegate(store:Store,id:string,input:{workspace?:string;br
     mutating=[];
     for(const c of t.checks){
      const r=t.receipts.find(r=>r.id===c.id),current=!!r&&r.fingerprint===fp;
-     if(current&&(r.code===0||r.isolated))continue;
+     if(current&&(r.code===0||r.isolated||r.visual==='differs'))continue;
      const shared=current?undefined:await d.runCheck(store,id,c.id);
-     if(shared)trail.push({stage:'check',detail:{check:c.id,code:shared.code,pass}});
-     const alone=shared?.code===0?undefined:await confirmAlone(store,id,c.id,shared??r!,d,trail,pass);
+     if(shared)trail.push({stage:'check',detail:{check:c.id,code:shared.code,pass,...(shared.visual?{visual:shared.visual}:{})}});
+     const alone=shared?.code===0||shared?.visual==='differs'?undefined:await confirmAlone(store,id,c.id,shared??r!,d,trail,pass);
      if(shared?.changed||alone?.changed)mutating.push(c.id);
     }
     s=await store.load();t=taskOf(s,id);
@@ -249,9 +247,10 @@ export async function delegate(store:Store,id:string,input:{workspace?:string;br
    const course=(gate as Gate|undefined)?.course,sameDefect=(gate as Gate|undefined)?.sameDefect===true,reviewFamily=t.review?.family;
    const allowanceSpent=t.cycles-(t.ladderBase??0)>=s.config.flashRepairCycles+s.config.deepRepairCycles;
    const scopeOut=failing.includes(scopeCheckId)?await (async()=>{const r=t.receipts.find(r=>r.id===scopeCheckId)!;try{return (JSON.parse(await store.readArtifact(r.artifact)) as {stdout:string}).stdout;}catch{return undefined;}})():undefined;
+   const outputs=await failingOutput(store,t,failing);
    await repair(store,id,{sameDefect});
    if(taskOf(await store.load(),id).depth==='host')return finish({outcome:'escalated',stage:'repair-exhausted',depth:'host',reason:allowanceSpent?'Persistent repair allowance exhausted; host-depth diagnosis required':'The same defect survived a deep repair, so one more cheap repair would only repeat it; host-depth diagnosis required',findings:blocking,failingChecks:failing});
-   try{out=await workerFailover(store,id,trail,t.workspace!,reviewFamily?{excludeFamilies:[reviewFamily]}:undefined,stalled,routing=>d.runWorker(store,id,{workspace:t.workspace!,brief:repairBrief(blocking,failing,course,scopeOut,input.brief),routing,skills:input.skills,references:input.references}));}
+   try{out=await workerFailover(store,id,trail,t.workspace!,reviewFamily?{excludeFamilies:[reviewFamily]}:undefined,stalled,routing=>d.runWorker(store,id,{workspace:t.workspace!,brief:repairBrief(blocking,failing,outputs,course,scopeOut,input.brief),routing,skills:input.skills,references:input.references}));}
    catch(error){const escaped=escapedPaths(error);if(!escaped)throw error;trail.push({stage:'repair-worker',detail:{workspaceEscape:escaped}});return finish({outcome:'escalated',stage:'workspace-escape',escaped,reason:(error as Error).message});}
    pending=routePending(out);
    if(pending)return finish(pendingOutcome(pending));

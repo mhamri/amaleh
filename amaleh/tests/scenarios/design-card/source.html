@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Revenue card</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { background: #0F172A; font-family: "Segoe UI", Arial, sans-serif; display: flex; align-items: center; justify-content: center; }
+  .card { width: 400px; background: #1E293B; border-radius: 16px; padding: 24px; box-sizing: border-box; }
+  .label { color: #94A3B8; font-size: 14px; margin: 0 0 8px; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .value { color: #F8FAFC; font-size: 36px; font-weight: 700; margin: 0; }
+  .badge { background: #14532D; color: #4ADE80; font-size: 13px; font-weight: 600; padding: 4px 10px; border-radius: 999px; }
+  .bars { display: flex; align-items: flex-end; gap: 12px; height: 110px; margin-top: 24px; }
+  .bar { flex: 1; background: #38BDF8; border-radius: 6px 6px 0 0; }
+  .bar.now { background: #F59E0B; }
+  .months { display: flex; gap: 12px; margin-top: 8px; }
+  .months span { flex: 1; text-align: center; color: #64748B; font-size: 12px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <p class="label">Monthly revenue</p>
+    <div class="row"><p class="value">$48,250</p><span class="badge">+12.4%</span></div>
+    <div class="bars">
+      <div class="bar" style="height: 45%"></div>
+      <div class="bar" style="height: 60%"></div>
+      <div class="bar" style="height: 52%"></div>
+      <div class="bar" style="height: 75%"></div>
+      <div class="bar" style="height: 68%"></div>
+      <div class="bar now" style="height: 100%"></div>
+    </div>
+    <div class="months"><span>Jan</span><span>Feb</span><span>Mar</span><span>Apr</span><span>May</span><span>Jun</span></div>
+  </div>
+</body>
+</html>
