@@ -375,10 +375,24 @@ node <skill>/scripts/run.ts <operation> <workspace> <run-id> [input.json]`}</cod
       "criteria": ["expected totals hold"],
       "kind": "code",
       "checks": [
-        { "id": "test", "command": "bun", "args": ["test", "test/charge.test.js"] }
+        { "id": "test", "command": "bun", "args": ["test", "test/charge.test.js"], "role": "probe" }
       ],
       "skills": ["optional-skill-name"],
       "references": ["path/to/design-contract.md"]
+    },
+    {
+      "id": "card",
+      "title": "Revenue card",
+      "goal": "Build the card in the approved picture",
+      "phase": "dashboard",
+      "deps": [],
+      "resources": ["card.html"],
+      "criteria": ["card.html shows the card in the picture"],
+      "kind": "code",
+      "images": ["design/card.png"],
+      "checks": [
+        { "id": "render", "command": "bun", "args": ["<skill>/scripts/screenshot.ts", "card.html"], "role": "probe", "render": "design/card.png" }
+      ]
     }
   ],
   "integrationChecks": [
@@ -387,7 +401,10 @@ node <skill>/scripts/run.ts <operation> <workspace> <run-id> [input.json]`}</cod
 }`}</code></pre>
           </figure>
           <p class="mt-4 text-sm leading-relaxed text-dim">
-            Commands use executable plus argument arrays. Register actual project checks, not invented test commands. <span class="font-mono text-xs text-base-content">singleChunk</span> overrides division when work genuinely cannot be split.
+            Commands use executable plus argument arrays. Register actual project checks, not invented test commands. Every check needs a <span class="font-mono text-xs text-base-content">role</span>: <span class="font-mono text-xs text-base-content">probe</span> detects the task's defect, <span class="font-mono text-xs text-base-content">guard</span> protects existing behaviour. <span class="font-mono text-xs text-base-content">singleChunk</span> overrides division when work genuinely cannot be split.
+          </p>
+          <p class="mt-4 text-sm leading-relaxed text-dim">
+            A task that builds an approved picture names the PNG in <span class="font-mono text-xs text-base-content">images</span> and registers one probe whose <span class="font-mono text-xs text-base-content">render</span> names it. That is the coordinator's whole share: no description of the picture, no design JSON, no HTML. The render command writes a PNG screenshot of the built work to the path in <span class="font-mono text-xs text-base-content">AMALEH_RENDER</span>, at the picture's size in <span class="font-mono text-xs text-base-content">AMALEH_RENDER_WIDTH</span> and <span class="font-mono text-xs text-base-content">AMALEH_RENDER_HEIGHT</span>; the bundled <span class="font-mono text-xs text-base-content">scripts/screenshot.ts</span> does this for a web page with a headless Edge or Chrome. The runtime stores a copy of the picture, sends the task only to an image-capable model, attaches the picture to the worker and the reviewer, and has a visual judge from another model family compare the screenshot with the picture. A blocking difference fails the check, and the repair worker reads each difference in the check's output. <span class="font-mono text-xs text-base-content">noProbe</span> does not excuse a picture.
           </p>
 
           <h3 id="amend" class="mt-8 scroll-mt-24 font-display text-title font-semibold tracking-tight">

@@ -11,6 +11,7 @@ How the division of labor works:
 - **Coordinator (expensive model, minimal turns):** clarifies intent, chunks the work, defines acceptance criteria, integrates results. One `delegate` call per chunk; no per-step instructions, no hand-written briefs, no micro-management.
 - **Workers (cheap Flash models via pi/OpenRouter):** own a chunk end to end — implementation, checks, repair cycles. When uncertain, they consult **Jev** directly through a bundled helper instead of escalating to the coordinator.
 - **Reviewer (the other Flash family, read-only):** independently verifies each chunk with structured coverage; findings route back into the worker's repair loop, not to the coordinator.
+- **Design pictures:** for a screen built from an approved picture, the coordinator adds the PNG to the task as `images` and one render check that screenshots the built page. Only image-capable Flash models work on it, the worker and the reviewer both receive the picture, and a visual judge from another family compares the screenshot with the picture. The coordinator writes no design description.
 - **Jev (cheap decision model):** answers bounded either/or questions for workers and the coordinator; TypeScript code — not any model — enforces dependencies, ownership, checks and review coverage.
 - **Routing:** deterministic round-robin across eligible model families seeded by the run's session hash, so work spreads across vendors instead of fixating on one.
 - **Escalation:** only genuine boundaries reach the expensive model — exhausted repair allowances (Flash → Kimi → host), missing evidence, ambiguous intent.
@@ -97,7 +98,15 @@ bun run test:node
 bun test tests/*.test.ts
 ```
 
-Tests use local fixtures, not paid model calls. Build and preview the graph from the repository root:
+Tests use local fixtures, not paid model calls. Behaviour that only a real run shows, such as whether a cheap worker builds what a picture shows, is measured by the scenario pool in `amaleh/scenarios/`. This runs one scenario with real, paid models and prints a scorecard:
+
+```sh
+bun amaleh/scripts/run.ts bench <scratch-folder> <run-id> <input.json>
+```
+
+`bench` writes the scenario under `<scratch-folder>/.amaleh/scenarios/<scenario>/` and keeps the run records beside it. `<input.json>` is `{"host":{"kind":"claude","model":"<your model>"},"scenario":"design-card"}`. See [the scenario pool](amaleh/references/runtime.md#the-scenario-pool).
+
+Build and preview the graph from the repository root:
 
 ```sh
 bun design/build.ts

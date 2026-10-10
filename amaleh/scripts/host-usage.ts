@@ -33,7 +33,7 @@ async function codexUsage(workspace:string,from:number,to:number):Promise<HostUs
  if(!found)return {available:false,reason:`No Codex session folders exist under ${source}`};
  const totals={turns:0,toolCalls:0,inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0};
  for(const file of files){
-  const lines=createInterface({input:createReadStream(file,{encoding:'utf8'}),crlfDelay:Infinity});
+  const stream=createReadStream(file,{encoding:'utf8'}),lines=createInterface({input:stream,crlfDelay:Infinity});
   let meta:any,previousTotal:number|undefined;
   try{for await(const line of lines){
    if(meta===undefined){
@@ -56,7 +56,7 @@ async function codexUsage(workspace:string,from:number,to:number):Promise<HostUs
    totals.cacheReadTokens+=count(last.cached_input_tokens);
    totals.cacheWriteTokens+=count(last.cache_write_input_tokens);
    totals.outputTokens+=count(last.output_tokens);
-  }}catch{}finally{lines.close();}
+  }}catch{}finally{lines.close();stream.destroy();}
  }
  return {available:true,source,...totals};
 }

@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { readdir, readFile } from 'node:fs/promises';
 import { availableParallelism } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import '../tests/isolated-host.ts';
 
 const skillDir = fileURLToPath(new URL('../', import.meta.url));
 const testDir = new URL('../tests/', import.meta.url);

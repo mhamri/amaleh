@@ -283,6 +283,16 @@ test('task skills and references reach the worker on the first call and on the r
  for(const input of seen){assert.deepEqual(input.skills,['superpowers:tdd']);assert.deepEqual(input.references,['docs/business-rules/checkout.md']);}
  assert.match(seen[1].brief,/^Repair this task/);
 });
+test('the repair brief carries the end of each failing check output, so the worker sees why it failed',async t=>{
+ const {dir,store}=await fixture(t);
+ await store.transaction(s=>{c.taskOf(s,'a').checks=[{id:'test',command:process.execPath,args:['-e',"const c=require('fs').readFileSync('app.txt','utf8');if(c!=='corrected'){console.error('app.txt holds '+c+', expected corrected');process.exit(1)}"],role:'probe'}];});
+ const seen:any[]=[];
+ const worker=async(s:any,id:string,input:any)=>{seen.push(input);await fixtureClaim(s,id,{workspace:dir,model:'deepseek/flash'});writeFileSync(join(dir,'app.txt'),seen.length>1?'corrected':'half done');await c.result(s,id,{});return {artifact:c.taskOf(await s.load(),id).output};};
+ const out=await delegate(store,'a',{workspace:dir},{runWorker:worker as any,runReviewer:fakeReviewer(dir,[[]]) as any,fetcher:jevTargeted});
+ assert.equal(out.outcome,'accepted');
+ assert.equal(seen.length,2);
+ assert.match(seen[1].brief,/Failing checks: \["test"\]\nOutput of the failing checks:\n--- test \(last 1500 characters of each stream\) ---\nstderr:\napp\.txt holds half done, expected corrected\n/);
+});
 test('record-decision marks the settled answer as a requirement so reviewers and lineage inherit it',async t=>{
  const {dir,store}=await fixture(t);
  const workspace=await realpath(dir),inputPath=join(workspace,'decision.json');

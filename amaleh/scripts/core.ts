@@ -1,6 +1,7 @@
 import type { EffortState } from './effort.ts';
 import { mkdir, readFile, writeFile, rename, readdir, rm, realpath } from 'node:fs/promises';
-import { resolve, join, relative, sep } from 'node:path';
+import { resolve, join, relative, sep, dirname, basename } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { hostname } from 'node:os';
@@ -9,19 +10,24 @@ import { family } from './family.ts';
 import { processAlive, ownerAlive } from './owner.ts';
 import { withCheckLock } from './check-lock.ts';
 import { keepRecordsOutOfGit, runFolders, runRecords } from './records.ts';
+import { renderEnvironment, storeDesignImages, validDesignSources } from './design.ts';
+import { isPng, pngSize } from './png.ts';
+import { jsRuntime } from './runtime.ts';
+import type { VisualVerdict } from './judge.ts';
 export { family } from './family.ts';
 
 export type Command = { command:string; args:string[] };
 type IntegrationCheck = Command & { id:string };
-export type Check = IntegrationCheck & { role:'probe'|'guard' };
+export type Check = IntegrationCheck & { role:'probe'|'guard'; render?:string };
+export type DesignImage = { source:string; path:string };
 export type FindingVerdict = 'other-owner'|'not-blocking';
 export type Finding = { id:string; lens:string; location:string; scenario:string; evidence:string; consequence:string; blocking:boolean; disposition?:'open'|'resolved'|'refuted'; resolution?:string; settled?:{verdict:FindingVerdict;owner?:string;confidence:number} };
 export type RepairCause = { failingChecks:string[]; findings:{id:string;lens:string;location:string;scenario:string}[] };
 export type ReviewCoverage = { id:string; status:'covered'|'finding'|'unreviewed'|'not-applicable'; evidence:string };
 export type Guidance = { skills?:string[]; references?:string[] };
-export type Task = { id:string; title:string; goal:string; phase:string; deps:string[]; resources:string[]; criteria:string[]; checks:Check[]; kind:'code'|'research'|'plan'; skills?:string[]; references?:string[]; noProbe?:string; status:'ready'|'running'|'review'|'repair'|'accepted'|'blocked'; workspace?:string; activity?:{kind:'check'|'review';owner:{pid:number;coordinatorPid?:number;host:string;operation:string};checkId?:string}; owner?:{pid:number;coordinatorPid?:number;host:string;operation:string}; execution?:{kind:'routed-worker'|'coordinator-exception';authorization:string}; author?:string; family?:string; fingerprint?:string; output?:string; receipts:{id:string;code:number;fingerprint:string;artifact:string;isolated?:boolean}[]; review?:{family:string;fingerprint:string;findings:Finding[];artifact:string;coverage?:ReviewCoverage[]}; cycles:number; deepCycles?:number; ladderBase?:number; depth:'flash'|'deep'|'host'; blocked?:string; integrated?:string };
+export type Task = { id:string; title:string; goal:string; phase:string; deps:string[]; resources:string[]; criteria:string[]; checks:Check[]; kind:'code'|'research'|'plan'; skills?:string[]; references?:string[]; images?:string[]; imageCopies?:DesignImage[]; noProbe?:string; status:'ready'|'running'|'review'|'repair'|'accepted'|'blocked'; workspace?:string; activity?:{kind:'check'|'review';owner:{pid:number;coordinatorPid?:number;host:string;operation:string};checkId?:string}; owner?:{pid:number;coordinatorPid?:number;host:string;operation:string}; execution?:{kind:'routed-worker'|'coordinator-exception';authorization:string}; author?:string; family?:string; fingerprint?:string; output?:string; receipts:{id:string;code:number;fingerprint:string;artifact:string;isolated?:boolean;visual?:'differs'}[]; review?:{family:string;fingerprint:string;findings:Finding[];artifact:string;coverage?:ReviewCoverage[]}; cycles:number; deepCycles?:number; ladderBase?:number; depth:'flash'|'deep'|'host'; blocked?:string; integrated?:string };
 export type Decision = { purpose?:'requirement'|'workflow'; id:string; question:string; criteria:Record<string,string>; state:unknown; revision:number; choice?:string; source?:string; confidence?:number; reason?:string; artifact?:string };
-export type TaskInput = Pick<Task,'id'|'title'|'goal'|'phase'|'deps'|'resources'|'criteria'|'checks'|'kind'|'skills'|'references'> & { noProbe?:string };
+export type TaskInput = Pick<Task,'id'|'title'|'goal'|'phase'|'deps'|'resources'|'criteria'|'checks'|'kind'|'skills'|'references'|'images'> & { noProbe?:string };
 export type ModelPool = { role:string; models:string[]; requiredInputs:string[]; requiresTools:boolean; notes:string };
 export type Run = { schema:1; id:string; workspace:string; host:{kind:string;model:string}; effort?:EffortState; intent:string; criteria:string[]; constraints:string[]; decisions:Decision[]; tasks:Task[]; revision:number; status:'active'|'blocked'|'complete'; blocked?:string; config:{flashRepairCycles:number;deepRepairCycles:number;maxWorkers:number}; modelPools?:ModelPool[]; integrationChecks:IntegrationCheck[]; integrationReceipts:Task['receipts']; acceptance?:{fingerprint:string;claims:string[]}; lineage?:{continues:string;inheritedCriteria:string[];inheritedDecisions:string[]}; events:{at:string;type:string;detail:unknown}[] };
 export type RunSummary = { id:string; status:Run['status']; intent:string; criteria:string[]; tasks:number; revision:number; continues?:string; acceptance?:Run['acceptance'] };
@@ -36,9 +42,21 @@ export const scopeCheckId='scope';
 const taskCheckId=(id:string)=>{idCheck(id);invariant(id!==scopeCheckId,`Check id '${scopeCheckId}' is reserved for the built-in scope check; rename the registered check`);};
 function validCommand(c:Command) { invariant(c&&typeof c.command==='string'&&c.command.length>0&&Array.isArray(c.args)&&c.args.every(a=>typeof a==='string'),'Commands require an executable and argument array'); }
 function validRole(c:Check,taskId?:string) { invariant(c.role==='probe'||c.role==='guard',`Check ${c.id}${taskId?` on task ${taskId}`:''} requires role: 'probe' or 'guard'`); }
+async function imageCopiesFor(store:Store,workspace:string,sources:string[],kept:DesignImage[]=[]){
+ const fresh=await storeDesignImages(store.root,workspace,sources.filter(source=>!kept.some(k=>k.source===source)));
+ return sources.map(source=>kept.find(k=>k.source===source)??fresh.find(f=>f.source===source)!);
+}
+function validRender(c:Check,sources:string[],taskId:string){
+ if(c.render===undefined)return;
+ invariant(typeof c.render==='string'&&sources.includes(c.render),`Check ${c.id} on task ${taskId} renders "${c.render}", which is not one of the task's images (${sources.join(', ')||'none'})`);
+ invariant(c.role==='probe',`Check ${c.id} on task ${taskId} renders a design picture, so its role must be probe`);
+}
 function validateContract(t:TaskInput) {
- for(const c of t.checks){taskCheckId(c.id);validRole(c,t.id);}
+ validDesignSources(t.id,t.images);
+ const sources=t.images??[];
+ for(const c of t.checks){taskCheckId(c.id);validRole(c,t.id);validRender(c,sources,t.id);}
  if(t.kind==='code')invariant(t.checks.some(c=>c.role==='probe')||typeof t.noProbe==='string'&&!!t.noProbe.trim(),`Code task ${t.id} needs at least one probe check or noProbe explaining why no executable can detect the defect`);
+ if(t.kind==='code')for(const source of sources)invariant(t.checks.some(c=>c.render===source),`Code task ${t.id} has design picture ${source} but no check renders it. Add a probe check with render "${source}" whose command writes a PNG screenshot of the built work to the path in AMALEH_RENDER; noProbe does not excuse a design picture`);
 }
 export function validateTasks(tasks:TaskInput[]) {
  const ids=new Set<string>(); for(const t of tasks){idCheck(t.id);invariant(!ids.has(t.id),'Duplicate task ID');ids.add(t.id);invariant(t.goal&&t.title&&Array.isArray(t.deps)&&Array.isArray(t.resources)&&Array.isArray(t.criteria)&&t.criteria.length&&Array.isArray(t.checks),'Task needs goal, title, dependencies, resources, criteria and checks');invariant(['code','research','plan'].includes(t.kind),'Invalid task kind'); for(const c of t.checks){idCheck(c.id);validCommand(c);} invariant(new Set(t.checks.map(c=>c.id)).size===t.checks.length,'Duplicate check ID');}
@@ -177,7 +195,12 @@ export async function start(workspace:string,input:{id:string;host:Run['host'];i
  if(input.shape!==undefined){const shaped=validateShape(s,input.shape);recordShape(s,shaped,await store.artifact(shaped));}
  if(store.amalehDir!==join(root,'.amaleh'))event(s,'records-in-main-checkout',{records:store.amalehDir,excluded:await keepRecordsOutOfGit(root)});
  await store.save(s);return store;}finally{await release();}}
-export async function plan(store:Store,input:{tasks:TaskInput[];integrationChecks:IntegrationCheck[];singleChunk?:string}){await store.transaction(s=>{requireShaped(s,'plan');invariant(Array.isArray(input.tasks)&&Array.isArray(input.integrationChecks),'Tasks and integrationChecks required');const existing=new Map(s.tasks.map(t=>[t.id,t]));const tasks=input.tasks.map(t=>{const old=existing.get(t.id);if(old){invariant(JSON.stringify([old.goal,old.deps,old.criteria,old.checks])===JSON.stringify([t.goal,t.deps,t.criteria,t.checks]),'Existing task contract changed; invalidate/replan explicitly');return old;}return {...t,status:'ready' as const,cycles:0,depth:'flash' as const,receipts:[]};});invariant([...existing.keys()].every(id=>tasks.some(t=>t.id===id)),'Cannot drop task history');validateTasks(tasks);for(const t of input.tasks)if(!existing.has(t.id))validateContract(t);const singleChunk=input.singleChunk?.trim();if(tasks.length===1&&!existing.has(tasks[0].id)&&(s.criteria.length>=3||tasks[0].criteria.length>=4)){invariant(singleChunk,`Single task for ${s.criteria.length} run outcomes and ${tasks[0].criteria.length} task criteria; split into independent chunks or pass singleChunk with a reason`);event(s,'single-chunk',{reason:singleChunk,runCriteria:s.criteria.length,taskCriteria:tasks[0].criteria.length});}input.integrationChecks.forEach(validCommand);s.tasks=tasks;s.integrationChecks=input.integrationChecks;s.integrationReceipts=[];event(s,'planned',{tasks:tasks.map(t=>t.id)});});}
+export async function plan(store:Store,input:{tasks:TaskInput[];integrationChecks:IntegrationCheck[];singleChunk?:string}){
+ invariant(Array.isArray(input.tasks)&&Array.isArray(input.integrationChecks),'Tasks and integrationChecks required');
+ for(const t of input.tasks)validDesignSources(t.id,t.images);
+ const {workspace}=await store.load();
+ const copies=new Map(await Promise.all(input.tasks.filter(t=>t.images?.length).map(async t=>[t.id,await imageCopiesFor(store,workspace,t.images!)] as const)));
+ await store.transaction(s=>{requireShaped(s,'plan');const existing=new Map(s.tasks.map(t=>[t.id,t]));const tasks=input.tasks.map(t=>{const old=existing.get(t.id);if(old){invariant(JSON.stringify([old.goal,old.deps,old.criteria,old.checks,old.images??[]])===JSON.stringify([t.goal,t.deps,t.criteria,t.checks,t.images??[]]),'Existing task contract changed; invalidate/replan explicitly');return old;}const {imageCopies:_runtimeOwned,...contract}=t as TaskInput&{imageCopies?:unknown};return {...contract,...(copies.has(t.id)?{imageCopies:copies.get(t.id)}:{}),status:'ready' as const,cycles:0,depth:'flash' as const,receipts:[]};});invariant([...existing.keys()].every(id=>tasks.some(t=>t.id===id)),'Cannot drop task history');validateTasks(tasks);for(const t of input.tasks)if(!existing.has(t.id))validateContract(t);const singleChunk=input.singleChunk?.trim();if(tasks.length===1&&!existing.has(tasks[0].id)&&(s.criteria.length>=3||tasks[0].criteria.length>=4)){invariant(singleChunk,`Single task for ${s.criteria.length} run outcomes and ${tasks[0].criteria.length} task criteria; split into independent chunks or pass singleChunk with a reason`);event(s,'single-chunk',{reason:singleChunk,runCriteria:s.criteria.length,taskCriteria:tasks[0].criteria.length});}input.integrationChecks.forEach(validCommand);s.tasks=tasks;s.integrationChecks=input.integrationChecks;s.integrationReceipts=[];event(s,'planned',{tasks:tasks.map(t=>t.id)});});}
 // Coverage is an explicit reviewer attestation, not proof that all defects were found.
 export function reviewObligations(s:Run,t:Task):{id:string;question:string}[]{return [
  ...t.criteria.map((criterion,i)=>({id:`criterion:${i+1}`,question:`Spec: inspect the actual behavior satisfying task criterion: ${criterion}`})),
@@ -187,15 +210,16 @@ export function reviewObligations(s:Run,t:Task):{id:string;question:string}[]{re
  {id:'lifecycle',question:'Trace reachable success, failure, interruption and recovery exits; verify durable evidence, cleanup and terminal ordering.'},
  {id:'parallelism',question:'For actual overlap, retry or shared-state paths, inspect ownership, capacity, conflicts and the complete eligible work frontier.'},
  {id:'integration',question:'Trace affected consumers and integrated outcomes; check deterministic rejection before external effects and verify evidence against the actual artifacts.'},
- ...reopenReasons(s,t.id).map((reason,i)=>({id:`reopened:${i+1}`,question:`Verify against the actual artifact that the defect which reopened this task is gone: ${reason}`}))
+ ...reopenReasons(s,t.id).map((reason,i)=>({id:`reopened:${i+1}`,question:`Verify against the actual artifact that the defect which reopened this task is gone: ${reason}`})),
+ ...(t.images??[]).map((image,i)=>({id:`design:${i+1}`,question:`Spec: compare the latest render of this work with design picture ${image}, both attached to your prompt. Layout, content, colors and proportions must match the picture.`}))
 ];}
-const ownObligation=/^(criterion|reopened):/;
+const ownObligation=/^(criterion|reopened|design):/;
 function validateReviewCoverage(s:Run,t:Task,coverage:ReviewCoverage[],findings:Finding[]=[]){
  const required=reviewObligations(s,t);invariant(Array.isArray(coverage),'Review coverage must be an array');
  const claimed=coverage.filter(c=>c?.status==='finding').map(c=>c.id);
  invariant(!claimed.length||findings.length,`Coverage marks ${claimed.join(', ')} as finding while the findings array is empty; use covered when inspection found no defect, or file the defect as a finding`);
  invariant(coverage.length===required.length&&new Set(coverage.map(c=>c?.id)).size===required.length&&coverage.every(c=>c&&required.some(r=>r.id===c.id)),'Review coverage must include every obligation exactly once; missing, duplicate or unknown IDs');
- for(const c of coverage){invariant(['covered','finding','unreviewed','not-applicable'].includes(c.status)&&typeof c.evidence==='string'&&!!c.evidence.trim(),'Review coverage requires a valid status and nonempty evidence');invariant(c.status!=='not-applicable'||!ownObligation.test(c.id),'This task\'s own criteria and reopen reasons cannot be not-applicable; they are what it was asked to deliver');}
+ for(const c of coverage){invariant(['covered','finding','unreviewed','not-applicable'].includes(c.status)&&typeof c.evidence==='string'&&!!c.evidence.trim(),'Review coverage requires a valid status and nonempty evidence');invariant(c.status!=='not-applicable'||!ownObligation.test(c.id),'This task\'s own criteria, design pictures and reopen reasons cannot be not-applicable; they are what it was asked to deliver');}
 }
 export function reviewCoverageDebt(s:Run,t:Task){return reviewObligations(s,t).filter(required=>{
  const matches=t.review?.coverage?.filter(c=>c.id===required.id)??[];
@@ -328,25 +352,64 @@ export async function reconcileExecution(store:Store,input:{id:string;operation?
  });
 }
 export async function result(store:Store,id:string,output:unknown){const artifact=await store.artifact(output);await store.transaction(async s=>{const t=taskOf(s,id);invariant(t.status==='running'&&t.workspace,'Task not running');invariant(t.execution,'Legacy claim lacks execution authorization; reconcile and requeue through worker routing');t.fingerprint=await fingerprint(t.workspace);t.output=artifact;t.review=undefined;t.status='review';t.owner=undefined;event(s,'result',{id,artifact,fingerprint:t.fingerprint});});}
-export async function execute(command:Command,cwd:string,onSpawn?:(pid:number)=>Promise<void>):Promise<{code:number;stdout:string;stderr:string}>{validCommand(command);return new Promise((done,fail)=>{const child=spawn(command.command,command.args,{cwd,shell:false,windowsHide:true,stdio:['ignore','pipe','pipe']});let stdout='',stderr='';child.stdout.on('data',d=>stdout+=d);child.stderr.on('data',d=>stderr+=d);let ownershipError:unknown;const ownership=Promise.resolve().then(()=>child.pid?onSpawn?.(child.pid):undefined).catch(error=>{ownershipError=error;child.kill();});child.on('error',fail);child.on('close',code=>{void ownership.then(()=>{if(ownershipError)fail(ownershipError);else done({code:code??1,stdout,stderr});});});});}
+export async function execute(command:Command,cwd:string,onSpawn?:(pid:number)=>Promise<void>,environment?:Record<string,string>):Promise<{code:number;stdout:string;stderr:string}>{validCommand(command);return new Promise((done,fail)=>{const child=spawn(command.command,command.args,{cwd,shell:false,windowsHide:true,stdio:['ignore','pipe','pipe'],...(environment?{env:{...process.env,...environment}}:{})});let stdout='',stderr='';child.stdout.on('data',d=>stdout+=d);child.stderr.on('data',d=>stderr+=d);let ownershipError:unknown;const ownership=Promise.resolve().then(()=>child.pid?onSpawn?.(child.pid):undefined).catch(error=>{ownershipError=error;child.kill();});child.on('error',fail);child.on('close',code=>{void ownership.then(()=>{if(ownershipError)fail(ownershipError);else done({code:code??1,stdout,stderr});});});});}
+type Receipt={code:number;stdout:string;stderr:string};
+type RenderTarget={reference:DesignImage;path:string;environment:Record<string,string>};
+type RenderOwner={id:string;imageCopies?:DesignImage[];family?:string};
+const scriptsDir=dirname(fileURLToPath(import.meta.url));
+async function renderTarget(store:Store,owner:RenderOwner,c:Check):Promise<RenderTarget|undefined>{
+ if(!c.render)return undefined;
+ const reference=owner.imageCopies?.find(i=>i.source===c.render);invariant(reference,`Check ${c.id} renders ${c.render}, which is not a design picture of task ${owner.id}`);
+ const folder=join(store.root,'renders',owner.id);await mkdir(folder,{recursive:true});
+ const path=join(folder,`${c.id}-${Date.now()}-${randomUUID().slice(0,8)}.png`),size=pngSize(await readFile(reference.path));
+ return {reference,path,environment:renderEnvironment(path,size?.width,size?.height)};
+}
+const describedDifferences=(visual:VisualVerdict)=>visual.differences.map(d=>`- [${d.severity}] ${d.area}: the design shows ${d.expected}; the build shows ${d.actual}`).join('\n');
+// See references/runtime.md#visual-checks
+async function judgedRender(store:Store,owner:RenderOwner,render:RenderTarget,receipt:Receipt):Promise<{receipt:Receipt;visual?:VisualVerdict}>{
+ const failed=(reason:string)=>({receipt:{...receipt,code:1,stderr:`${receipt.stderr}${receipt.stderr?'\n':''}${reason}`}});
+ if(receipt.code!==0)return {receipt};
+ let bytes:Buffer;try{bytes=await readFile(render.path);}catch{return failed(`The render command exited 0 but wrote no picture to AMALEH_RENDER (${render.path}).`);}
+ if(!isPng(bytes))return failed(`The render command wrote ${render.path}, which is not a PNG file.`);
+ if(bytes.equals(await readFile(render.reference.path)))return failed(`The render at ${render.path} is the design picture ${render.reference.source} itself, not a screenshot of the built work.`);
+ const judge={command:await jsRuntime(),args:[process.env.AMALEH_VISUAL_JUDGE??join(scriptsDir,'judge.ts'),render.reference.path,render.path,store.root,owner.family??'-',`${basename(store.root)}/${owner.id}`]};
+ let out:Receipt;try{out=await execute(judge,dirname(render.path));}catch(error){out={code:1,stdout:'',stderr:(error as Error).message};}
+ let visual:VisualVerdict|undefined;try{visual=out.code===0?JSON.parse(out.stdout):undefined;}catch{}
+ if(!visual||!['match','differs'].includes(visual.verdict)||!Array.isArray(visual.differences))return failed(`The visual judge could not compare the render with ${render.reference.source}: ${(out.stderr||out.stdout).trim().slice(-1500)||`exit ${out.code}`}`);
+ const report=`Visual check against ${render.reference.source} (judge ${visual.model}): ${visual.verdict==='match'?'matches the design':'differs from the design'}. ${visual.summary}${visual.differences.length?`\n${describedDifferences(visual)}`:''}\nRender: ${render.path}`;
+ return {receipt:{...receipt,code:visual.verdict==='match'?0:1,stdout:`${receipt.stdout}${receipt.stdout?'\n':''}${report}`},visual};
+}
+async function runProbe(store:Store,owner:RenderOwner,probe:Check,workspace:string){
+ const render=await renderTarget(store,owner,probe);
+ let receipt:Receipt;try{receipt=await execute(probe,workspace,undefined,render?.environment);}catch(error){receipt={code:1,stdout:'',stderr:(error as Error).message};}
+ return render?(await judgedRender(store,owner,render,receipt)).receipt.code:receipt.code;
+}
+export async function passingProbes(store:Store,owner:RenderOwner&{checks:Check[]},workspace:string){
+ const passing:string[]=[];
+ for(const probe of owner.checks.filter(c=>c.role==='probe'))if(await runProbe(store,owner,probe,workspace)===0)passing.push(probe.id);
+ return passing;
+}
 export async function check(store:Store,id:string|undefined,checkId:string,options:{isolated?:boolean}={}){
  const s=await store.load(),t=id?taskOf(s,id):undefined;const c=(t?t.checks:s.integrationChecks).find(c=>c.id===checkId);invariant(c,'Unknown check');
  const cwd=t?.workspace??s.workspace,isolated=options.isolated===true,marker=isolated?{isolated:true}:{};
  const operation=id?await acquireActivity(store,id,'check',checkId):undefined;
  try{
+  const render=t?await renderTarget(store,t,c as Check):undefined;
   const {before,after,receipt}=await withCheckLock(store.amalehDir,isolated?'exclusive':'shared',async()=>{
-   const before=await fingerprint(cwd);let receipt:{code:number;stdout:string;stderr:string};
-   try{receipt=await execute(c,cwd,id&&operation?pid=>activitySpawned(store,id,operation,pid):undefined);}catch(error){receipt={code:1,stdout:'',stderr:'Check could not execute: '+(error as Error).message};}
+   const before=await fingerprint(cwd);let receipt:Receipt;
+   try{receipt=await execute(c,cwd,id&&operation?pid=>activitySpawned(store,id,operation,pid):undefined,render?.environment);}catch(error){receipt={code:1,stdout:'',stderr:'Check could not execute: '+(error as Error).message};}
    return {before,after:await fingerprint(cwd),receipt};
   });
-  const artifact=await store.artifact({command:c,cwd,before,after,...marker,...receipt});
-  await store.transaction(current=>{const target=id?taskOf(current,id):undefined;invariant(!target||target.workspace===cwd,'Task workspace changed during check');const list=target?target.receipts:current.integrationReceipts;const prior=list.findIndex(r=>r.id===checkId);if(prior>=0)list.splice(prior,1);list.push({id:checkId,code:receipt.code,fingerprint:before,artifact,...marker});event(current,'check',{id,checkId,code:receipt.code,artifact,...marker});});
-  return {code:receipt.code,artifact,changed:before!==after,fingerprint:before,isolated};
+  const judged=render&&t?await judgedRender(store,t,render,receipt):{receipt};
+  const visual='visual' in judged?judged.visual:undefined,code=judged.receipt.code,visualMark=visual?.verdict==='differs'?{visual:'differs' as const}:{};
+  const artifact=await store.artifact({command:c,cwd,before,after,...marker,...judged.receipt,...(render?{render:{design:render.reference.source,path:render.path}}:{}),...(visual?{visual}:{})});
+  await store.transaction(current=>{const target=id?taskOf(current,id):undefined;invariant(!target||target.workspace===cwd,'Task workspace changed during check');const list=target?target.receipts:current.integrationReceipts;const prior=list.findIndex(r=>r.id===checkId);if(prior>=0)list.splice(prior,1);list.push({id:checkId,code,fingerprint:before,artifact,...marker,...visualMark});event(current,'check',{id,checkId,code,artifact,...marker});if(visual)event(current,'visual-judged',{id,checkId,verdict:visual.verdict,model:visual.model,differences:visual.differences.length,blocking:visual.differences.filter(d=>d.severity==='blocking').length,artifact});});
+  return {code,artifact,changed:before!==after,fingerprint:before,isolated,...visualMark};
  }finally{if(id&&operation)await releaseActivity(store,id,operation);}
 }
 export async function addReviewCheck(store:Store,id:string,check:Check){await store.transaction(s=>{
  const t=taskOf(s,id);invariant(t.status==='review'&&!t.activity,'Review evidence checks require an idle task awaiting review');
- taskCheckId(check.id);validCommand(check);validRole(check,t.id);invariant(!t.checks.some(c=>c.id===check.id),'Duplicate check ID');
+ taskCheckId(check.id);validCommand(check);validRole(check,t.id);validRender(check,t.images??[],t.id);invariant(!t.checks.some(c=>c.id===check.id),'Duplicate check ID');
  t.checks.push(check);t.review=undefined;event(s,'review-check-added',{id,check});
 });}
 export async function review(store:Store,id:string,input:{model:string;findings:Finding[];fingerprint:string;report:string;coverage?:ReviewCoverage[]}){const artifact=await store.artifact(input);await store.transaction(async s=>{const t=taskOf(s,id);invariant(t.status==='review'&&t.workspace,'Task not awaiting review');invariant(input.model&&family(input.model)!==t.family,'Review requires another model family');invariant(input.fingerprint===await fingerprint(t.workspace),'Review evidence is stale');invariant(Array.isArray(input.findings)&&typeof input.report==='string'&&input.report.length>0,'Review report required');for(const f of input.findings)invariant(f.id&&f.lens&&f.location&&f.scenario&&f.evidence&&f.consequence&&typeof f.blocking==='boolean','Finding lacks evidence');if(input.coverage!==undefined)validateReviewCoverage(s,t,input.coverage,input.findings);const findings=input.findings.map(f=>({...f,disposition:'open' as const}));t.review={family:family(input.model),fingerprint:input.fingerprint,findings,artifact,coverage:input.coverage};event(s,'review',{id,artifact});});}
@@ -453,12 +516,10 @@ function noProbeOnce(s:Run,t:Task,noProbe:string){
  const earlierNoProbe=s.events.find(e=>e.type==='reopen-probe'&&(e.detail as {id?:string;noProbe?:string}).id===t.id&&(e.detail as {noProbe?:string}).noProbe);
  invariant(!noProbe||!earlierNoProbe,`${t.id} was already reopened once without a probe ("${(earlierNoProbe?.detail as {noProbe?:string})?.noProbe}"). A second defect the checks cannot see means the checks are missing something: register the probe that shows it as check`);
 }
-async function requireFailingProbes(probes:Check[],workspace:string|undefined){
- if(!workspace)return;
- for(const probe of probes.filter(c=>c.role==='probe')){
-  let code:number;try{code=(await execute(probe,workspace)).code;}catch{code=1;}
-  invariant(code!==0,`Probe check ${probe.id} already passes on the current checkout (${workspace}); a probe that passes there cannot detect the defect, so the reopen is refused`);
- }
+async function requireFailingProbes(store:Store,owner:RenderOwner|undefined,probes:Check[],workspace:string|undefined){
+ if(!workspace||!owner)return;
+ const passing=await passingProbes(store,{...owner,checks:probes},workspace);
+ invariant(!passing.length,`Probe check ${passing[0]} already passes on the current checkout (${workspace}); a probe that passes there cannot detect the defect, so the reopen is refused`);
 }
 function validateReopen(s:Run,input:ReopenInput){
  const t=taskOf(s,input.id),noProbe=typeof input.noProbe==='string'?input.noProbe.trim():'';
@@ -469,27 +530,27 @@ function validateReopen(s:Run,input:ReopenInput){
  noProbeOnce(s,t,noProbe);
  const same=input.check&&t.checks.find(c=>c.id===input.check!.id);
  if(input.check){
-  taskCheckId(input.check.id);validCommand(input.check);validRole(input.check,t.id);
-  invariant(!same||JSON.stringify([same.command,same.args,same.role])===JSON.stringify([input.check.command,input.check.args,input.check.role]),`Task ${t.id} already has a different check named ${input.check.id}`);
+  taskCheckId(input.check.id);validCommand(input.check);validRole(input.check,t.id);validRender(input.check,t.images??[],t.id);
+  invariant(!same||JSON.stringify([same.command,same.args,same.role,same.render])===JSON.stringify([input.check.command,input.check.args,input.check.role,input.check.render]),`Task ${t.id} already has a different check named ${input.check.id}`);
  }
  return {t,noProbe,fromFeedback,same};
 }
 export async function invalidate(store:Store,input:ReopenInput){
  const before=validateReopen(await store.load(),input);
- await requireFailingProbes(input.check?[input.check]:[],before.t.workspace);
+ await requireFailingProbes(store,before.t,input.check?[input.check]:[],before.t.workspace);
  await store.transaction(s=>{
  const {t,noProbe,fromFeedback,same}=validateReopen(s,input);
- if(input.check&&!same)t.checks.push({id:input.check.id,command:input.check.command,args:input.check.args,role:input.check.role});
+ if(input.check&&!same)t.checks.push({id:input.check.id,command:input.check.command,args:input.check.args,role:input.check.role,...(input.check.render?{render:input.check.render}:{})});
  invalidateTree(s,input.id,input.reason,fromFeedback,true);
  if(input.check||noProbe)event(s,'reopen-probe',{id:t.id,check:input.check,noProbe:noProbe||undefined});
 });}
 const amendedFields=['title','goal','phase','deps','resources','criteria','checks','kind'] as const;
-const changesOnly=(t:Task,next:TaskInput,allowed:readonly (typeof amendedFields[number])[])=>amendedFields.every(key=>allowed.includes(key)||JSON.stringify(t[key])===JSON.stringify(next[key]))&&(next.noProbe===undefined||next.noProbe===t.noProbe);
+const changesOnly=(t:Task,next:TaskInput,allowed:readonly (typeof amendedFields[number])[])=>amendedFields.every(key=>allowed.includes(key)||JSON.stringify(t[key])===JSON.stringify(next[key]))&&(next.noProbe===undefined||next.noProbe===t.noProbe)&&(next.images===undefined||JSON.stringify(next.images)===JSON.stringify(t.images??[]));
 const awaitingVerdict=(t:Task)=>!!t.output&&(t.status==='review'||t.status==='repair'&&hostAuthored(t));
 const failedAttempt=(t:Task)=>t.status==='review'&&(t.receipts.some(r=>r.code!==0&&r.id!==scopeCheckId)||openBlocking(t));
 type AmendInput={id:string;reason:string;task:TaskInput;feedback?:boolean;noProbe?:string};
 // See references/runtime.md#reopening-accepted-work
-const demandsMore=(t:Task,next:TaskInput)=>next.goal!==t.goal||JSON.stringify(next.criteria)!==JSON.stringify(t.criteria)||(next.checks??[]).some(c=>!t.checks.some(o=>o.id===c.id));
+const demandsMore=(t:Task,next:TaskInput)=>next.goal!==t.goal||JSON.stringify(next.criteria)!==JSON.stringify(t.criteria)||(next.checks??[]).some(c=>!t.checks.some(o=>o.id===c.id))||(next.images??[]).some(i=>!(t.images??[]).includes(i));
 function acceptedReopen(s:Run,input:AmendInput){
  const t=taskOf(s,input.id),noProbe=typeof input.noProbe==='string'?input.noProbe.trim():'';
  if(t.status!=='accepted'||input.feedback===true||!demandsMore(t,input.task)){invariant(!noProbe,`noProbe applies only when an amend without feedback asks accepted task ${t.id} for more: a new goal, new criteria or a new check`);return undefined;}
@@ -500,8 +561,11 @@ function acceptedReopen(s:Run,input:AmendInput){
  return {t,probes,noProbe};
 }
 export async function amend(store:Store,input:AmendInput){
- const reopening=acceptedReopen(await store.load(),input);
- await requireFailingProbes(reopening?.probes??[],reopening?.t.workspace);
+ validDesignSources(input.id,input.task.images);
+ const loaded=await store.load();
+ const copies=input.task.images?await imageCopiesFor(store,loaded.workspace,input.task.images,taskOf(loaded,input.id).imageCopies):undefined;
+ const reopening=acceptedReopen(loaded,input);
+ await requireFailingProbes(store,reopening&&{...reopening.t,imageCopies:copies??reopening.t.imageCopies},reopening?.probes??[],reopening?.t.workspace);
  await store.transaction(s=>{
  invariant(input.task.id===input.id,'Amend retains task identity');
  const fromFeedback=input.feedback===true?feedbackReopen(s,input.id):undefined;
@@ -515,7 +579,8 @@ export async function amend(store:Store,input:AmendInput){
  const t=taskOf(s,input.id);
  for(const key of amendedFields)(t as any)[key]=input.task[key];
  if(input.task.noProbe!==undefined)(t as any).noProbe=input.task.noProbe;
- validateTasks(s.tasks);validateContract(input.task);
+ if(copies){if(copies.length){t.images=input.task.images;t.imageCopies=copies;}else{delete t.images;delete t.imageCopies;}}
+ validateTasks(s.tasks);validateContract({...input.task,images:t.images});
  if(keepsOutput)t.status='review';
  if(charged)chargeCycle(s,t);
  if(reopen)for(const probe of reopen.probes.length?reopen.probes:[undefined])event(s,'reopen-probe',{id:t.id,check:probe,noProbe:reopen.noProbe||undefined});
