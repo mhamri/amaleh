@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decodePng, describePalette, hexDistance, isPng, meanDifference, measuredPalette, pngSize } from '../scripts/png.ts';
-import { encodePng, solidPng, type PngSpec } from './png-fixture.ts';
+import { decodePng, describePalette, hexDistance, isPng, meanDifference, measuredPalette, pairedShapes, pictureShapes, pngSize } from '../scripts/png.ts';
+import { cardBars, cardPng, cardText, encodePng, solidPng, type PngSpec } from './png-fixture.ts';
 
 const pixelAt=(rgba:Uint8Array,width:number,x:number,y:number)=>Array.from(rgba.subarray((y*width+x)*4,(y*width+x)*4+4));
 function decodesTo(spec:PngSpec,expected:(x:number,y:number)=>number[]){
@@ -57,4 +57,23 @@ test('the mean difference is zero for the same picture and unmeasured for a diff
  assert.equal(meanDifference(a,b),127.5);
  assert.equal(meanDifference(a,decodePng(solidPng(20,21,()=>[0,0,0]))!),undefined);
  assert.equal(hexDistance('#000000','#000304'),5);
+});
+
+test('the solid elements of a picture are its one-color areas with their boxes, and its text lines are rows of small marks with their ink color',()=>{
+ const {solids,texts}=pictureShapes(decodePng(cardPng())!);
+ assert.deepEqual(solids.map(r=>[r.hex,r.x,r.y,r.width,r.height]).sort(),[['#1E293B',10,10,120,80],['#38BDF8',20,50,20,30],['#38BDF8',50,40,20,40]],'the thin amber cross and the background frame fill too little of their boxes');
+ assert.equal(solids.find(r=>r.hex==='#38BDF8'&&r.x===20)!.area,600);
+ assert.deepEqual(texts.map(r=>[r.hex,r.x,r.y,r.width,r.height,r.area]),[['#F8FAFC',20,20,16,8,96]],'three marks two pixels apart are one line, and the large amber cross is not text');
+});
+
+test('solid elements pair by nearest center only when a color has the same count in both pictures, and each text line pairs with the marks near its place',()=>{
+ const design=decodePng(cardPng())!,moved=decodePng(cardPng([{...cardBars[0],width:16},{...cardBars[1],y:46,height:34}],{...cardText,y:26,color:[100,116,139]}))!;
+ const shapes=pairedShapes(design,moved),blue=shapes.solids.find(g=>g.hex==='#38BDF8')!;
+ assert.deepEqual(blue.pairs.map(([d,b])=>[d.x,d.width,b.x,b.width,b.y]).sort(),[[20,20,20,16,50],[50,20,50,20,46]]);
+ assert.deepEqual(shapes.texts.pairs.map(([d,b])=>[d.hex,d.y,b.hex,b.y]),[['#F8FAFC',20,'#64748B',26]]);
+ const merged=decodePng(cardPng([{x:20,y:50,width:50,height:30}],{...cardText,x:90,y:70}))!;
+ const paired=pairedShapes(design,merged),unpaired=paired.solids.find(g=>g.hex==='#38BDF8')!;
+ assert.deepEqual([unpaired.design.length,unpaired.built.length,unpaired.pairs.length],[2,1,0],'two bars that merged into one are not paired with either');
+ assert.equal(paired.solids.find(g=>g.hex==='#1E293B')!.pairs.length,1);
+ assert.deepEqual([paired.texts.design.length,paired.texts.pairs.length],[1,0],'marks far from the line are not its text');
 });

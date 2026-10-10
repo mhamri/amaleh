@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import type { Scenario, ScorecardRow } from '../../scripts/scenarios.ts';
 import { screenshot } from '../../scripts/screenshot.ts';
 import { decodePng, hexDistance, measuredPalette, meanDifference } from '../../scripts/png.ts';
+import { describeMeasuredElements, everyElementHolds, measuredElements } from '../../scripts/design.ts';
 
 const screenshotScript=fileURLToPath(new URL('../../scripts/screenshot.ts',import.meta.url));
 const pictureAt=(root:string)=>join(root,'design','card.png');
@@ -28,11 +29,12 @@ async function judgedPage(root:string,page:string):Promise<ScorecardRow[]>{
  const built=decodePng(await readFile(out))!;
  const keyColors=measuredPalette(design).main.filter(s=>s.share>=keyColorShare),palette=measuredPalette(built),builtColors=[...palette.main,...palette.accents];
  const absent=keyColors.filter(k=>!builtColors.some(b=>hexDistance(b.hex,k.hex)<=colorTolerance));
- const difference=meanDifference(design,built);
+ const difference=meanDifference(design,built),measured=measuredElements(design,built);
  return [
   {name:'text of the design',value:missing.length?`missing: ${missing.join(', ')}`:'all present',pass:!missing.length},
   {name:'key colors of the design',value:absent.length?`missing: ${absent.map(a=>a.hex).join(', ')}`:`all present: ${keyColors.map(k=>k.hex).join(', ')}`,pass:!absent.length},
-  {name:'layout against the design',value:difference===undefined?`the render is ${built.width}x${built.height} pixels`:`mean difference ${difference.toFixed(1)} of 255, at most ${layoutTolerance} allowed; render ${out}`,pass:difference!==undefined&&difference<=layoutTolerance}];
+  {name:'layout against the design',value:difference===undefined?`the render is ${built.width}x${built.height} pixels`:`mean difference ${difference.toFixed(1)} of 255, at most ${layoutTolerance} allowed; render ${out}`,pass:difference!==undefined&&difference<=layoutTolerance},
+  {name:'measured elements against the design',value:!measured?`the render is ${built.width}x${built.height} pixels`:`${describeMeasuredElements(measured)}${measured.differences.map(d=>`; ${d.area}: ${d.actual}`).join('')}`,pass:!!measured&&everyElementHolds(measured)}];
 }
 
 const scenario:Scenario={

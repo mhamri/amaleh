@@ -6,7 +6,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as c from '../scripts/core.ts';
 import { delegate } from '../scripts/delegate.ts';
-import { solidPng } from './png-fixture.ts';
+import { designBriefSection, describeMeasuredElements, measuredElements, visualDifference } from '../scripts/design.ts';
+import { decodePng } from '../scripts/png.ts';
+import { cardBars, cardPng, cardText, solidPng } from './png-fixture.ts';
 
 const design=solidPng(48,32,(x,y)=>y<8?[15,23,42]:x<24?[56,189,248]:[245,158,11]);
 const built=solidPng(48,32,(x,y)=>y<8?[15,23,42]:x<24?[56,189,248]:[245,159,12]);
@@ -44,6 +46,31 @@ async function delivered(t:any,checks:c.Check[]){
  return {dir,store};
 }
 const artifactOf=async(store:c.Store,artifact:string)=>JSON.parse(await store.readArtifact(artifact));
+
+test('a measured element or text line outside the size, place or ink color limits is a blocking difference that names the numbers, and one inside them is not',()=>{
+ const design=decodePng(cardPng())!;
+ const squashed=measuredElements(design,decodePng(cardPng([{...cardBars[0],width:16},{...cardBars[1],y:46}],{...cardText,height:12,color:[100,116,139]}))!)!;
+ assert.deepEqual([squashed.solids,squashed.solidsCompared,squashed.texts,squashed.textsCompared],[3,3,1,1]);
+ assert.deepEqual(squashed.differences,[
+  {area:'the #38BDF8 element at x 50, y 40 of the design',expected:'20x40 pixels at x 50, y 40',actual:'20x40 pixels at x 50, y 46: top edge 6 pixels lower, bottom edge 6 pixels lower',severity:'blocking'},
+  {area:'the #38BDF8 element at x 20, y 50 of the design',expected:'20x30 pixels at x 20, y 50',actual:'16x30 pixels at x 20, y 50: width 20% smaller (4 pixels)',severity:'blocking'},
+  {area:'the #F8FAFC text line at x 20, y 20 of the design',expected:'16x8 pixels at x 20, y 20',actual:'16x12 pixels at x 20, y 20: height 50% larger (4 pixels), ink color #64748B instead of #F8FAFC',severity:'blocking'}]);
+ assert.equal(describeMeasuredElements(squashed),"3 of the design's 3 solid elements were found in the build with the same count per color, 1 of its 1 text lines was found near their place, and 3 of the found ones are outside the size, place and ink color limits");
+ const close=measuredElements(design,decodePng(cardPng([{...cardBars[0],width:17,x:22},{...cardBars[1],y:44,height:36}],{...cardText,y:24,color:[226,232,240]}))!)!;
+ assert.deepEqual(close.differences,[],'3 pixels narrower, 2 to the right, an edge or a text line 4 pixels away, and an ink color 31 away are inside the limits');
+ assert.equal(measuredElements(design,decodePng(solidPng(100,100,()=>[15,23,42]))!),undefined,'a render of another size is not measured');
+ assert.match(visualDifference.blocking,/an element or text line whose width or height differs from the design by more than 10% and more than 3 pixels; an element or text line edge that is more than 2% of the picture's width or height, and more than 4 pixels, away from its place in the design; a text line whose ink color is more than 40 away from the design's ink color/);
+});
+
+test('the worker brief lists each solid element and text line of the picture with its size, place and color, and says the check measures them',async t=>{
+ const dir=await mkdtemp(join(tmpdir(),'amaleh-design-brief-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const path=join(dir,'card.png');await writeFile(path,cardPng());
+ const brief=await designBriefSection([{source:'design/card.png',path}],[{id:'render',render:'design/card.png'}]);
+ assert.ok(brief.includes(`Visual check render compares your work with it\n  - Solid elements measured in it, as color, width x height in pixels, and top-left corner: #1E293B 120x80 at x 10, y 10; #38BDF8 20x40 at x 50, y 40; #38BDF8 20x30 at x 20, y 50\n  - Text lines measured in it, as ink color, width x height in pixels, and top-left corner: #F8FAFC 16x8 at x 20, y 20\n`),brief);
+ assert.match(brief,/Build each element and each text line at the size, place and color listed, in picture pixels\. The visual check measures the same things in your screenshot\./);
+ await writeFile(path,solidPng(24,16,()=>[15,23,42]));
+ assert.doesNotMatch(await designBriefSection([{source:'design/card.png',path}],[]),/Solid elements measured|Text lines measured|A solid element is/,'a picture without solid elements or text lines gets no element lines');
+});
 
 test('plan copies each design picture into the run, keeps the source names, and refuses a picture that is not a PNG',async t=>{
  const {dir,store}=await fixture(t);

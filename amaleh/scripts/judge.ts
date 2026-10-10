@@ -6,9 +6,8 @@ import { loadModelConfig, configPath } from './config.ts';
 import { family } from './family.ts';
 import { hash } from './core.ts';
 import { decodePng, describePalette, measuredPalette, meanDifference, type Pixels } from './png.ts';
-import { visualDifference } from './design.ts';
+import { describeMeasuredElements, measuredElements, visualDifference, type MeasuredElements, type VisualDifference } from './design.ts';
 
-export type VisualDifference={area:string;expected:string;actual:string;severity:'blocking'|'minor'};
 export type VisualVerdict={verdict:'match'|'differs';model:string;summary:string;differences:VisualDifference[];meanDifference?:number};
 type JudgeInput={reference:string;render:string;seed:string;authorFamily?:string;root?:string};
 
@@ -24,11 +23,12 @@ export async function visualJudgeModels(seed:string,authorFamily:string|undefine
 }
 
 const facts=(label:string,p:Pixels)=>`${label}: ${p.width}x${p.height} pixels; ${describePalette(measuredPalette(p))}`;
-const instructions=(design:Pixels,built:Pixels,difference:number|undefined)=>`You compare two pictures of a user interface. Picture 1 is the approved design. Picture 2 is a screenshot of the built work. Decide whether the built work matches the design.
+const elementFacts=(measured:MeasuredElements|undefined)=>!measured?'':`\n- Measured elements: ${describeMeasuredElements(measured)}.${measured.differences.length?` Each one outside the limits is already recorded as a blocking difference, so do not list it again: ${measured.differences.map(d=>`${d.area}: the design shows ${d.expected}; the build shows ${d.actual}`).join('; ')}.`:''}`;
+const instructions=(design:Pixels,built:Pixels,difference:number|undefined,measured:MeasuredElements|undefined)=>`You compare two pictures of a user interface. Picture 1 is the approved design. Picture 2 is a screenshot of the built work. Decide whether the built work matches the design.
 Facts measured from the pixels:
 - ${facts('Design',design)}
 - ${facts('Built work',built)}
-${difference===undefined?'- The pictures differ in size, so no pixel difference was measured.':`- Mean channel difference: ${difference.toFixed(1)} of 255.`}
+${difference===undefined?'- The pictures differ in size, so no pixel difference was measured.':`- Mean channel difference: ${difference.toFixed(1)} of 255.`}${elementFacts(measured)}
 A difference is blocking when a person who compares the two pictures would say the build is not the design: ${visualDifference.blocking}.
 A difference is minor when it is ${visualDifference.minor}.
 Reply with only this JSON object and no other text:
@@ -36,11 +36,11 @@ Reply with only this JSON object and no other text:
 An empty differences array means the build matches the design.`;
 
 const dataUrl=(bytes:Buffer)=>`data:image/png;base64,${bytes.toString('base64')}`;
-function verdictOf(text:string,model:string,difference:number|undefined):VisualVerdict{
+function verdictOf(text:string,model:string,difference:number|undefined,measured:VisualDifference[]):VisualVerdict{
  const report=reviewReport(text) as {summary?:unknown;differences?:unknown};
  const differences=report.differences;
  if(!Array.isArray(differences)||!differences.every(d=>d&&typeof d==='object'&&severities.has((d as VisualDifference).severity)))throw new Error(`Visual judge ${model} replied without a valid differences array`);
- const listed=differences.map(d=>({area:String(d.area??''),expected:String(d.expected??''),actual:String(d.actual??''),severity:d.severity as VisualDifference['severity']}));
+ const listed=[...measured,...differences.map(d=>({area:String(d.area??''),expected:String(d.expected??''),actual:String(d.actual??''),severity:d.severity as VisualDifference['severity']}))];
  return {verdict:listed.some(d=>d.severity==='blocking')?'differs':'match',model,summary:String(report.summary??''),differences:listed,...(difference===undefined?{}:{meanDifference:Math.round(difference*10)/10})};
 }
 
@@ -49,7 +49,7 @@ export async function judgeRender(input:JudgeInput,fetcher:typeof fetch=fetch):P
  const design=decodePng(referenceBytes),built=decodePng(renderBytes);
  if(!design)throw new Error(`Design picture ${input.reference} is not a readable PNG`);
  if(!built)throw new Error(`Render ${input.render} is not a readable PNG`);
- const difference=meanDifference(design,built),prompt=instructions(design,built,difference);
+ const difference=meanDifference(design,built),measured=measuredElements(design,built),prompt=instructions(design,built,difference,measured);
  const failures:string[]=[];
  for(const model of await visualJudgeModels(input.seed,input.authorFamily,fetcher)){
   try{
@@ -59,7 +59,7 @@ export async function judgeRender(input:JudgeInput,fetcher:typeof fetch=fetch):P
     {type:'text',text:'Picture 2, the screenshot of the built work:'},{type:'image_url',image_url:{url:dataUrl(renderBytes)}}]}]},fetcher,input.root,{attempts:2,timeoutMs:120000});
    const content=value?.choices?.[0]?.message?.content;
    if(typeof content!=='string'||!content.trim())throw new Error(`Visual judge ${model} returned no text`);
-   return verdictOf(content,typeof value.model==='string'?value.model:model,difference);
+   return verdictOf(content,typeof value.model==='string'?value.model:model,difference,measured?.differences??[]);
   }catch(error){
    const message=(error as Error).message;
    failures.push(`${model}: ${message}`);

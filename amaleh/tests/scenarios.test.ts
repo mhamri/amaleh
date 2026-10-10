@@ -80,15 +80,30 @@ test('the scorecard counts each model as worker, reviewer and visual judge, and 
   'z-ai/flash':{worker:0,reviewer:1,judge:0,unavailable:0}});
 });
 
-test('the design-card verdict passes the page that made the picture and fails a wrong theme and a pasted picture',{timeout:180000},async t=>{
+test('the design-card verdict passes the page that made the picture and a real close build, and fails a wrong theme, squashed or resized builds and a pasted picture',{timeout:240000},async t=>{
  const workspace=await temp(t,'amaleh-design-card-'),scenario=await loadScenario('design-card');
  const {root,spaces}=await prepare(workspace,'design-card',scenario);
  const run=(card:string)=>writeFile(join(spaces.card,'card.html'),card).then(()=>scenario.verdict({root,spaces,state:{} as c.Run,health:{} as never}));
+ const liveRun=async(id:number)=>run(await readFile(join(import.meta.dirname,'fixtures',`design-card-run-${id}.html`),'utf8'));
  const source=await readFile(join(scenariosDir,'design-card','source.html'),'utf8');
  const exact=await run(source);
- assert.deepEqual(exact.map(r=>[r.name,r.pass]),[['text of the design',true],['key colors of the design',true],['layout against the design',true]],JSON.stringify(exact));
+ assert.deepEqual(exact.map(r=>[r.name,r.pass]),[['text of the design',true],['key colors of the design',true],['layout against the design',true],['measured elements against the design',true]],JSON.stringify(exact));
+ assert.equal(exact[3].value,"8 of the design's 8 solid elements were found in the build with the same count per color, 9 of its 9 text lines were found near their place, and 0 of the found ones are outside the size, place and ink color limits");
+ const close=await liveRun(1);
+ assert.deepEqual(close.map(r=>r.pass),[true,true,true,true],`the card deepseek built in live run design-card-1 passes: ${JSON.stringify(close)}`);
+ const squashed=await liveRun(11);
+ assert.deepEqual(squashed.map(r=>r.pass),[true,true,true,false],`the squashed card glm built in live run design-card-11 passed the old rows and fails the element row: ${JSON.stringify(squashed)}`);
+ assert.match(squashed[3].value,/the #38BDF8 element at x 70, y 213 of the design: 40x52 pixels at x 61, y 207: width 18% smaller \(9 pixels\), right edge 18 pixels to the left/);
+ assert.match(squashed[3].value,/the #1E293B element at x 46, y 30 of the design: 414x282 pixels at x 33, y 29: left edge 13 pixels to the left/);
+ const larger=await liveRun(12);
+ assert.deepEqual(larger.map(r=>r.pass),[true,true,true,false],`the card xiaomi built in live run design-card-12 has every box in place and fails on its text: ${JSON.stringify(larger)}`);
+ assert.match(larger[3].value,/the #F8FAFC text line at x 71, y 91 of the design: 143x37 pixels at x 72, y 89: height 12% larger \(4 pixels\)/);
+ assert.match(larger[3].value,/the #5E7489 text line at x 86, y 275 of the design: 20x10 pixels at x 84, y 276: width 25% larger \(4 pixels\), ink color #929FA7 instead of #5E7489/);
+ const smaller=await liveRun(14);
+ assert.deepEqual(smaller.map(r=>r.pass),[true,true,true,false],`the card glm built in live run design-card-14 has every box in place and fails on its text: ${JSON.stringify(smaller)}`);
+ assert.match(smaller[3].value,/the #F8FAFC text line at x 71, y 91 of the design: 110x28 pixels at x 71, y 90: width 17% smaller \(22 pixels\), height 15% smaller \(5 pixels\)/);
  const light=await run(source.replace('background: #0F172A','background: #F1F5F9').replace('background: #1E293B','background: #FFFFFF'));
- assert.deepEqual(light.map(r=>r.pass),[true,false,false],JSON.stringify(light));
+ assert.deepEqual(light.map(r=>r.pass),[true,false,false,false],JSON.stringify(light));
  const pasted=await run(`<!doctype html><body style="margin:0"><img src="${join(root,'design','card.png').replace(/\\/g,'/')}"></body>`);
  assert.equal(pasted[0].pass,false,'a page that only shows the picture has none of its text');
  assert.match(pasted[0].value,/missing: Monthly revenue, \$48,250/);

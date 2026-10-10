@@ -50,3 +50,12 @@ export function encodePng(spec:PngSpec){
   chunk('IDAT',deflateSync(Buffer.concat(rows))),chunk('IEND',new Uint8Array())]);
 }
 export const solidPng=(width:number,height:number,color:(x:number,y:number)=>[number,number,number])=>encodePng({width,height,colorType:2,depth:8,sample:color});
+
+export type CardBar={x:number;y:number;width:number;height:number};
+export type CardText={x:number;y:number;height:number;color:[number,number,number]};
+export const cardBars:CardBar[]=[{x:20,y:50,width:20,height:30},{x:50,y:40,width:20,height:40}];
+export const cardText:CardText={x:20,y:20,height:8,color:[248,250,252]};
+const inside=(b:CardBar,x:number,y:number)=>x>=b.x&&x<b.x+b.width&&y>=b.y&&y<b.y+b.height;
+const inLetter=(t:CardText,x:number,y:number)=>y>=t.y&&y<t.y+t.height&&x>=t.x&&x<t.x+16&&(x-t.x)%6<4;
+const thinCross=(x:number,y:number)=>(x>=163&&x<167&&y>=20&&y<80)||(y>=48&&y<52&&x>=135&&x<195);
+export const cardPng=(bars:CardBar[]=cardBars,text:CardText=cardText)=>solidPng(200,100,(x,y)=>bars.some(b=>inside(b,x,y))?[56,189,248]:inLetter(text,x,y)?text.color:x>=10&&x<130&&y>=10&&y<90?[30,41,59]:thinCross(x,y)?[245,158,11]:[15,23,42]);

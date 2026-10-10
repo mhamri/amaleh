@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { judgeRender, visualJudgeModels } from '../scripts/judge.ts';
-import { solidPng } from './png-fixture.ts';
+import { cardBars, cardPng, solidPng } from './png-fixture.ts';
 import { visualDifference } from '../scripts/design.ts';
 
 const card=(id:string,inputs:string[])=>({id,created:1,context_length:64000,architecture:{input_modalities:inputs},supported_parameters:['tools'],pricing:{prompt:'0.000001',completion:'0.000002'}});
@@ -57,6 +57,17 @@ test('the judge sends both pictures and the measured facts, and a blocking diffe
  assert.match(parts[0].text,/Design: 40x20 pixels; main colors by area: #0F172A 50\.0%, #38BDF8 50\.0%/);
  assert.match(parts[0].text,/Built work: 40x20 pixels; main colors by area: #0F172A 50\.0%, #F59E0B 50\.0%/);
  assert.ok(parts[0].text.includes(`would say the build is not the design: ${visualDifference.blocking}.\nA difference is minor when it is ${visualDifference.minor}.`),'the judge applies the bar the worker brief states');
+});
+
+test('a measured element outside the limits makes the build differ even when the model calls it a match, and the model is told not to list it again',async t=>{
+ const {reference,render,requests,fetcher}=await fixture(t,[{content:report([{area:'title',expected:'Segoe UI',actual:'Arial',severity:'minor'}])}]);
+ await writeFile(reference,cardPng());await writeFile(render,cardPng([{...cardBars[0],width:16},cardBars[1]]));
+ const verdict=await judgeRender({reference,render,seed:'run/card'},fetcher);
+ assert.equal(verdict.verdict,'differs');
+ assert.deepEqual(verdict.differences.map(d=>[d.severity,d.area]),[['blocking','the #38BDF8 element at x 20, y 50 of the design'],['minor','title']]);
+ assert.equal(verdict.differences[0].actual,'16x30 pixels at x 20, y 50: width 20% smaller (4 pixels)');
+ const prompt=requests[0].messages[0].content[0].text;
+ assert.ok(prompt.includes("- Measured elements: 3 of the design's 3 solid elements were found in the build with the same count per color, 1 of its 1 text lines was found near their place, and 1 of the found ones is outside the size, place and ink color limits. Each one outside the limits is already recorded as a blocking difference, so do not list it again: the #38BDF8 element at x 20, y 50 of the design: the design shows 20x30 pixels at x 20, y 50; the build shows 16x30 pixels at x 20, y 50: width 20% smaller (4 pixels)."),prompt);
 });
 
 test('only minor differences mean the build matches the design',async t=>{

@@ -3,6 +3,10 @@ import { inflateSync } from 'node:zlib';
 export type Pixels={width:number;height:number;rgba:Uint8Array};
 export type Swatch={hex:string;share:number};
 export type MeasuredPalette={main:Swatch[];accents:Swatch[]};
+export type Box={x:number;y:number;width:number;height:number};
+export type Region=Box&{hex:string;area:number};
+export type RegionPairs={hex:string;design:Region[];built:Region[];pairs:[Region,Region][]};
+export type ShapePairs={solids:RegionPairs[];texts:{design:Region[];pairs:[Region,Region][]}};
 
 const signature=[137,80,78,71,13,10,26,10];
 const channelsOf:Record<number,number>={0:1,2:3,3:1,4:2,6:4};
@@ -125,6 +129,107 @@ export function meanDifference(a:Pixels,b:Pixels){
 
 const rgbOf=(color:string)=>[1,3,5].map(at=>parseInt(color.slice(at,at+2),16));
 export const hexDistance=(a:string,b:string)=>Math.hypot(...rgbOf(a).map((v,i)=>v-rgbOf(b)[i]));
+
+const regionColorsAtMost=12,regionColorDistance=40,smallestRegion=400,smallestRegionShare=.001,solidFill=.6,pairedRegionsAtMost=40;
+const glyphSpan=.25,glyphsAtMost=4000,lineOverlap=.5,wordGap=.6,smallestTextLine=40,shortestTextLine=6,inkCore=.25;
+const regionPalette=(p:Pixels)=>colorGroups(p).groups.slice(0,regionColorsAtMost).map(g=>hex(...meanOf(g)));
+function nearestColorLabels(p:Pixels,colors:string[]){
+ const rgb=colors.map(rgbOf),labels=new Int16Array(p.width*p.height).fill(-1),farthest=regionColorDistance**2;
+ for(let i=0;i<labels.length;i++){
+  if(p.rgba[i*4+3]<128)continue;
+  let best=-1,bestDistance=farthest;
+  for(let c=0;c<rgb.length;c++){const dr=p.rgba[i*4]-rgb[c][0],dg=p.rgba[i*4+1]-rgb[c][1],db=p.rgba[i*4+2]-rgb[c][2],d=dr*dr+dg*dg+db*db;if(d<=bestDistance&&(best<0||d<bestDistance)){best=c;bestDistance=d;}}
+  labels[i]=best;
+ }
+ return labels;
+}
+type Patch=Box&{kind:number;pixels:Int32Array};
+const fourWay=[[-1,0],[1,0],[0,-1],[0,1]],eightWay=[...fourWay,[-1,-1],[1,-1],[-1,1],[1,1]];
+function patches(p:Pixels,kinds:Int16Array,steps:number[][]):Patch[]{
+ const {width,height}=p,seen=new Uint8Array(kinds.length),stack=new Int32Array(kinds.length),found:Patch[]=[];
+ for(let start=0;start<kinds.length;start++){
+  const kind=kinds[start];
+  if(kind<0||seen[start])continue;
+  let top=0,left=width,right=-1,upper=height,lower=-1;
+  const pixels:number[]=[];
+  seen[start]=1;stack[top++]=start;
+  while(top){
+   const i=stack[--top],x=i%width,y=(i-x)/width;pixels.push(i);
+   if(x<left)left=x;if(x>right)right=x;if(y<upper)upper=y;if(y>lower)lower=y;
+   for(const [dx,dy] of steps){
+    const nx=x+dx,ny=y+dy,n=ny*width+nx;
+    if(nx>=0&&ny>=0&&nx<width&&ny<height&&!seen[n]&&kinds[n]===kind){seen[n]=1;stack[top++]=n;}
+   }
+  }
+  found.push({kind,x:left,y:upper,width:right-left+1,height:lower-upper+1,pixels:Int32Array.from(pixels)});
+ }
+ return found;
+}
+const contains=(outer:Box,inner:Box)=>outer.x<=inner.x&&outer.y<=inner.y&&outer.x+outer.width>=inner.x+inner.width&&outer.y+outer.height>=inner.y+inner.height;
+const backgroundOf=(glyph:Box,solids:Region[])=>solids.filter(s=>contains(s,glyph)).sort((a,b)=>a.area-b.area)[0];
+function inkColor(p:Pixels,pixels:number[],background:string){
+ const [br,bg,bb]=rgbOf(background),far=pixels.map(i=>({i,d:(p.rgba[i*4]-br)**2+(p.rgba[i*4+1]-bg)**2+(p.rgba[i*4+2]-bb)**2})).sort((a,b)=>b.d-a.d);
+ const core=far.slice(0,Math.max(1,Math.ceil(far.length*inkCore))),mean=(c:number)=>core.reduce((n,f)=>n+p.rgba[f.i*4+c],0)/core.length;
+ return hex(mean(0),mean(1),mean(2));
+}
+function textLines(p:Pixels,glyphs:Patch[],solids:Region[],page:string):Region[]{
+ const grounds=glyphs.map(g=>backgroundOf(g,solids));
+ const owner=glyphs.map((_,i)=>i),root=(i:number):number=>owner[i]===i?i:(owner[i]=root(owner[i]));
+ for(let i=0;i<glyphs.length;i++)for(let j=i+1;j<glyphs.length;j++){
+  const a=glyphs[i],b=glyphs[j];
+  if(grounds[i]!==grounds[j])continue;
+  const overlap=Math.min(a.y+a.height,b.y+b.height)-Math.max(a.y,b.y),gap=Math.max(a.x,b.x)-Math.min(a.x+a.width,b.x+b.width);
+  if(overlap>=lineOverlap*Math.min(a.height,b.height)&&gap<=wordGap*Math.max(a.height,b.height))owner[root(i)]=root(j);
+ }
+ const lines=new Map<number,number[]>();
+ glyphs.forEach((_,i)=>{const r=root(i),line=lines.get(r);if(line)line.push(i);else lines.set(r,[i]);});
+ return [...lines.values()].map(members=>{
+  const parts=members.map(i=>glyphs[i]),pixels=parts.flatMap(g=>[...g.pixels]),x=Math.min(...parts.map(g=>g.x)),y=Math.min(...parts.map(g=>g.y));
+  return {hex:inkColor(p,pixels,grounds[members[0]]?.hex??page),x,y,width:Math.max(...parts.map(g=>g.x+g.width))-x,height:Math.max(...parts.map(g=>g.y+g.height))-y,area:pixels.length};
+ });
+}
+function shapesOf(p:Pixels,colors:string[]){
+ const labels=nearestColorLabels(p,colors),least=Math.max(smallestRegion,p.width*p.height*smallestRegionShare);
+ const large=patches(p,labels,fourWay).filter(a=>a.pixels.length>=least);
+ const solids:Region[]=large.filter(a=>a.pixels.length/(a.width*a.height)>=solidFill).map(a=>({hex:colors[a.kind],x:a.x,y:a.y,width:a.width,height:a.height,area:a.pixels.length}));
+ const ink=new Int16Array(labels.length);
+ for(let i=0;i<ink.length;i++)if(p.rgba[i*4+3]<128)ink[i]=-1;
+ for(const a of large)for(const i of a.pixels)ink[i]=-1;
+ const glyphs=patches(p,ink,eightWay).filter(g=>g.width<p.width*glyphSpan&&g.height<p.height*glyphSpan);
+ return {solids,texts:glyphs.length>glyphsAtMost?[]:textLines(p,glyphs,solids,colors[0]??'#FFFFFF').filter(measurableText)};
+}
+const measurableText=(line:Region)=>line.area>=smallestTextLine&&line.height>=shortestTextLine;
+export const pictureShapes=(p:Pixels)=>shapesOf(p,regionPalette(p));
+
+const centerGap=(a:Box,b:Box)=>Math.hypot(a.x+a.width/2-b.x-b.width/2,a.y+a.height/2-b.y-b.height/2);
+function nearestPairs(design:Region[],built:Region[]){
+ const candidates=design.flatMap(d=>built.map(b=>({d,b,gap:centerGap(d,b)}))).sort((x,y)=>x.gap-y.gap),used=new Set<Region>(),pairs:[Region,Region][]=[];
+ for(const {d,b} of candidates)if(!used.has(d)&&!used.has(b)){used.add(d);used.add(b);pairs.push([d,b]);}
+ return pairs;
+}
+const reaches=(line:Region,built:Region)=>{const cx=built.x+built.width/2,cy=built.y+built.height/2;return cx>=line.x-line.height&&cx<=line.x+line.width+line.height&&cy>=line.y-line.height&&cy<=line.y+line.height*2;};
+function textPairs(design:Region[],built:Region[]):[Region,Region][]{
+ const owned=new Map<Region,Region[]>();
+ for(const b of built){
+  const owner=design.filter(d=>reaches(d,b)).sort((x,y)=>centerGap(x,b)-centerGap(y,b))[0];
+  if(owner)owned.set(owner,[...owned.get(owner)??[],b]);
+ }
+ return design.flatMap(d=>{
+  const near=owned.get(d);
+  if(!near)return [];
+  const x=Math.min(...near.map(b=>b.x)),y=Math.min(...near.map(b=>b.y)),largest=[...near].sort((a,b)=>b.area-a.area)[0];
+  return [[d,{hex:largest.hex,x,y,width:Math.max(...near.map(b=>b.x+b.width))-x,height:Math.max(...near.map(b=>b.y+b.height))-y,area:near.reduce((n,b)=>n+b.area,0)}]];
+ });
+}
+// See references/runtime.md#measured-elements
+export function pairedShapes(design:Pixels,built:Pixels):ShapePairs{
+ const colors=regionPalette(design),ours=shapesOf(design,colors),theirs=shapesOf(built,colors);
+ const solids=colors.map(hex=>{
+  const d=ours.solids.filter(r=>r.hex===hex),b=theirs.solids.filter(r=>r.hex===hex);
+  return {hex,design:d,built:b,pairs:d.length===b.length&&d.length<=pairedRegionsAtMost?nearestPairs(d,b):[]};
+ }).filter(g=>g.design.length||g.built.length);
+ return {solids,texts:{design:ours.texts,pairs:textPairs(ours.texts,theirs.texts)}};
+}
 
 const listed=(swatches:Swatch[])=>swatches.length?swatches.map(s=>`${s.hex} ${(s.share*100).toFixed(1)}%`).join(', '):'none';
 export const describePalette=(palette:MeasuredPalette)=>`main colors by area: ${listed(palette.main)}; accent colors: ${listed(palette.accents)}`;

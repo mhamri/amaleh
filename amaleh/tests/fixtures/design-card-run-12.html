@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Revenue card</title>
+<style>
+  :root {
+    --page-bg: #0F172A;      /* picture background */
+    --card-bg: #1E293B;      /* card surface */
+    --text-primary: #F7FAFB; /* big number */
+    --text-muted: #94A3B8;   /* title and month labels */
+    --bar-blue: #38BDF8;     /* chart series (Jan-May) */
+    --bar-amber: #F59E0B;    /* chart series (Jun) */
+    --badge-bg: #14532D;     /* delta badge surface */
+    --badge-text: #4ADE80;   /* delta badge text */
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 480px;
+    height: 340px;
+    overflow: hidden;
+    background: var(--page-bg);
+  }
+
+  body {
+    font-family: "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .card {
+    position: absolute;
+    left: 46px;
+    top: 30px;
+    width: 400px;
+    height: 281px;
+    background: var(--card-bg);
+    border-radius: 16px;
+  }
+
+  .title {
+    position: absolute;
+    left: 24px;
+    top: 26px;
+    font-size: 15px;
+    line-height: 20px;
+    color: var(--text-muted);
+  }
+
+  .amount {
+    position: absolute;
+    left: 24px;
+    top: 52px;
+    height: 45px;
+    line-height: 45px;
+    font-size: 40px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: var(--text-primary);
+  }
+
+  .badge {
+    position: absolute;
+    left: 170px;
+    top: 62px;
+    width: 63px;
+    height: 25px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--badge-bg);
+    border-radius: 13px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--badge-text);
+  }
+
+  .bar {
+    position: absolute;
+    border-radius: 6px 6px 0 0;
+  }
+
+  .bar-blue  { background: var(--bar-blue); }
+  .bar-amber { background: var(--bar-amber); }
+
+  /* bar geometry from the design picture: bottoms all at 263px (233px in card) */
+  .bar-jan { left:  24px; top: 183px; width: 49px; height:  50px; }
+  .bar-feb { left:  85px; top: 167px; width: 48px; height:  66px; }
+  .bar-mar { left: 145px; top: 175px; width: 49px; height:  58px; }
+  .bar-apr { left: 206px; top: 150px; width: 49px; height:  83px; }
+  .bar-may { left: 267px; top: 158px; width: 48px; height:  75px; }
+  .bar-jun { left: 327px; top: 123px; width: 49px; height: 110px; }
+
+  .label {
+    position: absolute;
+    top: 242px;
+    text-align: center;
+    font-size: 14px;
+    line-height: 18px;
+    color: var(--text-muted);
+  }
+
+  .label-jan { left:  24px; width: 49px; }
+  .label-feb { left:  85px; width: 48px; }
+  .label-mar { left: 145px; width: 49px; }
+  .label-apr { left: 206px; width: 49px; }
+  .label-may { left: 267px; width: 48px; }
+  .label-jun { left: 327px; width: 49px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="title">Monthly revenue</div>
+    <div class="amount">$48,250</div>
+    <div class="badge">+12.4%</div>
+
+    <div class="bar bar-blue bar-jan"></div>
+    <div class="bar bar-blue bar-feb"></div>
+    <div class="bar bar-blue bar-mar"></div>
+    <div class="bar bar-blue bar-apr"></div>
+    <div class="bar bar-blue bar-may"></div>
+    <div class="bar bar-amber bar-jun"></div>
+
+    <div class="label label-jan">Jan</div>
+    <div class="label label-feb">Feb</div>
+    <div class="label label-mar">Mar</div>
+    <div class="label label-apr">Apr</div>
+    <div class="label label-may">May</div>
+    <div class="label label-jun">Jun</div>
+  </div>
+</body>
+</html>

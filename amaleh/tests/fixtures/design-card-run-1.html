@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=480, initial-scale=1">
+<title>Monthly revenue</title>
+<style>
+  /* ---- theme tokens (values measured from the design picture) ---- */
+  :root {
+    --color-background: #0F172A;
+    --color-surface: #1E293B;
+    --color-text: #F8FAFC;
+    --color-text-muted: #94A3B8;
+    --color-axis-label: #64748B;
+    --color-accent: #38BDF8;
+    --color-accent-highlight: #F59E0B;
+    --color-positive-surface: #14532D;
+    --color-positive-text: #4ADE80;
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --size-stage-width: 480px;
+    --size-stage-height: 340px;
+    --size-card-width: 400px;
+    --size-card-height: 281px;
+    --radius-card: 16px;
+    --radius-bar: 6px;
+  }
+
+  html,
+  body {
+    width: var(--size-stage-width);
+    height: var(--size-stage-height);
+    overflow: hidden;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-background);
+    font-family: var(--font-sans);
+  }
+
+  /* ---- card ---- */
+  .card {
+    position: absolute;
+    top: 30px;
+    left: 46px;
+    box-sizing: border-box;
+    width: var(--size-card-width);
+    height: var(--size-card-height);
+    padding: 24px;
+    background: var(--color-surface);
+    border-radius: var(--radius-card);
+  }
+
+  .card__title {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 20px;
+    color: var(--color-text-muted);
+  }
+
+  .card__headline {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    height: 44px;
+    margin-top: 9px;
+  }
+
+  .card__amount {
+    font-size: 36px;
+    font-weight: 700;
+    line-height: 44px;
+    color: var(--color-text);
+  }
+
+  .card__badge {
+    display: inline-flex;
+    align-items: center;
+    height: 25px;
+    padding: 0 11px;
+    margin-bottom: 1px;
+    border-radius: 999px;
+    background: var(--color-positive-surface);
+    color: var(--color-positive-text);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  /* ---- chart ---- */
+  .chart {
+    display: flex;
+    align-items: flex-end;
+    gap: 12px;
+    margin-top: 26px;
+  }
+
+  .chart__column {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+  }
+
+  .chart__bar {
+    width: 100%;
+    background: var(--color-accent);
+    border-radius: var(--radius-bar) var(--radius-bar) 0 0;
+  }
+
+  .chart__bar--highlight {
+    background: var(--color-accent-highlight);
+  }
+
+  .chart__bar--jan { height: 50px; }
+  .chart__bar--feb { height: 66px; }
+  .chart__bar--mar { height: 58px; }
+  .chart__bar--apr { height: 83px; }
+  .chart__bar--may { height: 75px; }
+  .chart__bar--jun { height: 110px; }
+
+  .chart__label {
+    margin-top: 8px;
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 16px;
+    text-align: center;
+    color: var(--color-axis-label);
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <p class="card__title">Monthly revenue</p>
+    <div class="card__headline">
+      <span class="card__amount">$48,250</span>
+      <span class="card__badge">+12.4%</span>
+    </div>
+    <div class="chart">
+      <div class="chart__column">
+        <div class="chart__bar chart__bar--jan"></div>
+        <span class="chart__label">Jan</span>
+      </div>
+      <div class="chart__column">
+        <div class="chart__bar chart__bar--feb"></div>
+        <span class="chart__label">Feb</span>
+      </div>
+      <div class="chart__column">
+        <div class="chart__bar chart__bar--mar"></div>
+        <span class="chart__label">Mar</span>
+      </div>
+      <div class="chart__column">
+        <div class="chart__bar chart__bar--apr"></div>
+        <span class="chart__label">Apr</span>
+      </div>
+      <div class="chart__column">
+        <div class="chart__bar chart__bar--may"></div>
+        <span class="chart__label">May</span>
+      </div>
+      <div class="chart__column">
+        <div class="chart__bar chart__bar--jun chart__bar--highlight"></div>
+        <span class="chart__label">Jun</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
