@@ -10,6 +10,7 @@ import {recordHostAction,hostActions,exportDiagnostics,processHealth} from './ho
 import {delegate,delegateBatch,validateBatch,waitForDelegations,waitForDrive,type BatchInput} from './delegate.ts';
 import {drive,validateDrive,type DriveInput} from './drive.ts';
 import {bench,renderScorecard} from './bench.ts';
+import {runFolders} from './records.ts';
 import { selectModel } from './routing.ts';
 import * as effort from './effort.ts';
 import { trace, diagnostics } from './telemetry.ts';
@@ -71,7 +72,7 @@ async function executeMain(args=process.argv.slice(2),attached=false){
  if(operation==='install')return install(args[1]);
  if(operation==='uninstall')return uninstall(args[1]);
  if(operation==='doctor'){const pi=await adapters.piCommand();let auth=false;try{auth=!!await adapters.credential();}catch{}return {runtime:{engine:process.versions.bun?'bun':'node',version:process.versions.bun??process.versions.node,nodeCompatibility:process.versions.node,executable:process.execPath},platform:process.platform,pi,openrouterConfigured:auth,dependencies:'No npm runtime dependencies',jevEndpoint:'https://openrouter.ai/api/alpha/decisions'};}
- if(operation==='list'){let ids:string[];try{ids=(await readdir(join(resolve(workspace),'.amaleh','runs'))).filter(id=>/^[a-zA-Z0-9_-]+$/.test(id));}catch(e){if((e as NodeJS.ErrnoException).code==='ENOENT')return [];throw e;}const summaries=await Promise.all(ids.map(async id=>{try{return await core.summarize(workspace,id);}catch(e){return {id,status:'blocked',intent:'<unreadable: '+(e as Error).message+'>',criteria:[],tasks:0,revision:-1} satisfies core.RunSummary;}}));return summaries.sort((a:core.RunSummary,b:core.RunSummary)=>b.revision-a.revision||a.id.localeCompare(b.id));}
+ if(operation==='list'){const ids=[...new Set((await Promise.all(runFolders(workspace).map(folder=>readdir(folder).catch((e:NodeJS.ErrnoException)=>{if(e.code==='ENOENT')return [] as string[];throw e;})))).flat())].filter(id=>/^[a-zA-Z0-9_-]+$/.test(id));const summaries=await Promise.all(ids.map(async id=>{try{return await core.summarize(workspace,id);}catch(e){return {id,status:'blocked',intent:'<unreadable: '+(e as Error).message+'>',criteria:[],tasks:0,revision:-1} satisfies core.RunSummary;}}));return summaries.sort((a:core.RunSummary,b:core.RunSummary)=>b.revision-a.revision||a.id.localeCompare(b.id));}
  const input=inputPath?JSON.parse(await readFile(resolve(inputPath),'utf8')):{};
  if(operation==='start'){const {base,...rest}=input;const check=await verifyStartBase(workspace,base),folder=await ensureWorktreeFolder(workspace,check);const store=await core.start(workspace,{...rest,id:runId});await recordBase(store,'start',check);await recordWorktreeFolder(store,folder);return core.packet(store);}
  if(operation==='worktrees')return listWorktrees(workspace);

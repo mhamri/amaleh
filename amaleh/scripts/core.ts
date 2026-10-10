@@ -8,6 +8,7 @@ import { resourceSetsOverlap, inScope } from './resources.ts';
 import { family } from './family.ts';
 import { processAlive, ownerAlive } from './owner.ts';
 import { withCheckLock } from './check-lock.ts';
+import { keepRecordsOutOfGit, runFolders, runRecords } from './records.ts';
 export { family } from './family.ts';
 
 export type Command = { command:string; args:string[] };
@@ -52,7 +53,7 @@ export async function fingerprint(workspace:string):Promise<string>{
 }
 export class Store {
  root:string;amalehDir:string;
- constructor(workspace:string,runId:string){idCheck(runId);this.amalehDir=join(resolve(workspace),'.amaleh');this.root=join(this.amalehDir,'runs',runId);}
+ constructor(workspace:string,runId:string){idCheck(runId);this.amalehDir=runRecords(workspace,runId);this.root=join(this.amalehDir,'runs',runId);}
  async load():Promise<Run>{const names=(await readdir(this.root)).filter(n=>/^revision-\d{9}\.json$/.test(n)).sort();invariant(names.length,'Run not found');const state=JSON.parse(await readFile(join(this.root,names.at(-1)!), 'utf8'));invariant(state.schema===1,'Unsupported run schema');validateTasks(state.tasks);return state;}
  async artifact(data:unknown):Promise<string>{await mkdir(join(this.root,'artifacts'),{recursive:true});const text=typeof data==='string'?data:JSON.stringify(data,null,2),id=hash(text);await writeFile(join(this.root,'artifacts',id+'.json'),text,{flag:'wx'}).catch((e)=>{if(e.code!=='EEXIST')throw e;});return id;}
  async readArtifact(id:string){invariant(/^[a-f0-9]{64}$/.test(id),'Invalid artifact ID');return readFile(join(this.root,'artifacts',id+'.json'),'utf8');}
@@ -140,13 +141,15 @@ const intentStopwords=new Set(['with','that','this','from','into','when','then',
 const intentWords=(text:string)=>new Set(text.toLowerCase().split(/[^a-z]+/).filter(w=>w.length>=4&&!intentStopwords.has(w)));
 function intentOverlap(a:Set<string>,b:Set<string>){const smaller=Math.min(a.size,b.size);if(!smaller)return 0;let shared=0;for(const word of a)if(b.has(word))shared++;return shared/smaller;}
 async function priorRuns(workspace:string,exclude:string):Promise<{id:string;intent:string;criteria:string[]}[]>{
- let names:string[];try{names=await readdir(join(workspace,'.amaleh','runs'));}catch{return [];}
  const runs:{id:string;intent:string;criteria:string[]}[]=[];
- for(const name of names){if(name===exclude)continue;try{
-  const dir=join(workspace,'.amaleh','runs',name),revisions=(await readdir(dir)).filter(n=>/^revision-\d{9}\.json$/.test(n)).sort();if(!revisions.length)continue;
-  const prior=JSON.parse(await readFile(join(dir,revisions.at(-1)!),'utf8'));
-  if(typeof prior?.intent==='string'&&Array.isArray(prior?.criteria))runs.push({id:name,intent:prior.intent,criteria:prior.criteria.filter((c:unknown)=>typeof c==='string')});
- }catch{continue;}}
+ for(const folder of runFolders(workspace)){
+  let names:string[];try{names=await readdir(folder);}catch{continue;}
+  for(const name of names){if(name===exclude||runs.some(r=>r.id===name))continue;try{
+   const dir=join(folder,name),revisions=(await readdir(dir)).filter(n=>/^revision-\d{9}\.json$/.test(n)).sort();if(!revisions.length)continue;
+   const prior=JSON.parse(await readFile(join(dir,revisions.at(-1)!),'utf8'));
+   if(typeof prior?.intent==='string'&&Array.isArray(prior?.criteria))runs.push({id:name,intent:prior.intent,criteria:prior.criteria.filter((c:unknown)=>typeof c==='string')});
+  }catch{continue;}}
+ }
  return runs;
 }
 async function overlappingRun(workspace:string,id:string,intent:string){
@@ -172,6 +175,7 @@ export async function start(workspace:string,input:{id:string;host:Run['host'];i
  if(unrelated&&!input.continues)event(s,'unrelated-run',{reason:unrelated,matched:overlapping?.id,score:overlapping?.score});
  event(s,'request',{request:1,kind:'intent',text:input.intent} satisfies ShapeRequest);
  if(input.shape!==undefined){const shaped=validateShape(s,input.shape);recordShape(s,shaped,await store.artifact(shaped));}
+ if(store.amalehDir!==join(root,'.amaleh'))event(s,'records-in-main-checkout',{records:store.amalehDir,excluded:await keepRecordsOutOfGit(root)});
  await store.save(s);return store;}finally{await release();}}
 export async function plan(store:Store,input:{tasks:TaskInput[];integrationChecks:IntegrationCheck[];singleChunk?:string}){await store.transaction(s=>{requireShaped(s,'plan');invariant(Array.isArray(input.tasks)&&Array.isArray(input.integrationChecks),'Tasks and integrationChecks required');const existing=new Map(s.tasks.map(t=>[t.id,t]));const tasks=input.tasks.map(t=>{const old=existing.get(t.id);if(old){invariant(JSON.stringify([old.goal,old.deps,old.criteria,old.checks])===JSON.stringify([t.goal,t.deps,t.criteria,t.checks]),'Existing task contract changed; invalidate/replan explicitly');return old;}return {...t,status:'ready' as const,cycles:0,depth:'flash' as const,receipts:[]};});invariant([...existing.keys()].every(id=>tasks.some(t=>t.id===id)),'Cannot drop task history');validateTasks(tasks);for(const t of input.tasks)if(!existing.has(t.id))validateContract(t);const singleChunk=input.singleChunk?.trim();if(tasks.length===1&&!existing.has(tasks[0].id)&&(s.criteria.length>=3||tasks[0].criteria.length>=4)){invariant(singleChunk,`Single task for ${s.criteria.length} run outcomes and ${tasks[0].criteria.length} task criteria; split into independent chunks or pass singleChunk with a reason`);event(s,'single-chunk',{reason:singleChunk,runCriteria:s.criteria.length,taskCriteria:tasks[0].criteria.length});}input.integrationChecks.forEach(validCommand);s.tasks=tasks;s.integrationChecks=input.integrationChecks;s.integrationReceipts=[];event(s,'planned',{tasks:tasks.map(t=>t.id)});});}
 // Coverage is an explicit reviewer attestation, not proof that all defects were found.

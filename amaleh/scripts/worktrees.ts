@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import * as core from './core.ts';
 import { resolvedDefault, type BaseCheck } from './base.ts';
+import { runFolders } from './records.ts';
 
 const ignoreProbe='.amaleh/worktrees/probe';
 const ignoreLine='/.amaleh/';
@@ -124,16 +125,19 @@ type WorktreeEntry={path:string;branch:string|null;head:string;main:boolean;dirt
 export type WorktreeListing={defaultBranch:string|null;worktrees:WorktreeEntry[];reason?:string};
 
 async function taskOwners(dir:string){
- const owners=new Map<string,{task:WorktreeTask;runStatus:string}[]>();
- const root=join(dir,'.amaleh','runs');
- let runs:string[];try{runs=await readdir(root);}catch{return owners;}
- for(const run of runs){
-  let state:core.Run;
-  try{const revisions=(await readdir(join(root,run))).filter(n=>/^revision-\d+\.json$/.test(n)).sort();if(!revisions.length)continue;state=JSON.parse(await readFile(join(root,run,revisions.at(-1)!),'utf8')) as core.Run;}catch{continue;}
-  for(const t of state.tasks??[]){
-   if(typeof t.workspace!=='string')continue;
-   const entry={task:{run,id:t.id,status:t.status,integrated:!!t.integrated},runStatus:state.status};
-   owners.set(key(t.workspace),[...(owners.get(key(t.workspace))??[]),entry]);
+ const owners=new Map<string,{task:WorktreeTask;runStatus:string}[]>(),seen=new Set<string>();
+ for(const root of runFolders(dir)){
+  let runs:string[];try{runs=await readdir(root);}catch{continue;}
+  for(const run of runs){
+   if(seen.has(run))continue;
+   seen.add(run);
+   let state:core.Run;
+   try{const revisions=(await readdir(join(root,run))).filter(n=>/^revision-\d+\.json$/.test(n)).sort();if(!revisions.length)continue;state=JSON.parse(await readFile(join(root,run,revisions.at(-1)!),'utf8')) as core.Run;}catch{continue;}
+   for(const t of state.tasks??[]){
+    if(typeof t.workspace!=='string')continue;
+    const entry={task:{run,id:t.id,status:t.status,integrated:!!t.integrated},runStatus:state.status};
+    owners.set(key(t.workspace),[...(owners.get(key(t.workspace))??[]),entry]);
+   }
   }
  }
  return owners;

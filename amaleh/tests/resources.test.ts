@@ -30,6 +30,17 @@ test('spellings of one path overlap: case, backslashes, ./ and duplicate slashes
  assert.ok(!resourcesOverlap('./website/src/**','./amaleh/scripts/**'));
 });
 
+test('a glob without ** does not overlap a sibling path it cannot match',()=>{
+ assert.ok(!resourcesOverlap('lib/Pages/ReportsPage/cubit/reports*','lib/Pages/ReportsPage/cubit/history_controller.dart'));
+ assert.ok(!resourcesOverlap('lib/Pages/ReportsPage/widgets/report_filter_bar.dart','lib/Pages/ReportsPage/widgets/history*'));
+ assert.ok(!resourcesOverlap('website/src/*.css','website/src/app.ts'));
+ assert.ok(resourcesOverlap('lib/cubit/reports*','lib/cubit/reports_cubit.dart'),'the glob matches the literal');
+ assert.ok(resourcesOverlap('LIB/Cubit/Reports*','lib/cubit/reports_cubit.dart'),'matching ignores case');
+ assert.ok(resourcesOverlap('lib/cubit/*/state.dart','lib/cubit'),'a shorter literal is a directory that can hold a match');
+ assert.ok(resourcesOverlap('lib/**/reports*','lib/cubit/history_controller.dart'),'** can reach below a literal directory');
+ assert.ok(resourcesOverlap('*','lib/cubit/history_controller.dart'),'* owns everything');
+});
+
 test('plain paths keep their subtree ownership',()=>{
  assert.ok(resourcesOverlap('docs','docs/contract.md'));
  assert.ok(resourcesOverlap('*','anything'));

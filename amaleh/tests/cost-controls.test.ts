@@ -120,8 +120,15 @@ test('health measures the main model from its transcripts and warns when it read
  const health=await processHealth(store) as any;
  assert.deepEqual([health.metrics.mainModel.turns,health.metrics.mainModel.toolCalls,health.metrics.mainModel.cacheReadTokens,health.metrics.mainModel.outputTokens],[2,3,6000,100],'a repeated message id counts once, and a turn before the run does not count');
  assert.ok(health.warnings.some((w:string)=>/main model read 0\.01 million tokens over 2 turn\(s\)/.test(w)),health.warnings.join('\n'));
- const codex=await c.start(await temp(t,'amaleh-mainmodel-codex-'),{shape:clearCut,id:'main',host:{kind:'codex',model:'gpt-6-astra'},intent:'Measure the main model',criteria:['Main model measured']});
- assert.equal(((await processHealth(codex)) as any).metrics.mainModel.available,false);
+ const codexHome=await temp(t,'amaleh-codex-home-'),codexWorkspace=await temp(t,'amaleh-mainmodel-codex-'),oldCodex=process.env.CODEX_HOME;
+ process.env.CODEX_HOME=codexHome;
+ t.after(()=>{if(oldCodex===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=oldCodex;});
+ const codex=await c.start(codexWorkspace,{shape:clearCut,id:'main',host:{kind:'codex',model:'gpt-6-astra'},intent:'Measure the main model',criteria:['Main model measured']});
+ assert.equal(((await processHealth(codex)) as any).metrics.mainModel.available,false,'no Codex session folder exists yet');
+ await mkdir(join(codexHome,'archived_sessions'),{recursive:true});
+ await writeFile(join(codexHome,'archived_sessions','rollout.jsonl'),[JSON.stringify({timestamp:before,type:'session_meta',payload:{cwd:codexWorkspace}}),JSON.stringify({timestamp:new Date().toISOString(),type:'event_msg',payload:{type:'token_count',info:{total_token_usage:{total_tokens:60},last_token_usage:{input_tokens:50,cached_input_tokens:40,output_tokens:10}}}})].join('\n'));
+ const codexUsage=((await processHealth(codex)) as any).metrics.mainModel;
+ assert.deepEqual([codexUsage.available,codexUsage.turns,codexUsage.inputTokens,codexUsage.cacheReadTokens],[true,1,10,40]);
 });
 
 test('health warns when the deep model takes most of the spend, and stays quiet otherwise',async t=>{

@@ -12,6 +12,7 @@ import type { RoutingRequest } from './routing.ts';
 import { trace, registerSecret, sanitize, recordSpeed } from './telemetry.ts';
 import { jsRuntime } from './runtime.ts';
 import { jevModel, isAlias, loadModelConfig } from './config.ts';
+import { ownProcessGroup, stopProcessGroup, stopStrays } from './strays.ts';
 
 export async function piCommand():Promise<Command>{
  const runtime=await jsRuntime();
@@ -120,7 +121,8 @@ export async function piRun(input:{workspace:string;model:string;prompt:string;s
   const launch=(prompt:string,continueSession:boolean)=>new Promise<{events:any[];text:string;model:string;code:number;stopReason:string;writes:{paths:string[];outside:string[]}}>((done,fail)=>{
    const args=[...pi.args,'--mode','json','--print',...(continueSession?['--continue']:[]),'--provider','openrouter','--model',input.model,...(input.thinking?['--thinking',input.thinking]:[]),'--session-dir',input.sessionDir,'--no-extensions','--no-skills','--no-prompt-templates','--no-context-files','--offline','--tools',input.readOnly?'read,grep,find,ls':'read,grep,find,ls,edit,write,bash,powershell','--',prompt];
    // Synchronous spawn errors reject this ordinary Promise executor; no async-executor hang.
-   const child=spawn(pi.command,args,{cwd:input.workspace,windowsHide:true,shell:false,stdio:['ignore','pipe','pipe'],env:{...process.env,OPENROUTER_API_KEY:key,PI_TELEMETRY:'0'}});
+   const launchedAt=Date.now();
+   const child=spawn(pi.command,args,{cwd:input.workspace,windowsHide:true,shell:false,detached:ownProcessGroup,stdio:['ignore','pipe','pipe'],env:{...process.env,OPENROUTER_API_KEY:key,PI_TELEMETRY:'0'}});
    let buffer='',stderr='',events:any[]=[],text='',actual='',protocolError='',providerError='',ended=false,turns=0,stopReason='';
    const writeArgs:(string|undefined)[]=[];
    let spawnError:Error|undefined;
@@ -183,6 +185,7 @@ export async function piRun(input:{workspace:string;model:string;prompt:string;s
    child.on('error',error=>{spawnError=error;});
    child.on('close',(code,signal)=>{clearInterval(idleTimer);clearTimeout(callTimer);void (async()=>{
     if(buffer.trim())parse(buffer.replace(/\r$/,''));
+    if(!input.readOnly){const strays=await stopStrays({workspace:input.workspace,since:launchedAt,callPid:child.pid}).catch(()=>[]);if(strays.length)record('strays-stopped',{strays});}
     await ownership;await writes;
     await telemetry.write('process-exit',{code,signal,stderr,protocolError,providerError,ended,actualModel:actual});
     if(spawnError)throw spawnError;
@@ -249,7 +252,7 @@ type WorkerPromptInput={workspace:string;briefPath:string;artifacts:string;runti
 export const nestedRunCheckout=(runWorkspace:string,workspace:string)=>{const inside=relative(resolve(runWorkspace),resolve(workspace));return inside!==''&&!inside.startsWith('..')&&!isAbsolute(inside);};
 export const workerPrompt=({workspace,briefPath,artifacts,runtime,jev,question,runWorkspace,runId,taskId,nested}:WorkerPromptInput)=>`You are an Amaleh worker owning this task end to end inside the task workspace "${workspace}". Do not invoke other skills or delegate. Do not add hypothetical features.
 Every edit and write must stay under "${workspace}".
-${nested?`The run's main checkout at "${runWorkspace}" contains this task workspace, so everything in it outside "${workspace}" is read-only: read it, never edit it or copy it in. The brief at "${briefPath}" and the run's artifacts at "${artifacts}" sit outside this workspace as read-only run records kept under that main checkout: read them, never edit them or copy them into your work. The Jev helper at "${jev}" and the contract question helper at "${question}" sit outside it and are read-only: read them, never edit or copy them in.`:`The brief at "${briefPath}", the run's artifacts at "${artifacts}", the Jev helper at "${jev}", the contract question helper at "${question}" and the run's main checkout at "${runWorkspace}" sit outside it and are read-only: read them, never edit or copy them in.`}
+${nested?`The run's main checkout at "${runWorkspace}" contains this task workspace, so everything in it outside "${workspace}" is read-only: read it, never edit it or copy it in. The brief at "${briefPath}" and the run's artifacts at "${artifacts}" sit outside this workspace as read-only run records: read them, never edit them or copy them into your work. The Jev helper at "${jev}" and the contract question helper at "${question}" sit outside it and are read-only: read them, never edit or copy them in.`:`The brief at "${briefPath}", the run's artifacts at "${artifacts}", the Jev helper at "${jev}", the contract question helper at "${question}" and the run's main checkout at "${runWorkspace}" sit outside it and are read-only: read them, never edit or copy them in.`}
 Your brief, the run context and any binding guidance are in "${briefPath}". Read that file in full before you touch anything, and follow it as part of your instructions.
 When you face an uncertain semantic choice inside this task (approach, trade-off, interpretation), consult Jev instead of guessing or stalling: "${runtime}" "${jev}" "${runWorkspace}" ${runId} ${taskId} "<question>" "<optionA>|<optionB>|...". Follow its choice; on low confidence pick the safest option, record why, and continue.
 Jev chooses between options inside the task contract; it cannot repair the contract. When the contract itself is wrong, do not bend the work to fit it: a registered check that cannot pass for a reason outside this task (for example it compares text the platform rewrites), criteria that contradict each other, or vendor code you would have to write without a source. Raise a contract question instead: "${runtime}" "${question}" "${runWorkspace}" ${runId} ${taskId} "<what is wrong, with the evidence you observed>" [check id]. Then stop working on that part and finish your run; the coordinator answers before any more work on this task.
@@ -326,6 +329,7 @@ export async function reviewPacket(store:Store,id:string,lenses:string[]=[],chan
 // Killing pi alone leaves a hung grandchild running, holding the pipe open, so
 // the close event never arrives. Windows needs the whole tree taken down.
 export function killTree(child:{pid?:number;kill:(signal?:NodeJS.Signals)=>boolean}){
+ if(child.pid&&ownProcessGroup&&stopProcessGroup(child.pid))return;
  if(!child.pid||process.platform!=='win32'){child.kill('SIGKILL');return;}
  const killer=spawn('taskkill',['/pid',String(child.pid),'/T','/F'],{windowsHide:true,shell:false,stdio:'ignore'});
  killer.on('error',()=>{child.kill('SIGKILL');});
