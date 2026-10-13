@@ -6,7 +6,7 @@ Versions below were checked against authoritative release sources on **2026-09-2
 | --- | --- | --- |
 | SolidStart | 2.0.5 | [npm registry](https://registry.npmjs.org/@solidjs%2fstart/latest) |
 | Nitro (compatibility exception) | 3.0.260903-beta | [Registry metadata](https://registry.npmjs.org/nitro/3.0.260903-beta) |
-| Solid | 1.9.15 | [npm registry](https://registry.npmjs.org/solid-js/latest) |
+| Solid | 1.9.17 | [npm registry](https://registry.npmjs.org/solid-js/latest) |
 | Solid Router | 1.0.0 | [npm registry](https://registry.npmjs.org/@solidjs%2frouter/latest) |
 | Solid Meta | 0.29.4 | [npm registry](https://registry.npmjs.org/@solidjs%2fmeta/latest) |
 | daisyUI | 5.7.42 | [npm registry](https://registry.npmjs.org/daisyui/latest) |
@@ -26,6 +26,10 @@ Versions below were checked against authoritative release sources on **2026-09-2
 | actions/deploy-pages | 5.0.1 | [Official release](https://github.com/actions/deploy-pages/releases/tag/v5.0.1) |
 
 Nitro is the one prerelease exception. Installing stable Nitro 3.0.0 reproducibly failed with npm ERESOLVE: Nitro requires optional peer Vite ^7, while stable SolidStart 2.0.5 requires Vite ^8 or ^9. The registry's current 3.0.260903-beta adapter is selected to retain stable SolidStart and Vite without forcing incompatible peers. No stable Nitro release satisfies this combination. Revisit the exception when a compatible stable adapter is published.
+
+Solid is 1.9.17 because it is the first release that depends on `seroval` 1.6.8 or newer. Older `seroval` versions have two security advisories: a callable invoked through Promise assimilation in `fromJSON()` (critical) and memory exhaustion through an unchecked TypedArray length (high). `source-map-js` resolves to 1.2.2 for the same reason: 1.2.1 has an event-loop denial of service.
+
+`braces` 3.0.3, reached through `micromatch` in SolidStart, has a stack-exhaustion advisory with no fixed release. It runs only during the build, on glob patterns that this repository sets, so no visitor or outside input reaches it. `npm audit` offers only a move back to SolidStart 1.3.5, which is a major version older; do not take it. Update `@solidjs/start` when a release no longer depends on a vulnerable `braces`.
 
 ## Pages CI contract
 
