@@ -31,6 +31,8 @@ Nitro is the one prerelease exception. Installing stable Nitro 3.0.0 reproducibl
 
 Pull requests run installation, type checking, the prerendered production build, and static-output checks without deployment permissions. Pushes and manual runs deploy only when targeting the repository's default branch, and only after those checks pass. The artifact is `website/.output/public`.
 
+Every action is pinned to the full commit SHA of the version in the table above, and the repository accepts only pinned actions. Dependabot (`.github/dependabot.yml`) proposes action and package updates once a month, for versions at least 7 days old.
+
 The workflow derives `SITE_BASE` as `/repository-name/`, or `/` for an `owner.github.io` repository. Set the repository Actions variable `SITE_BASE` to `/` for a custom domain, or to another required absolute path. Enable **Settings → Pages → Source → GitHub Actions** before the first deployment.
 
 ## Verification gates

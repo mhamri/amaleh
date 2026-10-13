@@ -69,10 +69,10 @@ Interactive controls (header dropdown, docs sidebar, on-page list in both positi
 
 `.github/workflows/pages.yml` installs the lockfile, type-checks, builds for the configured `SITE_BASE`, and runs `check-static.mjs` and `npm run test:seo` on pull requests. Pushes or manual runs on the default branch also upload the rendered site and deploy it to GitHub Pages. The production build must be the last step before verification, because the render probe and the static check both read the build and never run it.
 
-Remote GitHub Actions and public deployment have not been executed in this checkout. Pages must be enabled with GitHub Actions as its source, then the change merged to the default branch. No live-deployment success is claimed.
+Pages uses GitHub Actions as its source. Every push to `main` deploys the site to https://mhamri.github.io/amaleh/. The pushes of pull requests #32, #33, #34 and #37 deployed with the workflow conclusion `success`.
 
 ## Scope
 
 Changes are limited to `website/`, `.github/workflows/pages.yml`, root `README.md` and ignore rules. The Amaleh skill runtime under `amaleh/` is unchanged. Primary marketing evidence comes from the shipped `amaleh/references/` files. The public build copies only the explicit source list declared in `website/scripts/prepare.mjs`.
 
-Consumers: website visitors, JS-disabled readers (the initial HTML contains content), assistive technology, GitHub project/root hosting, and maintainers running a clean install. Paths: home/case-study direct entry, source downloads, documentation navigation, clipboard operations, disclosure open/close, build failure, PR validation, default-branch deployment and nondefault-branch rejection. Website preview is a local allowlisted-root server. CI uses separate build/deploy jobs; only deploy holds Pages/OIDC permissions.
+Consumers: website visitors, JS-disabled readers (the initial HTML contains content), assistive technology, GitHub project/root hosting, and maintainers running a clean install. Paths: home/case-study direct entry, source downloads, documentation navigation, clipboard operations, disclosure open/close, build failure, PR validation, default-branch deployment and nondefault-branch rejection. Website preview is a local allowlisted-root server. CI uses separate `website` and `deploy` jobs; only `deploy` holds Pages/OIDC permissions.

@@ -98,6 +98,8 @@ bun run test:node
 bun run test
 ```
 
+[The skill workflow](.github/workflows/skill.yml) runs the same four commands on Ubuntu and on Windows for every pull request and every push to `main`. A pull request cannot merge until both runs and the website check pass.
+
 Tests use local fixtures, not paid model calls. Behaviour that only a real run shows, such as whether a cheap worker builds what a picture shows, is measured by the scenario pool in `amaleh/tests/scenarios/`. This runs one scenario with real, paid models and prints a scorecard:
 
 ```sh
@@ -137,6 +139,10 @@ Set `SITE_BASE=/amaleh/` when building and previewing this repository as a GitHu
 [The Pages workflow](.github/workflows/pages.yml) installs the lockfile, type-checks, builds, and validates the rendered output on pull requests. Pushes or manual runs on the default branch also upload `website/.output/public` and deploy it to GitHub Pages. In repository **Settings → Pages → Build and deployment**, select **GitHub Actions** once, then merge these changes to the default branch. CI derives `/repository-name/` automatically (or `/` for an `owner.github.io` repository); set the repository Actions variable `SITE_BASE` to `/` for a custom domain. Deployment requires the repository's Pages environment to allow the default branch.
 
 Only the explicit public build is uploaded, never the repository root or `.amaleh` state. See [website dependency sources](website/DEPENDENCIES.md) for versions, verification dates, and update guidance.
+
+## Security
+
+Report a security problem privately, not in a public issue. See [the security policy](.github/SECURITY.md).
 
 ## License
 

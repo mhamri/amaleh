@@ -52,7 +52,7 @@ When light reviews are not cheaper on real work, set `lightReviewLines` to `0` i
 
 ## Reproducible verification
 
-From `amaleh/`, run `bun install --frozen-lockfile`, `bun run check`, `bun run test` and `bun run test:node`. `bun run test` is the suite of record; Bun is the default runtime and Node is the fallback, so `test:node` proves the same files pass there too. Both run every `.test.ts` file under `tests/`, subfolders included.
+From `amaleh/`, run `bun install --frozen-lockfile`, `bun run check`, `bun run test` and `bun run test:node`. `bun run test` is the suite of record; Bun is the default runtime and Node is the fallback, so `test:node` proves the same files pass there too. Both run every `.test.ts` file under `tests/`, subfolders included. `.github/workflows/skill.yml` runs these four commands on Ubuntu and on Windows for every pull request and every push to `main`, and the rule set `main` requires both runs to pass before a merge.
 
 ### The Node test runner
 
