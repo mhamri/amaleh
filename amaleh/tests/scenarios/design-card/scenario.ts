@@ -27,11 +27,11 @@ const visibleText=(html:string)=>html
 async function probePictureFont(){
  const dir=await mkdtemp(join(tmpdir(),'amaleh-font-probe-'));
  try{
-  const renders:Buffer[]=[];
+  const picture=decodePng(await readFile(fileURLToPath(new URL('card.png',import.meta.url))))!,renders:Buffer[]=[];
   for(const family of [`'${pictureFont}', monospace`,'monospace']){
    const page=join(dir,'probe.html'),out=join(dir,'probe.png');
    await writeFile(page,`<!doctype html><body style="margin:0;font:32px ${family}">${expectedText.join(' ')}</body>`);
-   await screenshot({page,out,width:900,height:60});
+   await screenshot({page,out,width:picture.width,height:picture.height});
    renders.push(Buffer.from(decodePng(await readFile(out))!.rgba));
   }
   return renders[0].equals(renders[1])?`card.png was drawn with ${pictureFont}, and this machine's browser does not have that font, so no build can match the picture here`:undefined;
