@@ -1,5 +1,5 @@
 import {createReadStream} from 'node:fs';
-import {readdir,readFile,stat} from 'node:fs/promises';
+import {readdir,readFile,realpath,stat} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {homedir} from 'node:os';
 import {createInterface} from 'node:readline';
@@ -17,8 +17,8 @@ async function transcripts(dir:string,since:number,recurse=true):Promise<string[
  return found;
 }
 const count=(value:unknown)=>{const n=Number(value);return Number.isFinite(n)&&n>0?n:0;};
-const normalizedFolder=(path:string)=>{const folder=resolve(path).replace(/\\/g,'/').replace(/\/+$/,'');return process.platform==='win32'?folder.toLowerCase():folder;};
-const sameOrNested=(a:string,b:string)=>{const x=normalizedFolder(a),y=normalizedFolder(b);return x===y||x.startsWith(`${y}/`)||y.startsWith(`${x}/`);};
+const comparableFolder=async(path:string)=>{const folder=(await realpath(path).catch(()=>resolve(path))).replace(/\\/g,'/').replace(/\/+$/,'');return process.platform==='win32'?folder.toLowerCase():folder;};
+const sameOrNested=(x:string,y:string)=>x===y||x.startsWith(`${y}/`)||y.startsWith(`${x}/`);
 const parse=(line:string)=>{try{return JSON.parse(line);}catch{return undefined;}};
 const codexToolCalls=new Set(['function_call','custom_tool_call','local_shell_call']);
 // Codex leaves a transcript's modified time at the session start, so it cannot rule a file out.
@@ -32,13 +32,15 @@ async function codexUsage(workspace:string,from:number,to:number):Promise<HostUs
  }
  if(!found)return {available:false,reason:`No Codex session folders exist under ${source}`};
  const totals={turns:0,toolCalls:0,inputTokens:0,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:0};
+ const workspaceFolder=await comparableFolder(workspace),sessionFolders=new Map<string,Promise<string>>();
+ const sessionFolder=(cwd:string)=>{let folder=sessionFolders.get(cwd);if(!folder)sessionFolders.set(cwd,folder=comparableFolder(cwd));return folder;};
  for(const file of files){
   const stream=createReadStream(file,{encoding:'utf8'}),lines=createInterface({input:stream,crlfDelay:Infinity});
   let meta:any,previousTotal:number|undefined;
   try{for await(const line of lines){
    if(meta===undefined){
     meta=parse(line)??null;
-    if(meta?.type!=='session_meta'||typeof meta.payload?.cwd!=='string'||!sameOrNested(workspace,meta.payload.cwd)||Date.parse(meta.timestamp??'')>to)break;
+    if(meta?.type!=='session_meta'||typeof meta.payload?.cwd!=='string'||Date.parse(meta.timestamp??'')>to||!sameOrNested(workspaceFolder,await sessionFolder(meta.payload.cwd)))break;
     continue;
    }
    if(!line)continue;

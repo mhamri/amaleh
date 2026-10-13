@@ -1,13 +1,13 @@
 import {clearCut} from './execution-fixture.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,rm,mkdir} from 'node:fs/promises';
+import {mkdtemp,rm,mkdir,realpath} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {randomUUID} from 'node:crypto';
 import * as c from '../scripts/core.ts';
 import {scopeKey} from '../scripts/routing.ts';
-async function fixture(t:any){const dir=await mkdtemp(join(tmpdir(),'amaleh-execution-'));t.after(()=>rm(dir,{recursive:true,force:true}));const store=await c.start(dir,{shape:clearCut,id:'run',host:{kind:'codex',model:'gpt-6-astra'},intent:'Delegate implementation',criteria:['Workers implement']});await c.plan(store,{tasks:['a','b'].map(id=>({id,title:id,goal:'Implement',phase:'one',deps:[],resources:[id],criteria:['Correct result'],kind:'code' as const,checks:[],noProbe:'Execution policy fixture with no executable checks'})),integrationChecks:[]});return {dir,store};}
+async function fixture(t:any){const dir=await realpath(await mkdtemp(join(tmpdir(),'amaleh-execution-')));t.after(()=>rm(dir,{recursive:true,force:true}));const store=await c.start(dir,{shape:clearCut,id:'run',host:{kind:'codex',model:'gpt-6-astra'},intent:'Delegate implementation',criteria:['Workers implement']});await c.plan(store,{tasks:['a','b'].map(id=>({id,title:id,goal:'Implement',phase:'one',deps:[],resources:[id],criteria:['Correct result'],kind:'code' as const,checks:[],noProbe:'Execution policy fixture with no executable checks'})),integrationChecks:[]});return {dir,store};}
 async function route(store:c.Store,dir:string,id='a',purpose:'worker'|'reviewer'='worker'){
  const decisionId=randomUUID();await store.transaction(s=>{const scope={taskId:id,purpose,workspace:dir,request:{}};s.decisions.push({id:decisionId,question:'Synthetic routing fixture',criteria:{worker:'deepseek/flash'},choice:'worker',source:'synthetic',revision:s.revision,state:{routing:{scope,key:scopeKey(s,scope),models:{worker:'deepseek/flash'}}}});});return decisionId;
 }

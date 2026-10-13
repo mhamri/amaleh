@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Scenario, ScorecardRow } from '../bench.ts';
@@ -9,6 +10,7 @@ import { describeMeasuredElements, everyElementHolds, measuredElements } from '.
 const screenshotScript=fileURLToPath(new URL('../../../scripts/screenshot.ts',import.meta.url));
 const pictureAt=(root:string)=>join(root,'design','card.png');
 const expectedText=['Monthly revenue','$48,250','+12.4%','Jan','Feb','Mar','Apr','May','Jun'];
+const pictureFont='Segoe UI';
 const keyColorShare=0.02;
 const colorTolerance=40;
 const layoutTolerance=15;
@@ -21,6 +23,22 @@ const visibleText=(html:string)=>html
  .replace(/&#(\d+);/g,(_,code)=>String.fromCodePoint(Number(code)))
  .replace(/&([a-z]+);/gi,(whole,name)=>entities[name.toLowerCase()]??whole)
  .replace(/\s+/g,' ');
+
+async function probePictureFont(){
+ const dir=await mkdtemp(join(tmpdir(),'amaleh-font-probe-'));
+ try{
+  const renders:Buffer[]=[];
+  for(const family of [`'${pictureFont}', monospace`,'monospace']){
+   const page=join(dir,'probe.html'),out=join(dir,'probe.png');
+   await writeFile(page,`<!doctype html><body style="margin:0;font:32px ${family}">${expectedText.join(' ')}</body>`);
+   await screenshot({page,out,width:900,height:60});
+   renders.push(Buffer.from(decodePng(await readFile(out))!.rgba));
+  }
+  return renders[0].equals(renders[1])?`card.png was drawn with ${pictureFont}, and this machine's browser does not have that font, so no build can match the picture here`:undefined;
+ }finally{await rm(dir,{recursive:true,force:true});}
+}
+let pictureFontProbe:Promise<string|undefined>|undefined;
+export const missingPictureFont=()=>pictureFontProbe??=probePictureFont();
 
 async function judgedPage(root:string,page:string):Promise<ScorecardRow[]>{
  const text=visibleText(await readFile(page,'utf8')),missing=expectedText.filter(t=>!text.includes(t));
@@ -49,7 +67,11 @@ const scenario:Scenario={
   checks:[{id:'render',command:process.execPath,args:[screenshotScript,'card.html'],role:'probe',render:pictureAt(root)}]}],
  verdict:async({root,spaces})=>{
   const page=join(spaces.card,'card.html');
-  try{return await judgedPage(root,page);}
+  try{
+   const missingFont=await missingPictureFont();
+   if(missingFont)return [{name:'card.html judged against the design',value:missingFont,pass:false}];
+   return await judgedPage(root,page);
+  }
   catch(error){return [{name:'card.html judged against the design',value:(error as Error).message,pass:false}];}
  },
 };

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as c from '../../scripts/core.ts';
 import { loadScenario, modelUse, prepare, scenarioIds, scenariosDir } from './bench.ts';
+import { missingPictureFont } from './design-card/scenario.ts';
 import { taskDiff } from '../../scripts/adapters.ts';
 import { inScope } from '../../scripts/resources.ts';
 import { execFileSync } from 'node:child_process';
@@ -58,6 +59,8 @@ test('the scorecard counts each model as worker, reviewer and visual judge, and 
 });
 
 test('the design-card verdict passes the page that made the picture and a real close build, and fails a wrong theme, squashed or resized builds and a pasted picture',{timeout:240000},async t=>{
+ const missingFont=await missingPictureFont();
+ if(missingFont){t.skip(missingFont);return;}
  const workspace=await temp(t,'amaleh-design-card-'),scenario=await loadScenario('design-card');
  const {root,spaces}=await prepare(workspace,'design-card',scenario);
  const run=(card:string)=>writeFile(join(spaces.card,'card.html'),card).then(()=>scenario.verdict({root,spaces,state:{} as c.Run,health:{} as never}));
