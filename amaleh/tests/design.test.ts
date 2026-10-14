@@ -9,12 +9,13 @@ import { delegate } from '../scripts/delegate.ts';
 import { designBriefSection, describeMeasuredElements, measuredElements, visualDifference } from '../scripts/design.ts';
 import { decodePng } from '../scripts/png.ts';
 import { cardBars, cardPng, cardText, solidPng } from './png-fixture.ts';
+import { definesSibling, writeFakeProgram } from './fake-pi-fixture.ts';
 
 const design=solidPng(48,32,(x,y)=>y<8?[15,23,42]:x<24?[56,189,248]:[245,158,11]);
 const built=solidPng(48,32,(x,y)=>y<8?[15,23,42]:x<24?[56,189,248]:[245,159,12]);
 const picture='design/card.png';
-const writeRender=(bytes:Buffer|string)=>`require('fs').writeFileSync(process.env.AMALEH_RENDER,Buffer.from(${JSON.stringify(Buffer.from(bytes).toString('base64'))},'base64'))`;
-const renderCheck=(script:string,id='render'):c.Check=>({id,command:process.execPath,args:['-e',script],role:'probe',render:picture});
+const renderCheck=(script:string,id='render',...inputs:string[]):c.Check=>({id,command:process.execPath,args:['-e',script,...inputs],role:'probe',render:picture});
+const rendering=(bytes:Buffer|string,then='')=>renderCheck(`require('fs').writeFileSync(process.env.AMALEH_RENDER,Buffer.from(process.argv[1],'base64'))${then}`,'render',Buffer.from(bytes).toString('base64'));
 const designTask=(checks:c.Check[],extra:Partial<c.TaskInput>={}):c.TaskInput=>({id:'card',title:'Card',goal:'Build the card in the picture',phase:'one',deps:[],resources:['card'],criteria:['The card matches the picture'],kind:'code',images:[picture],checks,...extra});
 
 async function fixture(t:any){
@@ -23,16 +24,16 @@ async function fixture(t:any){
  const store=await c.start(dir,{shape:clearCut,id:'design',host:{kind:'codex',model:'gpt-6-astra'},intent:'Build the card from its picture',criteria:['The card matches the picture']});
  return {dir,store};
 }
-async function fakeJudge(t:any,dir:string,body:string){
- const path=join(dir,'fake-judge.mjs');
- await writeFile(path,`import {appendFileSync} from 'node:fs';\nappendFileSync(${JSON.stringify(join(dir,'judge-calls.jsonl'))},JSON.stringify(process.argv.slice(2))+'\\n');\n${body}`);
+const judgeCalls='judge-calls.jsonl',judgeVerdict='judge-verdict.json';
+async function fakeJudge(t:any,dir:string,body:string,files:Record<string,string>={}){
+ const path=await writeFakeProgram(dir,'fake-judge.mjs',`import {appendFileSync,readFileSync} from 'node:fs';\n${definesSibling}appendFileSync(sibling('${judgeCalls}'),JSON.stringify(process.argv.slice(2))+'\\n');\n${body}`,files);
  const old=process.env.AMALEH_VISUAL_JUDGE;process.env.AMALEH_VISUAL_JUDGE=path;
  t.after(()=>{if(old===undefined)delete process.env.AMALEH_VISUAL_JUDGE;else process.env.AMALEH_VISUAL_JUDGE=old;});
- return async()=>(await readFile(join(dir,'judge-calls.jsonl'),'utf8').catch(()=>'')).split('\n').filter(Boolean).map(line=>JSON.parse(line) as string[]);
+ return async()=>(await readFile(join(dir,judgeCalls),'utf8').catch(()=>'')).split('\n').filter(Boolean).map(line=>JSON.parse(line) as string[]);
 }
-const verdict=(value:object)=>`console.log(${JSON.stringify(JSON.stringify(value))});`;
-const matches=verdict({verdict:'match',model:'judge/flash',summary:'Same card',differences:[{area:'title',expected:'Segoe UI',actual:'Arial',severity:'minor'}]});
-const differs=verdict({verdict:'differs',model:'judge/flash',summary:'The chart is missing',differences:[{area:'chart',expected:'six bars',actual:'no chart',severity:'blocking'}]});
+const judging=(t:any,dir:string,verdict:object)=>fakeJudge(t,dir,`console.log(readFileSync(sibling('${judgeVerdict}'),'utf8'));`,{[judgeVerdict]:JSON.stringify(verdict)});
+const matches={verdict:'match',model:'judge/flash',summary:'Same card',differences:[{area:'title',expected:'Segoe UI',actual:'Arial',severity:'minor'}]};
+const differs={verdict:'differs',model:'judge/flash',summary:'The chart is missing',differences:[{area:'chart',expected:'six bars',actual:'no chart',severity:'blocking'}]};
 async function planned(t:any,checks:c.Check[]){
  const {dir,store}=await fixture(t);
  await c.plan(store,{tasks:[designTask(checks)],integrationChecks:[]});
@@ -130,8 +131,8 @@ test('amend adds a picture with its render probe, keeps the copy of an unchanged
 });
 
 test('a render check passes only when the judge matches a real screenshot written to AMALEH_RENDER at the picture size',async t=>{
- const {dir,store}=await delivered(t,[renderCheck(`${writeRender(built)};require('fs').writeFileSync('size.txt',process.env.AMALEH_RENDER_WIDTH+'x'+process.env.AMALEH_RENDER_HEIGHT)`)]);
- const calls=await fakeJudge(t,dir,matches);
+ const {dir,store}=await delivered(t,[rendering(built,";require('fs').writeFileSync('size.txt',process.env.AMALEH_RENDER_WIDTH+'x'+process.env.AMALEH_RENDER_HEIGHT)")]);
+ const calls=await judging(t,dir,matches);
  const out=await c.check(store,'card','render');
  assert.equal(out.code,0);
  assert.equal((out as {visual?:string}).visual,undefined);
@@ -148,8 +149,8 @@ test('a render check passes only when the judge matches a real screenshot writte
 });
 
 test('a judged difference fails the check, marks the receipt and lists each difference for the repair',async t=>{
- const {dir,store}=await delivered(t,[renderCheck(writeRender(built))]);
- await fakeJudge(t,dir,differs);
+ const {dir,store}=await delivered(t,[rendering(built)]);
+ await judging(t,dir,differs);
  const out=await c.check(store,'card','render');
  assert.equal(out.code,1);
  assert.equal((out as {visual?:string}).visual,'differs');
@@ -157,13 +158,13 @@ test('a judged difference fails the check, marks the receipt and lists each diff
  assert.match((await artifactOf(store,out.artifact)).stdout,/differs from the design\. The chart is missing\n- \[blocking\] chart: the design shows six bars; the build shows no chart/);
 });
 
-for(const [name,script,reason] of [
- ['writes no picture','process.exit(0)',/exited 0 but wrote no picture to AMALEH_RENDER/],
- ['writes a file that is not a PNG',writeRender('<svg/>'),/which is not a PNG file/],
- ['copies the design picture',writeRender(design),/is the design picture design\/card\.png itself, not a screenshot of the built work/]] as const)
+for(const [name,check,reason] of [
+ ['writes no picture',renderCheck('process.exit(0)'),/exited 0 but wrote no picture to AMALEH_RENDER/],
+ ['writes a file that is not a PNG',rendering('<svg/>'),/which is not a PNG file/],
+ ['copies the design picture',rendering(design),/is the design picture design\/card\.png itself, not a screenshot of the built work/]] as const)
  test(`a render command that ${name} fails without asking the judge`,async t=>{
-  const {dir,store}=await delivered(t,[renderCheck(script)]);
-  const calls=await fakeJudge(t,dir,matches);
+  const {dir,store}=await delivered(t,[check]);
+  const calls=await judging(t,dir,matches);
   const out=await c.check(store,'card','render');
   assert.equal(out.code,1);
   assert.match((await artifactOf(store,out.artifact)).stderr,reason);
@@ -172,7 +173,7 @@ for(const [name,script,reason] of [
 
 test('a render command that fails keeps its own exit code and output, and the judge is not asked',async t=>{
  const {dir,store}=await delivered(t,[renderCheck(`console.error('page missing');process.exit(3)`)]);
- const calls=await fakeJudge(t,dir,matches);
+ const calls=await judging(t,dir,matches);
  const out=await c.check(store,'card','render');
  assert.equal(out.code,3);
  assert.match((await artifactOf(store,out.artifact)).stderr,/^page missing/);
@@ -180,7 +181,7 @@ test('a render command that fails keeps its own exit code and output, and the ju
 });
 
 test('a judge that cannot answer fails the check and says why',async t=>{
- const {dir,store}=await delivered(t,[renderCheck(writeRender(built))]);
+ const {dir,store}=await delivered(t,[rendering(built)]);
  await fakeJudge(t,dir,`console.error('No visual judge answered: provider down');process.exit(2);`);
  const out=await c.check(store,'card','render');
  assert.equal(out.code,1);
@@ -189,8 +190,8 @@ test('a judge that cannot answer fails the check and says why',async t=>{
 });
 
 test('delegate refuses a design task whose render already matches before any work, and judges it to decide',async t=>{
- const {dir,store}=await planned(t,[renderCheck(writeRender(built))]);
- const calls=await fakeJudge(t,dir,matches);
+ const {dir,store}=await planned(t,[rendering(built)]);
+ const calls=await judging(t,dir,matches);
  const out=await delegate(store,'card',{workspace:dir},{
   runWorker:(async()=>{throw new Error('worker should not launch');}) as any,
   runReviewer:(async()=>{throw new Error('reviewer should not launch');}) as any,
@@ -201,8 +202,8 @@ test('delegate refuses a design task whose render already matches before any wor
 });
 
 test('a render that differs on the unchanged checkout lets the worker start',async t=>{
- const {dir,store}=await planned(t,[renderCheck(writeRender(built))]);
- await fakeJudge(t,dir,differs);
+ const {dir,store}=await planned(t,[rendering(built)]);
+ await judging(t,dir,differs);
  const out=await delegate(store,'card',{workspace:dir},{
   runWorker:(async()=>{throw new Error('worker launched');}) as any,
   runReviewer:(async()=>{throw new Error('reviewer should not launch');}) as any,
@@ -211,8 +212,8 @@ test('a render that differs on the unchanged checkout lets the worker start',asy
 });
 
 test('each design picture is a review obligation that cannot be marked not applicable',async t=>{
- const {dir,store}=await delivered(t,[renderCheck(writeRender(built))]);
- await fakeJudge(t,dir,matches);
+ const {dir,store}=await delivered(t,[rendering(built)]);
+ await judging(t,dir,matches);
  await c.check(store,'card','render');
  const state=await store.load(),obligations=c.reviewObligations(state,c.taskOf(state,'card'));
  const own=obligations.find(o=>o.id==='design:1')!;

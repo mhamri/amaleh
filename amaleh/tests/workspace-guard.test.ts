@@ -8,18 +8,18 @@ import { piRun, resolveWrites, workerPrompt, nestedRunCheckout, WorkspaceEscape 
 import * as c from '../scripts/core.ts';
 import { delegate } from '../scripts/delegate.ts';
 import { fixtureClaim, clearCut } from './execution-fixture.ts';
+import { jsonl, printsStdout, printsStdoutAndStaysAlive, stdoutFile, writeFakePi } from './fake-pi-fixture.ts';
 
 const assistant={type:'message_end',message:{role:'assistant',model:'test/model',content:[{type:'text',text:'Completed fixture'}],stopReason:'stop',usage:{input:10,output:3,cost:{total:.001}}}};
 // Other test files point AMALEH_MODELS at deleted temp dirs; pin the shared suite env to the real configuration.
 const repoModels=join(dirname(fileURLToPath(import.meta.url)),'..','models.json');
 const keepModels=(t:any)=>{const old=process.env.AMALEH_MODELS;process.env.AMALEH_MODELS=repoModels;t.after(()=>{if(old===undefined)delete process.env.AMALEH_MODELS;else process.env.AMALEH_MODELS=old;});};
-const output=(items:unknown[])=>`process.stdout.write(${JSON.stringify(items.map(i=>JSON.stringify(i)).join('\n'))});`;
 const tool=(name:string,args:unknown)=>({type:'tool_execution_start',toolCallId:'c1',toolName:name,args});
 
-async function piFixture(t:any,makeSource:(dir:string)=>string){
+async function piFixture(t:any,source:string,events:(dir:string)=>unknown[]){
  keepModels(t);
  const dir=await mkdtemp(join(tmpdir(),'amaleh-guard-'));t.after(()=>rm(dir,{recursive:true,force:true}));
- const entry=join(dir,'fake-pi.ts');await writeFile(entry,makeSource(dir));
+ const entry=await writeFakePi(dir,source,{[stdoutFile]:jsonl(events(dir))});
  const old={key:process.env.OPENROUTER_API_KEY,pi:process.env.AMALEH_PI_ENTRY,node:process.env.AMALEH_NODE};
  process.env.OPENROUTER_API_KEY='sk-or-fake-diagnostic-secret-12345';process.env.AMALEH_PI_ENTRY=entry;process.env.AMALEH_NODE=process.execPath;
  t.after(()=>{for(const [name,value] of [['OPENROUTER_API_KEY',old.key],['AMALEH_PI_ENTRY',old.pi],['AMALEH_NODE',old.node]])if(value===undefined)delete process.env[name!];else process.env[name!]=value;});
@@ -27,13 +27,13 @@ async function piFixture(t:any,makeSource:(dir:string)=>string){
 }
 
 test('an edit or write outside the workspace kills the worker and fails the run at once',async t=>{
- const {input}=await piFixture(t,dir=>output([
+ const {input}=await piFixture(t,printsStdoutAndStaysAlive,dir=>[
   tool('edit',{path:join(dir,'src','a.ts')}),
   tool('edit',{path:join(tmpdir(),'elsewhere','leak.ts')}),
   tool('write',{path:join(tmpdir(),'elsewhere','second-leak.md')}),
   tool('bash',{command:'rm -rf /'}),
   {type:'tool_execution_end',toolCallId:'c1',toolName:'edit',isError:false},
-  assistant,{type:'agent_end'}])+';setInterval(()=>{},1000);');
+  assistant,{type:'agent_end'}]);
  // The fake pi stays alive after printing its events, so only the guard's killTree can end the run before the generous idle timeout.
  const error=await piRun({...input,idleTimeoutMs:60000}).then(()=>undefined,(e:Error)=>e);
  assert.ok(error,'piRun must reject when a write escapes the workspace');
@@ -43,11 +43,11 @@ test('an edit or write outside the workspace kills the worker and fails the run 
 });
 
 test('a worker whose writes all stay inside passes the guard',async t=>{
- const {dir,input}=await piFixture(t,dir=>output([
+ const {dir,input}=await piFixture(t,printsStdout,dir=>[
   tool('write',{path:'ok.md'}),
   tool('edit',{path:join(dir,'nested','b.ts')}),
   tool('bash',{command:'rm -rf /'}),
-  assistant,{type:'agent_end'}]));
+  assistant,{type:'agent_end'}]);
  const result=await piRun(input);
  assert.deepEqual(result.writes.outside,[]);
  assert.deepEqual(result.writes.paths,[resolve(dir,'ok.md'),resolve(dir,'nested','b.ts')],'only edit and write calls are collected; bash is not a write path');

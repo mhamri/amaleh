@@ -52,8 +52,8 @@ test('a process left behind by an exited parent is stopped',{timeout:60000},asyn
  const since=Date.now()-1000;
  const pidFile=join(dir,'orphan.pid');
  const orphan=`setInterval(()=>{},1000);require('node:fs').writeFileSync(process.argv[1],String(process.pid));`;
- const parent=`require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(orphan)},${JSON.stringify(pidFile)},${JSON.stringify(dir)}],{detached:true,stdio:'ignore',windowsHide:true}).unref();`;
- const call=spawn(process.execPath,['-e',parent],{stdio:'ignore',windowsHide:true});
+ const parent="require('node:child_process').spawn(process.execPath,['-e',...process.argv.slice(1)],{detached:true,stdio:'ignore',windowsHide:true}).unref();";
+ const call=spawn(process.execPath,['-e',parent,orphan,pidFile,dir],{stdio:'ignore',windowsHide:true});
  await new Promise(done=>call.on('close',done));
  let pid=0;
  for(let i=0;i<100&&!pid;i++){pid=Number(await readFile(pidFile,'utf8').catch(()=>''));if(!pid)await new Promise(r=>setTimeout(r,100));}

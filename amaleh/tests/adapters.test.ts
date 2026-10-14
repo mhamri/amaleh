@@ -9,7 +9,7 @@ import { Store } from '../scripts/core.ts';
 import { jsRuntime, onPath } from '../scripts/runtime.ts';
 import { diagnostics, trace, readSpeedSamples } from '../scripts/telemetry.ts';
 import { main } from '../scripts/cli.ts';
-import { jsonl, printsStdout, readStdout, stdoutFile, writeFakePi } from './fake-pi-fixture.ts';
+import { jsonl, launchCount, launchOutputs, printsLaunchOutput, printsStdout, readStdout, stdoutFile, writeFakePi } from './fake-pi-fixture.ts';
 
 async function fixture(t:any){const dir=await mkdtemp(join(tmpdir(),'amaleh-adapter-'));t.after(()=>rm(dir,{recursive:true,force:true}));const old={key:process.env.OPENROUTER_API_KEY,pi:process.env.AMALEH_PI_ENTRY,node:process.env.AMALEH_NODE};process.env.OPENROUTER_API_KEY='sk-or-fake-diagnostic-secret-12345';t.after(()=>{for(const [name,value] of [['OPENROUTER_API_KEY',old.key],['AMALEH_PI_ENTRY',old.pi],['AMALEH_NODE',old.node]])if(value===undefined)delete process.env[name!];else process.env[name!]=value;});return dir;}
 const assistant={type:'message_end',message:{role:'assistant',model:'test/model',content:[{type:'text',text:'Completed fixture'}],stopReason:'stop',usage:{input:10,output:3,cost:{total:.001}}}};
@@ -33,16 +33,9 @@ test('failed CLI initialization remains diagnosable without a valid run snapshot
 test('unfinished traces remain visible after a simulated interrupted operation',async t=>{const dir=await fixture(t);await trace(dir,'interrupted',{task:'x'});const report=await diagnostics(dir);assert.equal(report.totals.unfinished,1);assert.match(report.operations[0].outcome,/active or interrupted/);});
 const rateLimited={...assistant,message:{...assistant.message,stopReason:'error',errorMessage:'429: {"message":"Provider returned error","code":429,"metadata":{"raw":"z-ai/glm-5.3-flashx is temporarily rate-limited upstream."}}'}};
 const refused={...assistant,message:{...assistant.message,stopReason:'error',errorMessage:'403: {"message":"Your account lacks access to this model","code":403}'}};
-const flakyPi=[
- "import {readFileSync,writeFileSync} from 'node:fs';",
- "const sibling=(name)=>new URL(name,import.meta.url);",
- "let n=0;try{n=Number(readFileSync(sibling('attempts.txt'),'utf8'));}catch{}",
- "writeFileSync(sibling('attempts.txt'),String(n+1));",
- "process.stdout.write(readFileSync(sibling(n===0?'first.jsonl':'later.jsonl'),'utf8'));",
-].join('\n');
 async function flakyFixture(t:any,first:unknown[],later:unknown[]){
- const {dir,input}=await piFixture(t,flakyPi,{'first.jsonl':jsonl(first),'later.jsonl':jsonl(later)});
- return {counter:join(dir,'attempts.txt'),input};
+ const {dir,input}=await piFixture(t,printsLaunchOutput,launchOutputs(first,later));
+ return {counter:join(dir,launchCount),input};
 }
 test('a transient provider rate limit is retried instead of blocking the chunk',async t=>{
  const {counter,input}=await flakyFixture(t,[rateLimited,{type:'agent_end'}],[assistant,{type:'agent_end'}]);

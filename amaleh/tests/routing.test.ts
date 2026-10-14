@@ -10,6 +10,7 @@ import { worker, reviewer } from '../scripts/adapters.ts';
 import { slowModels } from '../scripts/telemetry.ts';
 import { solidPng } from './png-fixture.ts';
 import { visualDifference } from '../scripts/design.ts';
+import { launchCount, launchLog, launchOutputs, readsLaunchOutput, recordsLaunch, writeFakePi } from './fake-pi-fixture.ts';
 
 const card=(id:string,created:number,images=false)=>({id,created,context_length:64000,architecture:{input_modalities:images?['text','image']:['text']},supported_parameters:['tools'],pricing:{prompt:'0.000001',completion:'0.000002'},description:'Synthetic test card, not a capability benchmark'});
 const cards=[card('deepseek/old-flash',1),card('deepseek/new-flash',3),card('z-ai/glm-new-flash',4),card('moonshot/kimi-specialist',5,true),card('deepseek/preview-flash',9),card('~deepseek/deepseek-flash-latest',10),card('z-ai/glm-flash-latest',11),card('xiaomi/eye-flash',12,true),card('z-ai/glm-eye-flash',13,true)];
@@ -124,9 +125,7 @@ test('a task with a design picture routes only to image models and attaches the 
  const old={fetch:globalThis.fetch,entry:process.env.AMALEH_PI_ENTRY,node:process.env.AMALEH_NODE};
  t.after(()=>{globalThis.fetch=old.fetch;for(const [key,value] of [['AMALEH_PI_ENTRY',old.entry],['AMALEH_NODE',old.node]])if(value===undefined)delete process.env[key!];else process.env[key!]=value;});
  const outside=await mkdtemp(join(tmpdir(),'amaleh-routing-calls-'));t.after(()=>rm(outside,{recursive:true,force:true}));
- const calls=join(outside,'pi-calls.jsonl'),entry=join(outside,'fake-pi.ts');await writeFile(entry,`import {appendFileSync,readFileSync} from 'node:fs';
-appendFileSync(${JSON.stringify(calls)},JSON.stringify(process.argv.slice(2))+'\\n');
-const model=process.argv[process.argv.indexOf('--model')+1];
+ const calls=join(outside,launchLog),entry=await writeFakePi(outside,`${recordsLaunch}const model=process.argv[process.argv.indexOf('--model')+1];
 const readOnly=process.argv[process.argv.indexOf('--tools')+1]==='read,grep,find,ls';
 const handoff=process.argv.at(-1).match(/"([^"]*review-packet\\.md)"/);const packet=readOnly?JSON.parse(readFileSync(handoff[1],'utf8').match(/\\\`\\\`\\\`json\\n([\\s\\S]*?)\\n\\\`\\\`\\\`/)[1]):undefined;
 const text=readOnly?JSON.stringify({report:'Synthetic reviewer fixture',coverage:packet.obligations.map(o=>({id:o.id,status:'covered',evidence:'Synthetic protocol fixture only'})),findings:[]}):'Synthetic worker fixture';
@@ -190,11 +189,11 @@ test('a malformed review is re-requested with a format correction instead of dis
  const old={fetch:globalThis.fetch,entry:process.env.AMALEH_PI_ENTRY,node:process.env.AMALEH_NODE};
  t.after(()=>{globalThis.fetch=old.fetch;for(const [key,value] of [['AMALEH_PI_ENTRY',old.entry],['AMALEH_NODE',old.node]])if(value===undefined)delete process.env[key!];else process.env[key!]=value;});
  const outside=await mkdtemp(join(tmpdir(),'amaleh-review-retry-'));t.after(()=>rm(outside,{recursive:true,force:true}));
- const counter=join(outside,'review-attempts.txt'),entry=join(outside,'correcting-pi.ts'),argvLog=join(outside,'argv.jsonl');
+ const counter=join(outside,launchCount),argvLog=join(outside,launchLog);
  const obligations=c.reviewObligations(await store.load(),c.taskOf(await store.load(),'a')).map(o=>({id:o.id,status:'covered',evidence:'Synthetic fixture coverage, not a model judgment'}));
  const bad={report:'Synthetic fixture',coverage:obligations,findings:[{id:'f1',lens:'Spec',location:'app.txt',scenario:'wrong total',consequence:'overcharge',blocking:false}]};
  const good={report:'Synthetic fixture',coverage:obligations,findings:[]};
- await writeFile(entry,`import {readFileSync,writeFileSync,appendFileSync} from 'node:fs';\nappendFileSync(${JSON.stringify(argvLog)},JSON.stringify(process.argv.slice(2))+'\\n');\nconst path=${JSON.stringify(counter)};\nlet n=0;try{n=Number(readFileSync(path,'utf8'));}catch{}\nwriteFileSync(path,String(n+1));\nconst model=process.argv[process.argv.indexOf('--model')+1];\nconst body=n===0?${JSON.stringify(JSON.stringify(bad))}:${JSON.stringify(JSON.stringify(good))};\nconsole.log(JSON.stringify({type:'message_end',message:{role:'assistant',model,content:[{type:'text',text:'Here is my review:\\n'+body}],stopReason:'stop'}}));\nconsole.log(JSON.stringify({type:'agent_end'}));\n`);
+ const entry=await writeFakePi(outside,`${readsLaunchOutput}const model=process.argv[process.argv.indexOf('--model')+1];\nconsole.log(JSON.stringify({type:'message_end',message:{role:'assistant',model,content:[{type:'text',text:'Here is my review:\\n'+stdout}],stopReason:'stop'}}));\nconsole.log(JSON.stringify({type:'agent_end'}));\n`,launchOutputs([bad],[good]));
  process.env.AMALEH_PI_ENTRY=entry;process.env.AMALEH_NODE=process.execPath;globalThis.fetch=g.fetcher;
  await writeFile(join(store.amalehDir,'model-speed.jsonl'),'');
  const out=await reviewer(store,'a',undefined,['Spec']);

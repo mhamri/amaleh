@@ -306,8 +306,7 @@ test('record-decision marks the settled answer as a requirement so reviewers and
 });
 test('a check that writes build output does not strand the chunk as permanently stale',async t=>{
  const {dir,store}=await fixture(t);
- const buildDir=join(dir,'.output');
- const emit=`require('node:fs').mkdirSync(${JSON.stringify(buildDir)},{recursive:true});require('node:fs').writeFileSync(${JSON.stringify(join(buildDir,'index.html'))},'<!doctype html>');`;
+ const emit="require('node:fs').mkdirSync('.output',{recursive:true});require('node:fs').writeFileSync('.output/index.html','<!doctype html>');";
  await store.transaction(s=>{c.taskOf(s,'a').checks=[
   {id:'types',command:process.execPath,args:['-e',"try{const c=require('fs').readFileSync(require('path').join(process.cwd(),'app.txt'),'utf8');process.exit(c.includes('corrected')?0:1)}catch{process.exit(1)}"],role:'probe' as const},
   {id:'build',command:process.execPath,args:['-e',emit],role:'guard' as const}];});
@@ -320,7 +319,7 @@ test('a check that writes build output does not strand the chunk as permanently 
 });
 test('a check that never leaves the tree alone escalates instead of looping',async t=>{
  const {dir,store}=await fixture(t);
- const churn=`require('node:fs').writeFileSync(${JSON.stringify(join(dir,'churn.txt'))},String(Date.now())+Math.random());`;
+ const churn="require('node:fs').writeFileSync('churn.txt',String(Date.now())+Math.random());";
  await store.transaction(s=>{c.taskOf(s,'a').checks=[{id:'build',command:process.execPath,args:['-e',churn],role:'guard' as const}];c.taskOf(s,'a').noProbe='Guard check only; churn test';});
  const out=await delegate(store,'a',{workspace:dir},{runWorker:fakeWorker(dir) as any,runReviewer:fakeReviewer(dir,[[]]) as any,fetcher:jevTargeted});
  assert.equal(out.outcome,'escalated');
