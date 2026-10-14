@@ -28,12 +28,12 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.3.3",
-    "@types/node": "26.6.2",
-    "daisyui": "5.7.42",
+    "@types/node": "26.6.4",
+    "daisyui": "5.7.47",
     "nitro": "3.0.260903-beta",
-    "schema-dts": "2.0.0",
+    "schema-dts": "2.1.0",
     "tailwindcss": "4.3.3",
     "typescript": "7.0.2",
-    "vite": "8.3.0"
+    "vite": "8.3.3"
   }
 }
