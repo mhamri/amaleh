@@ -101,9 +101,11 @@ test('a hung child is killed and reported instead of blocking the chunk forever'
  assert.ok(report.operations[0].events.some((e:any)=>e.stage==='idle-timeout'),'the trace must name the idle timeout');
 });
 test('a worker that keeps producing output is never cut off by the idle timeout',async t=>{
- const {input}=await piFixture(t,`${readStdout}let n=0;const t=setInterval(()=>{process.stdout.write(JSON.stringify({type:'tool_execution_start',toolName:'bash'})+'\\n');if(++n===6){clearInterval(t);process.stdout.write(stdout);}},120);`,{[stdoutFile]:jsonl([assistant,{type:'agent_end'}])});
- const result=await piRun({...input,idleTimeoutMs:600});
+ const {input}=await piFixture(t,`${readStdout}let n=0;const t=setInterval(()=>{process.stdout.write(JSON.stringify({type:'tool_execution_start',toolName:'bash'})+'\\n');if(++n===20){clearInterval(t);process.stdout.write(stdout);}},250);`,{[stdoutFile]:jsonl([assistant,{type:'agent_end'}])});
+ const idleTimeoutMs=3000,started=Date.now();
+ const result=await piRun({...input,idleTimeoutMs});
  assert.equal(result.text,'Completed fixture','steady progress must keep the worker alive past the idle window');
+ assert.ok(Date.now()-started>idleTimeoutMs,'the output must outlast the idle window, or the test proves nothing');
 });
 test('a finished call adds one speed sample, and a first read seeds the ledger from earlier run traces',async t=>{
  const {dir,input}=await printing(t,jsonl([assistant,{type:'agent_end'}]));
