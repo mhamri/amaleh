@@ -85,13 +85,13 @@ test('a large brief reaches the worker as a path, never inlined past the command
 });
 test('a hung child is killed and reported instead of blocking the chunk forever',async t=>{
  const {input}=await piFixture(t,`setInterval(()=>{},1000);`);
- const started=Date.now();
  await assert.rejects(()=>piRun({...input,idleTimeoutMs:600}),/No output for \d+s; a child command is hung/);
- assert.ok(Date.now()-started<20000,'the timeout must fire promptly, not wait for the process to end on its own');
  const report=await diagnostics(input.diagnosticRoot);
  assert.equal(report.totals.failures,1,'a hung launch must be recorded as a failure, not left unfinished');
  assert.equal(report.totals.unfinished,0);
- assert.ok(report.operations[0].events.some((e:any)=>e.stage==='idle-timeout'),'the trace must name the idle timeout');
+ const stopped=report.operations[0].events.find((e:any)=>e.stage==='idle-timeout');
+ assert.ok(stopped,'the trace must name the idle timeout');
+ assert.ok(stopped.elapsedMs<20000,'the timeout must fire promptly, not wait for the process to end on its own');
 });
 test('a worker that keeps producing output is never cut off by the idle timeout',async t=>{
  const {input}=await piFixture(t,`${readStdout}let n=0;const t=setInterval(()=>{process.stdout.write(JSON.stringify({type:'tool_execution_start',toolName:'bash'})+'\\n');if(++n===20){clearInterval(t);process.stdout.write(stdout);}},250);`,{[stdoutFile]:jsonl([assistant,{type:'agent_end'}])});

@@ -61,10 +61,9 @@ test('a reviewer call is stopped by its own wall-clock limit and sampled as a re
 
 test('a worker call that keeps talking past the wall-clock limit is stopped and recorded as failed',async t=>{
  const {dir,input}=await fakePi(t,repeatsStdout,chatter,{workerTimeoutMs:1500});
- const started=Date.now();
  await assert.rejects(()=>piRun(input),(error:unknown)=>error instanceof CallStopped&&error.stage==='call-timeout'&&/time limit/i.test(error.message));
- assert.ok(Date.now()-started<15000,'the limit must stop the call, not the idle timer');
  const report=await diagnostics(input.diagnosticRoot);
+ assert.ok(report.operations[0].events.find((e:any)=>e.stage==='call-timeout')?.elapsedMs<15000,'the limit must stop the call, not the idle timer');
  assert.equal(report.operations[0].events.filter((e:any)=>e.stage==='attempt').length,1,'a timed-out call is not retried as a transient provider failure');
  const samples=await readSpeedSamples(dir) as any[];
  assert.equal(samples.length,1);
