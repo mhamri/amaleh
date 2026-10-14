@@ -37,7 +37,7 @@ function link(html, rel) {
 }
 
 function jsonLd(html, label) {
-  const blocks = [...html.matchAll(/<script\b[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi)].map(
+  const blocks = [...html.matchAll(/<script\b[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script\b[^>]*>/gi)].map(
     (match) => match[1],
   );
   if (blocks.length === 0) fail(`${label}: no application/ld+json script`);

@@ -6,6 +6,7 @@ import { MODELS } from '../../src/lib/models.ts';
 import { heroScene, linkPoint } from '../../src/lib/hero-scene.ts';
 import { emptyFrame, fillFrame, heroStory, NO_HEAD, STILL_SECONDS } from '../../src/lib/hero-story.ts';
 import { WORKERS, REPAIR, DECISION } from '../../src/lib/pool.ts';
+import { withoutTags } from '../html-text.mjs';
 
 const here = fileURLToPath(new URL('../../../', import.meta.url));
 const names = ['DeepSeek', 'GLM', 'MiMo', 'Stealth', 'Qwen Coder', 'Nemotron'];
@@ -614,7 +615,7 @@ function built(failures, publicDir) {
       failures.push(`the built ${hero.layout} hero worker tiles are [${families.join(', ')}], expected [${wanted.join(', ')}]`);
     }
     const text = (tile) => [...tile.body.matchAll(/<text\b[^>]*data-label[^>]*>([\s\S]*?)<\/text>/g)]
-      .map((match) => match[1].replace(/<[^>]+>/g, '').trim());
+      .map((match) => withoutTags(match[1], '').trim());
     for (const worker of expected) {
       const tile = workerTiles.find((candidate) => candidate.family === worker.family);
       if (!tile) continue;

@@ -3,29 +3,10 @@ import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { family } from '../../../amaleh/scripts/family.ts';
 import { MODELS } from '../../src/lib/models.ts';
+import { visibleText } from '../html-text.mjs';
 
 const here = fileURLToPath(new URL('../../../', import.meta.url));
 const routes = ['', 'docs'];
-
-function decode(text) {
-  return text
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#x27;|&#39;/g, "'")
-    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)));
-}
-
-function visibleText(html) {
-  const withoutCode = html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<!--[\s\S]*?-->/g, ' ');
-  const attributes = [...withoutCode.matchAll(/\s(?:aria-label|title|alt|content)="([^"]*)"/g)].map((m) => m[1]);
-  return decode(`${withoutCode.replace(/<[^>]+>/g, ' ')} ${attributes.join(' ')}`).replace(/\s+/g, ' ');
-}
 
 function articles(html, tag) {
   return [...html.matchAll(new RegExp(`<${tag}\\b[\\s\\S]*?<\\/${tag}>`, 'g'))].map((m) => m[0]);

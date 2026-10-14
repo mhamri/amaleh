@@ -181,7 +181,8 @@ async function trackStarFetches(page) {
     window.fetch = (input, init) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
       const cache = init?.cache ?? (input instanceof Request ? input.cache : 'default');
-      if (String(url).includes('api.github.com')) window.__starFetchCache.push({ url: String(url), cache });
+      const host = URL.canParse(String(url), location.href) ? new URL(String(url), location.href).hostname : '';
+      if (host === 'api.github.com') window.__starFetchCache.push({ url: String(url), cache });
       return original(input, init);
     };
   });
