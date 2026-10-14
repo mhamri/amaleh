@@ -7,8 +7,8 @@ import { screenshot, screenshotOptions } from '../scripts/screenshot.ts';
 import { decodePng } from '../scripts/png.ts';
 
 test('screenshot options come from the render check environment unless a flag overrides them',()=>{
- const env={AMALEH_RENDER:'C:/runs/render.png',AMALEH_RENDER_WIDTH:'480',AMALEH_RENDER_HEIGHT:'340'};
- assert.deepEqual(screenshotOptions(['card.html'],env),{page:'card.html',out:join('C:/runs/render.png'),width:480,height:340});
+ const render=join(tmpdir(),'runs','render.png'),env={AMALEH_RENDER:render,AMALEH_RENDER_WIDTH:'480',AMALEH_RENDER_HEIGHT:'340'};
+ assert.deepEqual(screenshotOptions(['card.html'],env),{page:'card.html',out:render,width:480,height:340});
  assert.deepEqual(screenshotOptions(['card.html','--width','600','--out','shot.png'],env).width,600);
  assert.deepEqual([screenshotOptions(['card.html','--out','shot.png'],{}).width,screenshotOptions(['card.html','--out','shot.png'],{}).height],[1280,800]);
  assert.throws(()=>screenshotOptions(['card.html'],{}),/No output path: pass --out, or run inside a render check/);

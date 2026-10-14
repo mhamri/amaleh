@@ -1,7 +1,7 @@
 import {fixtureClaim,clearCut} from './execution-fixture.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, readFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as c from '../scripts/core.ts';
@@ -23,7 +23,7 @@ async function useModels(t:any,dir:string,overrides:Partial<typeof testModels>={
  return path;
 }
 async function fixture(t:any,overrides:Partial<typeof testModels>={}){
- const dir=await mkdtemp(join(tmpdir(),'amaleh-routing-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const dir=await realpath(await mkdtemp(join(tmpdir(),'amaleh-routing-')));t.after(()=>rm(dir,{recursive:true,force:true}));
  await useModels(t,dir,overrides);
  const oldKey=process.env.OPENROUTER_API_KEY;process.env.OPENROUTER_API_KEY='sk-routing-fixture-not-real';t.after(()=>{if(oldKey===undefined)delete process.env.OPENROUTER_API_KEY;else process.env.OPENROUTER_API_KEY=oldKey;});
  const store=await c.start(dir,{shape:clearCut,id:'route',host:{kind:'codex',model:'gpt-6-astra'},intent:'Test enforced automatic routes',criteria:['Select suitable author and independent reviewer']});
