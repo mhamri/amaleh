@@ -2,6 +2,7 @@ name: Website · GitHub Pages
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 

@@ -67,7 +67,7 @@ Interactive controls (header dropdown, docs sidebar, on-page list in both positi
 
 ## CI and deployment
 
-`.github/workflows/pages.yml` installs the lockfile, type-checks, builds for the configured `SITE_BASE`, and runs `check-static.mjs` and `npm run test:seo` on pull requests. Pushes or manual runs on the default branch also upload the rendered site and deploy it to GitHub Pages. The production build must be the last step before verification, because the render probe and the static check both read the build and never run it.
+`.github/workflows/pages.yml` installs the lockfile, type-checks, builds for the configured `SITE_BASE`, and runs `check-static.mjs` and `npm run test:seo` on pull requests. Pushes or manual runs on the default branch also upload the rendered site and deploy it to GitHub Pages. The workflow listens only to pushes on `main`. A push to a pull request's branch would otherwise add a second, skipped `website` check to the same commit, and GitHub counts a skipped check as passed, so that copy could stand in for the required `website` check of the pull request. The production build must be the last step before verification, because the render probe and the static check both read the build and never run it.
 
 Pages uses GitHub Actions as its source. Every push to `main` deploys the site to https://mhamri.github.io/amaleh/. The pushes of pull requests #32, #33, #34 and #37 deployed with the workflow conclusion `success`.
 
