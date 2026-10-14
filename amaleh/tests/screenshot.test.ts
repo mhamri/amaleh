@@ -17,7 +17,7 @@ test('screenshot options come from the render check environment unless a flag ov
  assert.throws(()=>screenshotOptions(['card.html'],{...env,AMALEH_RENDER_WIDTH:'wide'}),/AMALEH_RENDER_WIDTH must be a whole number of pixels from 1 to 8000, not wide/);
 });
 
-test('a screenshot of a local page is a complete PNG at the requested size, and a missing page fails before any browser starts',{timeout:120000},async t=>{
+test('a screenshot of a local page is a complete PNG at the requested size, and a missing page fails before any browser starts',async t=>{
  const dir=await mkdtemp(join(tmpdir(),'amaleh-screenshot-test-'));
  t.after(()=>rm(dir,{recursive:true,force:true}));
  const page=join(dir,'page.html'),out=join(dir,'shot.png');

@@ -208,7 +208,7 @@ const batchReviewer=(script:Record<string,any[][]>={})=>{const calls:Record<stri
  return {findings};
 };};
 
-test('delegate-batch drives the whole frontier and never exceeds maxWorkers at once',{timeout:180000},async t=>{
+test('delegate-batch drives the whole frontier and never exceeds maxWorkers at once',async t=>{
  const ids=['a','b','c','d','e','f'];
  const {store,spaces}=await batchFixture(t,ids,2);
  const live={n:0,peak:0};
@@ -231,7 +231,7 @@ test('a failing id neither aborts the batch nor hides its reason',async t=>{
  assert.match((out.outcomes[2] as {reason:string}).reason,/not delegable/);
  assert.equal(c.taskOf(await store.load(),'a').status,'accepted');
 });
-test('a batch holds a chunk whose resources overlap a running chunk and starts it when that one finishes',{timeout:180000},async t=>{
+test('a batch holds a chunk whose resources overlap a running chunk and starts it when that one finishes',async t=>{
  const ids=['doc','notes','other'];
  const {store,spaces}=await batchFixture(t,ids,3);
  await store.transaction(s=>{c.taskOf(s,'doc').resources=['website/**/*.md'];c.taskOf(s,'notes').resources=['website/DESIGN-SYSTEM.md'];c.taskOf(s,'other').resources=['amaleh/scripts/**'];});

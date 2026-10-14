@@ -58,7 +58,7 @@ test('the scorecard counts each model as worker, reviewer and visual judge, and 
   'z-ai/flash':{worker:0,reviewer:1,judge:0,unavailable:0}});
 });
 
-test('the design-card verdict passes the page that made the picture and a real close build, and fails a wrong theme, squashed or resized builds and a pasted picture',{timeout:240000},async t=>{
+test('the design-card verdict passes the page that made the picture and a real close build, and fails a wrong theme, squashed or resized builds and a pasted picture',async t=>{
  const missingFont=await missingPictureFont();
  if(missingFont){t.skip(missingFont);return;}
  const workspace=await temp(t,'amaleh-design-card-'),scenario=await loadScenario('design-card');

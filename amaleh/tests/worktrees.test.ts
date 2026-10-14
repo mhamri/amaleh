@@ -36,6 +36,13 @@ async function repo(t:any,name:string,options:{remote?:boolean;onRunBranch?:bool
  return {root,work:await realpath(work)};
 }
 
+function manualWorktree(work:string,branch:string,committedFile?:string){
+ const path=join(work,'.amaleh','worktrees','manual',branch);
+ git(work,'worktree','add','-q','-b',branch,path,'origin/main');
+ if(committedFile){writeFileSync(join(path,committedFile),'work\n');git(path,'add',committedFile);git(path,'commit','-q','-m',committedFile);}
+ return path;
+}
+
 const intent='Keep every task worktree inside the project';
 async function started(work:string,id:string,tasks=2){
  const folder=await ensureWorktreeFolder(work);
@@ -45,7 +52,7 @@ async function started(work:string,id:string,tasks=2){
  return store;
 }
 
-test('start makes the project ignore its worktree folder in the first commit, once',{timeout:120000},async t=>{
+test('start makes the project ignore its worktree folder in the first commit, once',async t=>{
  const {work}=await repo(t,'folder',{onRunBranch:false});
  await assert.rejects(()=>ensureWorktreeFolder(work),/git switch -c main origin\/main/);
  assert.equal(head(work),git(work,'rev-parse','main'),'the refusal adds no commit');
@@ -76,7 +83,7 @@ test('start makes the project ignore its worktree folder in the first commit, on
  assert.ok((unverified as {reason:string}).reason,'the unverified state records why');
 });
 
-test('start with a user base override proceeds when the remote is unreachable',{timeout:120000},async t=>{
+test('start with a user base override proceeds when the remote is unreachable',async t=>{
  const {root,work}=await repo(t,'override-down');
  git(work,'remote','set-url','origin',join(root,'gone.git'));
  const recovered=await ensureWorktreeFolder(work,{status:'override',reason:'Base branch explicitly set by the user',userInstruction:'Build on my current branch; it needs unmerged work'});
@@ -84,7 +91,7 @@ test('start with a user base override proceeds when the remote is unreachable',{
  assert.deepEqual(git(work,'show','--name-only','--format=','HEAD').split('\n').filter(Boolean),['.gitignore'],'the setup commit still touches only .gitignore');
 });
 
-test('start refuses an untracked .gitignore and creates a missing one',{timeout:120000},async t=>{
+test('start refuses an untracked .gitignore and creates a missing one',async t=>{
  const {work}=await repo(t,'untracked',{remote:false});
  writeFileSync(join(work,'.gitignore'),'local-only/\n');
  await assert.rejects(()=>ensureWorktreeFolder(work),/\.gitignore has uncommitted changes/);
@@ -96,7 +103,7 @@ test('start refuses an untracked .gitignore and creates a missing one',{timeout:
  assert.equal((await readFile(join(work,'.gitignore'),'utf8')).replace(/\r/g,''),'/.amaleh/\n','a missing .gitignore is created with only the ignore line');
 });
 
-test('worktree creates the task checkout inside the project folder and records it',{timeout:120000},async t=>{
+test('worktree creates the task checkout inside the project folder and records it',async t=>{
  const {work}=await repo(t,'create');
  const store=await started(work,'r1');
  const folder=(await store.load()).events.filter(e=>e.type==='worktree-folder').at(-1)!.detail as Record<string,unknown>;
@@ -124,7 +131,7 @@ test('worktree creates the task checkout inside the project folder and records i
  await assert.rejects(()=>taskWorktree(store,{id:'ghost'}),/Unknown task/);
 });
 
-test('worktree refuses a run outside Git, an unignored folder, and a task that already holds output',{timeout:120000},async t=>{
+test('worktree refuses a run outside Git, an unignored folder, and a task that already holds output',async t=>{
  const plain=join(await scratch(t,'nogit'),'work');mkdirSync(plain);
  const plainStore=await started(plain,'p1');
  await assert.rejects(()=>taskWorktree(plainStore,{id:'t1'}),/not a Git work tree/);
@@ -146,24 +153,20 @@ test('worktree refuses a run outside Git, an unignored folder, and a task that a
  assert.ok(existsSync(made.workspace),'a refused call leaves the worktree it found');
 });
 
-test('worktrees reports every worktree of the project with merged and dirty state',{timeout:120000},async t=>{
+test('worktrees reports every worktree of the project with merged and dirty state',async t=>{
  const {root,work}=await repo(t,'list');
  const store=await started(work,'r1');
  const one=await taskWorktree(store,{id:'t1'});
  writeFileSync(join(one.workspace,'scratch.txt'),'dirty\n');
- const manual=join(work,'.amaleh','worktrees','manual');
- git(work,'worktree','add','-q','-b','squashed',join(manual,'squashed'),'origin/main');
- writeFileSync(join(manual,'squashed','app.txt'),'second\n');
- git(join(manual,'squashed'),'commit','-q','-am','squashed');
- git(work,'worktree','add','-q','-b','extra',join(manual,'extra'),'origin/main');
- writeFileSync(join(manual,'extra','extra.txt'),'work\n');
- git(join(manual,'extra'),'add','extra.txt');
- git(join(manual,'extra'),'commit','-q','-m','extra');
+ const squashed=manualWorktree(work,'squashed');
+ writeFileSync(join(squashed,'app.txt'),'second\n');
+ git(squashed,'commit','-q','-am','squashed');
+ const extra=manualWorktree(work,'extra','extra.txt');
  const rival=join(root,'rival');
  execFileSync('git',['clone','-q',join(root,'origin.git'),rival],{stdio:'ignore'});
  writeFileSync(join(rival,'app.txt'),'second\n');git(rival,'commit','-q','-am','squashed');
  git(rival,'push','-q','origin','main');
- assert.notEqual(head(join(manual,'squashed')),git(work,'rev-parse','origin/main'),'a squash-merged branch is no ancestor of the default branch');
+ assert.notEqual(head(squashed),git(work,'rev-parse','origin/main'),'a squash-merged branch is no ancestor of the default branch');
  const listing=await listWorktrees(work);
  assert.equal(listing.defaultBranch,'origin/main');
  const main=entryOf(listing,work)!;
@@ -174,16 +177,19 @@ test('worktrees reports every worktree of the project with merged and dirty stat
  assert.equal(dirtyEntry.dirty,true);
  assert.equal(dirtyEntry.adds,true);
  assert.deepEqual(dirtyEntry.task,{run:'r1',id:'t1',status:'ready',integrated:false});
- const squashed=entryOf(listing,join(manual,'squashed'))!;
- assert.equal(squashed.adds,false,'a squash-merged branch adds nothing to the default branch');
- assert.equal(squashed.dirty,false);
- assert.equal(squashed.task,null,'a worktree no task owns names no task');
- assert.equal(entryOf(listing,join(manual,'extra'))!.adds,true);
+ const squashedEntry=entryOf(listing,squashed)!;
+ assert.equal(squashedEntry.adds,false,'a squash-merged branch adds nothing to the default branch');
+ assert.equal(squashedEntry.dirty,false);
+ assert.equal(squashedEntry.task,null,'a worktree no task owns names no task');
+ assert.equal(entryOf(listing,extra)!.adds,true);
  await rm(one.workspace,{recursive:true,force:true});
  const afterRemoval=await listWorktrees(work);
  const gone=entryOf(afterRemoval,one.workspace)!;
  assert.equal(gone.missing,true,'a worktree whose directory is gone is reported as missing');
  assert.equal(gone.dirty,false);
+});
+
+test('worktrees in a project without a remote default branch reports each worktree with no merged state and says why',async t=>{
  const local=await repo(t,'list-local',{remote:false});
  const localStore=await started(local.work,'r1',1);
  const localOne=await taskWorktree(localStore,{id:'t1'});
@@ -198,7 +204,7 @@ test('worktrees reports every worktree of the project with merged and dirty stat
  assert.equal(entryOf(withoutRemote,localOne.workspace)!.dirty,false);
 });
 
-test('a task branch whose run branch was squash-merged adds nothing, even where later tasks rewrote its lines',{timeout:120000},async t=>{
+test('a task branch whose run branch was squash-merged adds nothing, even where later tasks rewrote its lines',async t=>{
  const {root,work}=await repo(t,'stacked');
  const early=join(work,'.amaleh','worktrees','run','early');
  git(work,'worktree','add','-q','-b','amaleh/run/early',early,'origin/main');
@@ -219,38 +225,45 @@ test('a task branch whose run branch was squash-merged adds nothing, even where 
  assert.equal(orphan.mergedVia,undefined);
 });
 
-test('clean-worktrees removes only what the user named and only clean, integrated worktrees',{timeout:120000},async t=>{
- const {work}=await repo(t,'clean');
+test('clean-worktrees needs the user\'s words and the paths to remove',async t=>{
+ const {work}=await repo(t,'clean-input',{remote:false});
+ await assert.rejects(()=>cleanWorktrees(work,{paths:[join(work,'.amaleh','worktrees','manual','merged')]}),/userInstruction quoting the user/);
+ await assert.rejects(()=>cleanWorktrees(work,{userInstruction:'the user asked'}),/paths/);
+});
+
+test('clean-worktrees removes nothing when one named worktree is dirty, unintegrated or unknown, and never removes the main working tree',async t=>{
+ const {work}=await repo(t,'clean-refusal');
  const store=await started(work,'r1');
  const one=await taskWorktree(store,{id:'t1'});
  const two=await taskWorktree(store,{id:'t2'});
- const manual=join(work,'.amaleh','worktrees','manual');
- git(work,'worktree','add','-q','-b','merged',join(manual,'merged'),'origin/main');
- git(work,'worktree','add','-q','-b','work',join(manual,'work'),'origin/main');
- writeFileSync(join(manual,'work','extra.txt'),'work\n');
- git(join(manual,'work'),'add','extra.txt');
- git(join(manual,'work'),'commit','-q','-m','extra');
- const merged=join(manual,'merged'),extra=join(manual,'work');
+ const merged=manualWorktree(work,'merged');
  writeFileSync(join(one.workspace,'scratch.txt'),'dirty\n');
- await assert.rejects(()=>cleanWorktrees(work,{paths:[merged]}),/userInstruction quoting the user/);
- await assert.rejects(()=>cleanWorktrees(work,{userInstruction:'the user asked'}),/paths/);
- const refusal=await cleanWorktrees(work,{paths:[one.workspace,two.workspace,merged,extra,join(work,'not-a-worktree')],userInstruction:'the user asked for these five'}).then(()=>undefined,(error:Error)=>error.message);
+ const refusal=await cleanWorktrees(work,{paths:[one.workspace,two.workspace,merged,join(work,'not-a-worktree')],userInstruction:'the user asked for these four'}).then(()=>undefined,(error:Error)=>error.message);
  assert.match(refusal!,/removed nothing/);
  assert.match(refusal!,/has uncommitted changes/);
  assert.match(refusal!,/without an integrated record; record integrated/);
  assert.match(refusal!,/is not a worktree of/);
  assert.equal(refusal!.match(/^- /gm)!.length,3,'one refusal lists every problem');
- for(const path of [one.workspace,two.workspace,merged,extra])assert.equal(existsSync(path),true,'a refused request removes nothing');
+ for(const path of [one.workspace,two.workspace,merged])assert.equal(existsSync(path),true,'a refused request removes nothing, not even the clean worktree it named');
  const mainRefusal=await cleanWorktrees(work,{paths:[work],userInstruction:'the user asked'}).then(()=>undefined,(error:Error)=>error.message);
  assert.match(mainRefusal!,/is the main working tree/);
+});
+
+test('clean-worktrees removes the named clean worktrees and their empty folder, and deletes only a branch that adds nothing',async t=>{
+ const {work}=await repo(t,'clean-remove');
+ const merged=manualWorktree(work,'merged'),extra=manualWorktree(work,'work','extra.txt');
  const removed=await cleanWorktrees(work,{paths:[merged,extra],userInstruction:'the user asked for these two',deleteBranches:true});
  assert.deepEqual(removed.removed.map(r=>({branch:r.branch,branchDeleted:r.branchDeleted})),[{branch:'merged',branchDeleted:true},{branch:'work',branchDeleted:false}]);
  assert.ok(same(removed.removed[0].path,merged)&&same(removed.removed[1].path,extra),'the report names each removed path');
  assert.equal(existsSync(merged),false);
  assert.equal(existsSync(extra),false);
- assert.equal(existsSync(manual),false,'the empty folder under .amaleh/worktrees is removed');
+ assert.equal(existsSync(join(work,'.amaleh','worktrees','manual')),false,'the empty folder under .amaleh/worktrees is removed');
  assert.doesNotMatch(git(work,'branch','--list','merged'),/merged/);
  assert.match(git(work,'branch','--list','work'),/work/,'a branch that still adds a commit is kept');
+});
+
+test('clean-worktrees keeps the branch unless the user asks to delete it, and prunes a worktree whose directory is gone',async t=>{
+ const {work}=await repo(t,'clean-keep');
  const kept=join(work,'.amaleh','worktrees','kept');
  git(work,'worktree','add','-q','-b','kept-branch',kept,'origin/main');
  const withoutDelete=await cleanWorktrees(work,{paths:[kept],userInstruction:'the user asked for this one'});
@@ -262,6 +275,12 @@ test('clean-worktrees removes only what the user named and only clean, integrate
  const pruned=await cleanWorktrees(work,{paths:[join(work,'.amaleh','worktrees','gone','work')],userInstruction:'the user asked for this one too'});
  assert.equal(pruned.removed.length,1,'a worktree whose directory is gone is still pruned from Git');
  assert.equal(existsSync(join(work,'.amaleh','worktrees','gone')),false);
+});
+
+test('clean-worktrees removes a task worktree once its run is complete',async t=>{
+ const {work}=await repo(t,'clean-complete');
+ const store=await started(work,'r1');
+ const two=await taskWorktree(store,{id:'t2'});
  const finished=new c.Store(work,'r1');
  await finished.transaction(s=>{const task=c.taskOf(s,'t2');task.status='accepted';task.integrated='synthetic';s.status='complete';});
  const complete=await cleanWorktrees(work,{paths:[two.workspace],userInstruction:'the user asked'});

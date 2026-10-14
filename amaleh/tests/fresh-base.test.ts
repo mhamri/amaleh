@@ -27,13 +27,13 @@ async function startInput(root:string,name:string,extra:Record<string,unknown>={
  return path;
 }
 
-test('start refuses a checkout that does not contain the freshly fetched origin default branch',{timeout:180000},async t=>{
+test('start refuses a checkout that does not contain the freshly fetched origin default branch',async t=>{
  const {root,work}=await staleClone(t);
  const input=await startInput(root,'stale');
  await assert.rejects(()=>main(['start',work,'stale',input]),/origin\/main/);
 });
 
-test('start accepts the stale checkout when the user asked for a different base',{timeout:60000},async t=>{
+test('start accepts the stale checkout when the user asked for a different base',async t=>{
  const {root,work}=await staleClone(t);
  const instruction='Build on my current branch; it needs unmerged work';
  await main(['start',work,'stacked',await startInput(root,'stacked',{base:{userInstruction:instruction}})]);
@@ -43,7 +43,7 @@ test('start accepts the stale checkout when the user asked for a different base'
  assert.equal((overrides[0].detail as any).userInstruction,instruction,'The override event quotes the user instruction');
 });
 
-test('start accepts a checkout that contains the fetched origin default branch',{timeout:60000},async t=>{
+test('start accepts a checkout that contains the fetched origin default branch',async t=>{
  const {root,work}=await staleClone(t);
  git(work,'pull','--ff-only','origin','main');
  await main(['start',work,'fresh',await startInput(root,'fresh')]);
@@ -64,7 +64,7 @@ async function deliverOnly(store:c.Store,dir:string){
  });
 }
 
-test('finishGate refuses a checkout that conflicts with the freshly fetched origin default branch',{timeout:60000},async t=>{
+test('finishGate refuses a checkout that conflicts with the freshly fetched origin default branch',async t=>{
  const {root,work}=await staleClone(t);
  git(work,'pull','--ff-only','origin','main');
  await main(['start',work,'conflict',await startInput(root,'conflict')]);
@@ -80,7 +80,7 @@ test('finishGate refuses a checkout that conflicts with the freshly fetched orig
  assert.deepEqual((conflicts[0].detail as any).files,['app.txt']);
 });
 
-test('finishGate accepts a checkout that merges cleanly with the fetched origin default branch',{timeout:60000},async t=>{
+test('finishGate accepts a checkout that merges cleanly with the fetched origin default branch',async t=>{
  const {root,work}=await staleClone(t);
  git(work,'pull','--ff-only','origin','main');
  await main(['start',work,'clean',await startInput(root,'clean')]);

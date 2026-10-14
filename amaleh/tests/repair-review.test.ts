@@ -55,7 +55,7 @@ console.log(JSON.stringify({type:'agent_end'}));`);
 }
 const handoffOf=(prompt:string)=>prompt.match(/"([^"]*\.md)"/)![1];
 
-test('the review after a repair continues the first reviewer\'s session and reads only the repair diff',{timeout:120000},async t=>{
+test('the review after a repair continues the first reviewer\'s session and reads only the repair diff',async t=>{
  const {dir,store,calls,work,script}=await fixture(t);
  await script([[blocking],[]]);
  await work('first attempt\n');
@@ -88,7 +88,7 @@ test('the review after a repair continues the first reviewer\'s session and read
 
 const efforts=async(store:c.Store)=>(await store.load()).events.filter(e=>e.type==='review-effort').map(e=>e.detail as {effort:string;reason:string;changedLines?:number});
 
-test('a small change that Jev judges self-contained gets a light review, and the review of its repair stays light',{timeout:120000},async t=>{
+test('a small change that Jev judges self-contained gets a light review, and the review of its repair stays light',async t=>{
  const {dir,store,calls,work,jevCalls,script}=await fixture(t,{choice:'light',confidence:.95});
  await script([[blocking],[]]);
  await writeFile(join(dir,'a','new.txt'),'brand new\n');
@@ -111,7 +111,7 @@ test('a small change that Jev judges self-contained gets a light review, and the
 });
 
 for(const [name,risk] of [['Jev can raise a small change to a full review',{choice:'full',confidence:.95}],['a Jev answer that is not sure gives a full review',{choice:'light',confidence:.6}]] as [string,Risk][])
- test(name,{timeout:120000},async t=>{
+ test(name,async t=>{
   const {store,calls,work,script}=await fixture(t,risk);
   await script([[]]);
   await work('first attempt\n');
@@ -123,7 +123,7 @@ for(const [name,risk] of [['Jev can raise a small change to a full review',{choi
   assert.equal((await efforts(store))[0].effort,'full');
  });
 
-test('a change over the line limit gets a full review without asking Jev, and one decision serves one content',{timeout:120000},async t=>{
+test('a change over the line limit gets a full review without asking Jev, and one decision serves one content',async t=>{
  const {store,calls,work,jevCalls,script}=await fixture(t,{choice:'light',confidence:.95});
  await script([[]]);
  await work(Array.from({length:201},(_,i)=>`line ${i}`).join('\n')+'\n');
@@ -136,7 +136,7 @@ test('a change over the line limit gets a full review without asking Jev, and on
  assert.equal((await efforts(store)).length,1,'a second review of the same content reuses the decision');
 });
 
-test('a changed contract gets a fresh full review, not a review of the repair',{timeout:120000},async t=>{
+test('a changed contract gets a fresh full review, not a review of the repair',async t=>{
  const {store,calls,work,script}=await fixture(t);
  await script([[blocking],[]]);
  await work('first attempt\n');
@@ -150,7 +150,7 @@ test('a changed contract gets a fresh full review, not a review of the repair',{
  assert.match(second.prompt,/independent read-only reviewer/);
 });
 
-test('a review that must come from another family is a fresh full review',{timeout:120000},async t=>{
+test('a review that must come from another family is a fresh full review',async t=>{
  const {store,calls,work,script}=await fixture(t);
  await script([[blocking],[]]);
  await work('first attempt\n');

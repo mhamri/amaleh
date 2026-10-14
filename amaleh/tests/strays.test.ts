@@ -46,7 +46,7 @@ test('Windows and ps listings parse into rows',()=>{
  assert.deepEqual(parsePsListing('  42     1    00:05 /usr/bin/flutter_tester /w/a\n',100000),[{pid:42,parent:1,started:95000,command:'/usr/bin/flutter_tester /w/a'}]);
 });
 
-test('a process left behind by an exited parent is stopped',{timeout:60000},async t=>{
+test('a process left behind by an exited parent is stopped',async t=>{
  const dir=await mkdtemp(join(tmpdir(),'amaleh-strays-'));
  t.after(()=>rm(dir,{recursive:true,force:true}));
  const since=Date.now()-1000;
