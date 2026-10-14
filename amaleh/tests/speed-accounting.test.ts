@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { piRun, CallStopped } from '../scripts/adapters.ts';
 import { speedSamples, modelSpeed, readSpeedSamples, diagnostics } from '../scripts/telemetry.ts';
+import { jsonl, printsStdout, readStdout, stdoutFile, writeFakePi } from './fake-pi-fixture.ts';
 
 const modelsConfig=join(import.meta.dirname,'..','models.json');
 async function fixture(t:any,models?:Record<string,unknown>){
@@ -16,12 +17,14 @@ async function fixture(t:any,models?:Record<string,unknown>){
  t.after(()=>{for(const [name,value] of [['OPENROUTER_API_KEY',old.key],['AMALEH_PI_ENTRY',old.pi],['AMALEH_NODE',old.node],['AMALEH_MODELS',old.models]])if(value===undefined)delete process.env[name!];else process.env[name!]=value;});
  return dir;
 }
-async function fakePi(t:any,source:string,models?:Record<string,unknown>){
- const dir=await fixture(t,models),entry=join(dir,'fake-pi.ts');
- await writeFile(entry,source);process.env.AMALEH_PI_ENTRY=entry;process.env.AMALEH_NODE=process.execPath;
+async function fakePi(t:any,source:string,stdout:string,models?:Record<string,unknown>){
+ const dir=await fixture(t,models);
+ process.env.AMALEH_PI_ENTRY=await writeFakePi(dir,source,{[stdoutFile]:stdout});process.env.AMALEH_NODE=process.execPath;
  return {dir,input:{workspace:dir,model:'test/model',prompt:'fixture',sessionDir:join(dir,'.sessions'),diagnosticRoot:join(dir,'.diagnostics'),speedDir:dir}};
 }
 const refused={type:'message_end',message:{role:'assistant',model:'test/model',content:[{type:'text',text:''}],stopReason:'error',errorMessage:'Model refused the request',usage:{input:10,output:7}}};
+const chatter=jsonl([{type:'tool_execution_start',toolName:'read',args:{path:'x'}}])+'\n';
+const repeatsStdout=`${readStdout}setInterval(()=>process.stdout.write(stdout),200);\n`;
 
 const operation=(outcome:string,elapsedMs:number,outputTokens:number)=>({id:outcome+elapsedMs,operation:'pi',started:'2026-09-24T19:00:00.000Z',elapsedMs,outcome,metadata:{model:'test/model',readOnly:false},events:[{stage:'usage',data:{outputTokens},elapsedMs:1}]});
 
@@ -36,7 +39,7 @@ test('a failed pi call counts toward model speed, with its failure named',()=>{
 });
 
 test('piRun appends a failed speed sample when the call fails',async t=>{
- const {dir,input}=await fakePi(t,`process.stdout.write(${JSON.stringify(JSON.stringify(refused)+'\n'+JSON.stringify({type:'agent_end'})+'\n')});`);
+ const {dir,input}=await fakePi(t,printsStdout,jsonl([refused,{type:'agent_end'}])+'\n');
  await assert.rejects(()=>piRun(input),/Model refused the request/);
  const samples=await readSpeedSamples(dir) as any[];
  assert.equal(samples.length,1);
@@ -46,8 +49,7 @@ test('piRun appends a failed speed sample when the call fails',async t=>{
 });
 
 test('a reviewer call is stopped by its own wall-clock limit and sampled as a reviewer failure',async t=>{
- const chatter=JSON.stringify({type:'tool_execution_start',toolName:'read',args:{path:'x'}})+'\n';
- const {dir,input}=await fakePi(t,`setInterval(()=>process.stdout.write(${JSON.stringify(chatter)}),200);`,{reviewerTimeoutMs:1500});
+ const {dir,input}=await fakePi(t,repeatsStdout,chatter,{reviewerTimeoutMs:1500});
  await assert.rejects(()=>piRun({...input,readOnly:true}),/time limit/i);
  const report=await diagnostics(input.diagnosticRoot);
  assert.ok(report.operations[0].events.some((e:any)=>e.stage==='call-timeout'),'the trace must name the wall-clock timeout');
@@ -58,8 +60,7 @@ test('a reviewer call is stopped by its own wall-clock limit and sampled as a re
 });
 
 test('a worker call that keeps talking past the wall-clock limit is stopped and recorded as failed',async t=>{
- const chatter=JSON.stringify({type:'tool_execution_start',toolName:'read',args:{path:'x'}})+'\n';
- const {dir,input}=await fakePi(t,`setInterval(()=>process.stdout.write(${JSON.stringify(chatter)}),200);`,{workerTimeoutMs:1500});
+ const {dir,input}=await fakePi(t,repeatsStdout,chatter,{workerTimeoutMs:1500});
  const started=Date.now();
  await assert.rejects(()=>piRun(input),(error:unknown)=>error instanceof CallStopped&&error.stage==='call-timeout'&&/time limit/i.test(error.message));
  assert.ok(Date.now()-started<15000,'the limit must stop the call, not the idle timer');

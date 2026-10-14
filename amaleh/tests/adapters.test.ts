@@ -9,54 +9,58 @@ import { Store } from '../scripts/core.ts';
 import { jsRuntime, onPath } from '../scripts/runtime.ts';
 import { diagnostics, trace, readSpeedSamples } from '../scripts/telemetry.ts';
 import { main } from '../scripts/cli.ts';
+import { jsonl, printsStdout, readStdout, stdoutFile, writeFakePi } from './fake-pi-fixture.ts';
 
 async function fixture(t:any){const dir=await mkdtemp(join(tmpdir(),'amaleh-adapter-'));t.after(()=>rm(dir,{recursive:true,force:true}));const old={key:process.env.OPENROUTER_API_KEY,pi:process.env.AMALEH_PI_ENTRY,node:process.env.AMALEH_NODE};process.env.OPENROUTER_API_KEY='sk-or-fake-diagnostic-secret-12345';t.after(()=>{for(const [name,value] of [['OPENROUTER_API_KEY',old.key],['AMALEH_PI_ENTRY',old.pi],['AMALEH_NODE',old.node]])if(value===undefined)delete process.env[name!];else process.env[name!]=value;});return dir;}
 const assistant={type:'message_end',message:{role:'assistant',model:'test/model',content:[{type:'text',text:'Completed fixture'}],stopReason:'stop',usage:{input:10,output:3,cost:{total:.001}}}};
-async function piFixture(t:any,source:string){const dir=await fixture(t),entry=join(dir,'fake-pi.ts');await writeFile(entry,source);process.env.AMALEH_PI_ENTRY=entry;process.env.AMALEH_NODE=process.execPath;return {dir,input:{workspace:dir,model:'test/model',prompt:'fixture',sessionDir:join(dir,'.sessions'),diagnosticRoot:join(dir,'.diagnostics')}};}
-const output=(items:unknown[])=>`process.stdout.write(${JSON.stringify(items.map(i=>JSON.stringify(i)).join('\n'))});`;
+async function piFixture(t:any,source:string,files:Record<string,string>={}){const dir=await fixture(t);process.env.AMALEH_PI_ENTRY=await writeFakePi(dir,source,files);process.env.AMALEH_NODE=process.execPath;return {dir,input:{workspace:dir,model:'test/model',prompt:'fixture',sessionDir:join(dir,'.sessions'),diagnosticRoot:join(dir,'.diagnostics')}};}
+const printing=(t:any,stdout:string)=>piFixture(t,printsStdout,{[stdoutFile]:stdout});
 
 test('OpenRouter terminal status errors retain diagnostics without leaking credentials',async t=>{const dir=await fixture(t);for(const status of [400,401,402,403]){let calls=0;await assert.rejects(()=>requestJson('https://openrouter.ai/api/alpha/decisions',{},(async()=>{calls++;return new Response('{}',{status});}) as typeof fetch,dir),new RegExp(String(status)));assert.equal(calls,1);}const report=await diagnostics(dir);assert.equal(report.totals.failures,4);assert.ok(!JSON.stringify(report).includes(process.env.OPENROUTER_API_KEY!));});
 test('retry status and usage are retained on eventual API success',async t=>{const dir=await fixture(t);let calls=0;const value=await requestJson('https://openrouter.ai/api/alpha/decisions',{},(async()=>++calls===1?new Response('{}',{status:429,headers:{'retry-after':'0.001'}}):Response.json({model:'jev',usage:{input_tokens:12,output_tokens:2,cost:.0001}})) as typeof fetch,dir);assert.equal(value.model,'jev');assert.equal(calls,2);const d=await diagnostics(dir);assert.equal(d.totals.inputTokens,12);assert.equal(d.totals.reportedCost,.0001);assert.equal(d.operations[0].events.filter((e:any)=>e.stage==='attempt').length,2);});
 test('transport exhaustion and malformed success JSON are diagnosed',async t=>{const dir=await fixture(t);let calls=0;await assert.rejects(()=>requestJson('https://openrouter.ai/api/alpha/decisions',{},(async()=>{calls++;throw new Error('network '+process.env.OPENROUTER_API_KEY);}) as typeof fetch,dir),/bounded retries/);assert.equal(calls,3);await assert.rejects(()=>requestJson('https://openrouter.ai/api/alpha/decisions',{},(async()=>new Response('not JSON',{status:200})) as typeof fetch,dir));const report=await diagnostics(dir);assert.equal(report.totals.failures,2);assert.ok(!JSON.stringify(report).includes(process.env.OPENROUTER_API_KEY!));});
-test('pi parses a final JSONL record without newline and records usage',async t=>{const {input}=await piFixture(t,output([assistant,{type:'agent_end'}]));const result=await piRun(input);assert.equal(result.text,'Completed fixture');const d=await diagnostics(input.diagnosticRoot);assert.equal(d.totals.inputTokens,10);assert.equal(d.totals.outputTokens,3);assert.equal(d.totals.estimatedCost,.001);assert.equal(d.totals.reportedCost,0);assert.equal(d.operations[0].outcome,'success');});
-test('pi rejects incomplete, malformed, mismatched and failed response streams',async t=>{for(const [label,source] of [
- ['incomplete',output([assistant])],
- ['content-shape',output([{...assistant,message:{...assistant.message,content:{}}},{type:'agent_end'}])],
- ['content-null',output([{...assistant,message:{...assistant.message,content:[null]}},{type:'agent_end'}])],
- ['malformed',output([assistant,{type:'agent_end'}])+"process.stdout.write('\\ninvalid');"],
- ['model',output([{...assistant,message:{...assistant.message,model:'other/model'}},{type:'agent_end'}])],
- ['provider',output([{...assistant,message:{...assistant.message,stopReason:'error',errorMessage:'bad request'}},{type:'agent_end'}])]
-]){await t.test(label,async st=>{const {input}=await piFixture(st,source);await assert.rejects(()=>piRun(input));assert.equal((await diagnostics(input.diagnosticRoot)).totals.failures,1);});}});
+test('pi parses a final JSONL record without newline and records usage',async t=>{const {input}=await printing(t,jsonl([assistant,{type:'agent_end'}]));const result=await piRun(input);assert.equal(result.text,'Completed fixture');const d=await diagnostics(input.diagnosticRoot);assert.equal(d.totals.inputTokens,10);assert.equal(d.totals.outputTokens,3);assert.equal(d.totals.estimatedCost,.001);assert.equal(d.totals.reportedCost,0);assert.equal(d.operations[0].outcome,'success');});
+test('pi rejects incomplete, malformed, mismatched and failed response streams',async t=>{for(const [label,stdout] of [
+ ['incomplete',jsonl([assistant])],
+ ['content-shape',jsonl([{...assistant,message:{...assistant.message,content:{}}},{type:'agent_end'}])],
+ ['content-null',jsonl([{...assistant,message:{...assistant.message,content:[null]}},{type:'agent_end'}])],
+ ['malformed',jsonl([assistant,{type:'agent_end'}])+'\ninvalid'],
+ ['model',jsonl([{...assistant,message:{...assistant.message,model:'other/model'}},{type:'agent_end'}])],
+ ['provider',jsonl([{...assistant,message:{...assistant.message,stopReason:'error',errorMessage:'bad request'}},{type:'agent_end'}])]
+]){await t.test(label,async st=>{const {input}=await printing(st,stdout);await assert.rejects(()=>piRun(input));assert.equal((await diagnostics(input.diagnosticRoot)).totals.failures,1);});}});
 test('pi rejects spawn and ownership failures without leaving promises unresolved',async t=>{const {dir,input}=await piFixture(t,`setTimeout(()=>{},10000);`);process.env.AMALEH_NODE=join(dir,'missing-node');await assert.rejects(()=>piRun(input),{code:"ENOENT"});const failed=await diagnostics(input.diagnosticRoot);assert.equal(failed.totals.failures,1);assert.equal(failed.totals.unfinished,0);assert.equal(failed.operations[0].events.at(-1)?.stage,"finished");process.env.AMALEH_NODE=process.execPath;await assert.rejects(()=>piRun({...input,onSpawn:async()=>{throw new Error('owner checkpoint failed');}}),/owner checkpoint/);});
 test('failed CLI initialization remains diagnosable without a valid run snapshot',async t=>{const dir=await fixture(t),request=join(dir,'request.json');await writeFile(request,'{}');await assert.rejects(()=>main(['start',dir,'failed',request]));const report=await main(['diagnose',dir,'failed']) as any;assert.ok(report.stateError);assert.equal(report.diagnostics.totals.failures,1);});
 test('unfinished traces remain visible after a simulated interrupted operation',async t=>{const dir=await fixture(t);await trace(dir,'interrupted',{task:'x'});const report=await diagnostics(dir);assert.equal(report.totals.unfinished,1);assert.match(report.operations[0].outcome,/active or interrupted/);});
 const rateLimited={...assistant,message:{...assistant.message,stopReason:'error',errorMessage:'429: {"message":"Provider returned error","code":429,"metadata":{"raw":"z-ai/glm-5.3-flashx is temporarily rate-limited upstream."}}'}};
 const refused={...assistant,message:{...assistant.message,stopReason:'error',errorMessage:'403: {"message":"Your account lacks access to this model","code":403}'}};
-const flakyPi=(counter:string,first:unknown[],later:unknown[])=>
- `import {readFileSync,writeFileSync} from 'node:fs';\nconst path=${JSON.stringify(counter)};\nlet n=0;try{n=Number(readFileSync(path,'utf8'));}catch{}\nwriteFileSync(path,String(n+1));\nif(n===0){${output(first)}}else{${output(later)}}\n`;
+const flakyPi=[
+ "import {readFileSync,writeFileSync} from 'node:fs';",
+ "const sibling=(name)=>new URL(name,import.meta.url);",
+ "let n=0;try{n=Number(readFileSync(sibling('attempts.txt'),'utf8'));}catch{}",
+ "writeFileSync(sibling('attempts.txt'),String(n+1));",
+ "process.stdout.write(readFileSync(sibling(n===0?'first.jsonl':'later.jsonl'),'utf8'));",
+].join('\n');
+async function flakyFixture(t:any,first:unknown[],later:unknown[]){
+ const {dir,input}=await piFixture(t,flakyPi,{'first.jsonl':jsonl(first),'later.jsonl':jsonl(later)});
+ return {counter:join(dir,'attempts.txt'),input};
+}
 test('a transient provider rate limit is retried instead of blocking the chunk',async t=>{
- const dir=await fixture(t),counter=join(dir,'attempts.txt'),entry=join(dir,'fake-pi.ts');
- await writeFile(entry,flakyPi(counter,[rateLimited,{type:'agent_end'}],[assistant,{type:'agent_end'}]));
- process.env.AMALEH_PI_ENTRY=entry;process.env.AMALEH_NODE=process.execPath;
- const result=await piRun({workspace:dir,model:'test/model',prompt:'fixture',sessionDir:join(dir,'.sessions'),diagnosticRoot:join(dir,'.diagnostics')});
+ const {counter,input}=await flakyFixture(t,[rateLimited,{type:'agent_end'}],[assistant,{type:'agent_end'}]);
+ const result=await piRun(input);
  assert.equal(result.text,'Completed fixture');
  assert.equal(await readFile(counter,'utf8'),'2');
- const report=await diagnostics(join(dir,'.diagnostics'));
+ const report=await diagnostics(input.diagnosticRoot);
  assert.equal(report.operations[0].outcome,'success');
  assert.equal(report.operations[0].events.filter((e:any)=>e.stage==='transient-provider').length,1);
 });
 test('a non-transient provider refusal fails on the first attempt',async t=>{
- const dir=await fixture(t),counter=join(dir,'attempts.txt'),entry=join(dir,'fake-pi.ts');
- await writeFile(entry,flakyPi(counter,[refused,{type:'agent_end'}],[assistant,{type:'agent_end'}]));
- process.env.AMALEH_PI_ENTRY=entry;process.env.AMALEH_NODE=process.execPath;
- await assert.rejects(()=>piRun({workspace:dir,model:'test/model',prompt:'fixture',sessionDir:join(dir,'.sessions'),diagnosticRoot:join(dir,'.diagnostics')}),/403/);
+ const {counter,input}=await flakyFixture(t,[refused,{type:'agent_end'}],[assistant,{type:'agent_end'}]);
+ await assert.rejects(()=>piRun(input),/403/);
  assert.equal(await readFile(counter,'utf8'),'1');
 });
 test('an exhausted retry budget still surfaces the provider message',async t=>{
- const dir=await fixture(t),counter=join(dir,'attempts.txt'),entry=join(dir,'fake-pi.ts');
- await writeFile(entry,flakyPi(counter,[rateLimited,{type:'agent_end'}],[rateLimited,{type:'agent_end'}]));
- process.env.AMALEH_PI_ENTRY=entry;process.env.AMALEH_NODE=process.execPath;
- await assert.rejects(()=>piRun({workspace:dir,model:'test/model',prompt:'fixture',sessionDir:join(dir,'.sessions'),diagnosticRoot:join(dir,'.diagnostics'),attempts:2}),/rate-limited/);
+ const {counter,input}=await flakyFixture(t,[rateLimited,{type:'agent_end'}],[rateLimited,{type:'agent_end'}]);
+ await assert.rejects(()=>piRun({...input,attempts:2}),/rate-limited/);
  assert.equal(await readFile(counter,'utf8'),'2');
 });
 test('transient provider trouble is retried; a settled money or access failure is not',()=>{
@@ -97,12 +101,12 @@ test('a hung child is killed and reported instead of blocking the chunk forever'
  assert.ok(report.operations[0].events.some((e:any)=>e.stage==='idle-timeout'),'the trace must name the idle timeout');
 });
 test('a worker that keeps producing output is never cut off by the idle timeout',async t=>{
- const {input}=await piFixture(t,`let n=0;const t=setInterval(()=>{process.stdout.write(JSON.stringify({type:'tool_execution_start',toolName:'bash'})+'\\n');if(++n===6){clearInterval(t);${output([assistant,{type:'agent_end'}])}}},120);`);
+ const {input}=await piFixture(t,`${readStdout}let n=0;const t=setInterval(()=>{process.stdout.write(JSON.stringify({type:'tool_execution_start',toolName:'bash'})+'\\n');if(++n===6){clearInterval(t);process.stdout.write(stdout);}},120);`,{[stdoutFile]:jsonl([assistant,{type:'agent_end'}])});
  const result=await piRun({...input,idleTimeoutMs:600});
  assert.equal(result.text,'Completed fixture','steady progress must keep the worker alive past the idle window');
 });
 test('a finished call adds one speed sample, and a first read seeds the ledger from earlier run traces',async t=>{
- const {dir,input}=await piFixture(t,output([assistant,{type:'agent_end'}]));
+ const {dir,input}=await printing(t,jsonl([assistant,{type:'agent_end'}]));
  const amalehDir=join(dir,'.amaleh'),earlier=join(amalehDir,'runs','earlier');
  const old=await trace(earlier,'pi',{model:'old/model',readOnly:true});await old.write('usage',{outputTokens:500});await old.end('success');
  await piRun({...input,speedDir:amalehDir,readOnly:false});
@@ -114,7 +118,7 @@ test('a finished call adds one speed sample, and a first read seeds the ledger f
  assert.equal((await readSpeedSamples(amalehDir)).length,3,'a torn or foreign line is skipped, not fatal');
 });
 test('an oversized prompt is refused with a message naming the limit',async t=>{
- const {input}=await piFixture(t,output([assistant,{type:'agent_end'}]));
+ const {input}=await printing(t,jsonl([assistant,{type:'agent_end'}]));
  await assert.rejects(()=>piRun({...input,prompt:'y'.repeat(promptLimit+1)}),new RegExp(`cannot carry more than ${promptLimit}`));
 });
 test('a review report survives the wrappers flash models put around JSON',()=>{
