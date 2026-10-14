@@ -1,4 +1,5 @@
 import {fixtureClaim,clearCut,jevGate,noJev} from './execution-fixture.ts';
+import {definesSibling,writeFakePi} from './fake-pi-fixture.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,rm,writeFile,readFile} from 'node:fs/promises';
@@ -133,17 +134,17 @@ async function capturedReviewerPrompt(t:any){
  const outside=await mkdtemp(join(tmpdir(),'amaleh-review-prompt-'));t.after(()=>rm(outside,{recursive:true,force:true}));
  const old={fetch:globalThis.fetch,entry:process.env.AMALEH_PI_ENTRY,node:process.env.AMALEH_NODE};
  t.after(()=>{globalThis.fetch=old.fetch;for(const [key,value] of [['AMALEH_PI_ENTRY',old.entry],['AMALEH_NODE',old.node]] as const)if(value===undefined)delete process.env[key];else process.env[key]=value;});
- const promptPath=join(outside,'reviewer-prompt.txt'),entry=join(outside,'fake-pi.ts');
- await writeFile(entry,`import {readFileSync,writeFileSync} from 'node:fs';
-const prompt=process.argv.at(-1);
-writeFileSync(${JSON.stringify(promptPath)},prompt);
+ const promptFile='reviewer-prompt.txt';
+ const entry=await writeFakePi(outside,`import {readFileSync,writeFileSync} from 'node:fs';
+${definesSibling}const prompt=process.argv.at(-1);
+writeFileSync(sibling('${promptFile}'),prompt);
 const handoff=prompt.match(/"([^"]*review-packet\\.md)"/);
 const packet=JSON.parse(readFileSync(handoff[1],'utf8').match(/\`\`\`json\\n([\\s\\S]*?)\\n\`\`\`/)[1]);
 console.log(JSON.stringify({type:'message_end',message:{role:'assistant',model:process.argv[process.argv.indexOf('--model')+1],content:[{type:'text',text:JSON.stringify({report:'Synthetic reviewer fixture',coverage:packet.obligations.map((o:any)=>({id:o.id,status:'covered',evidence:'Synthetic protocol fixture only'})),findings:[]})}],stopReason:'stop'}}));
 console.log(JSON.stringify({type:'agent_end'}));`);
  process.env.AMALEH_PI_ENTRY=entry;process.env.AMALEH_NODE=process.execPath;globalThis.fetch=gateway();
  await reviewer(store,'a',undefined,['Spec']);
- return readFile(promptPath,'utf8');
+ return readFile(join(outside,promptFile),'utf8');
 }
 test('the reviewer prompt defines exactly which findings are blocking',async t=>{
  const prompt=await capturedReviewerPrompt(t);

@@ -1,4 +1,5 @@
 import {fixtureClaim,clearCut} from './execution-fixture.ts';
+import {definesSibling,writeFakePi} from './fake-pi-fixture.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,rm,writeFile,readFile,realpath,mkdir} from 'node:fs/promises';
@@ -14,6 +15,7 @@ const card=(id:string)=>({id,created:1,context_length:64000,architecture:{input_
 const models={flash:['z-ai/glm-new-flash','deepseek/new-flash','xiaomi/new-flash'],deep:['moonshot/kimi-specialist'],jev:'typesafe/jev-1.13',providerCooldownMs:300000,providerFailovers:3,launchAttempts:3,idleTimeoutMs:900000,slowModelWindowMs:604800000,reviewerMaxTurns:60};
 const blocking={id:'f1',lens:'Spec',location:'a/app.txt',scenario:'charges 11 instead of 10',evidence:'observed expected-versus-actual',consequence:'overcharge',blocking:true};
 type Call={model:string;continued:boolean;sessionDir:string;prompt:string;thinking?:string};
+const callsFile='calls.jsonl',findingsFile='findings.json';
 type Risk={choice:'light'|'full';confidence:number};
 
 async function fixture(t:any,risk?:Risk){
@@ -21,16 +23,17 @@ async function fixture(t:any,risk?:Risk){
  t.after(()=>Promise.all([rm(dir,{recursive:true,force:true}),rm(outside,{recursive:true,force:true})]));
  git(dir,'init','-q');await mkdir(join(dir,'a'));await writeFile(join(dir,'a','app.txt'),'original\n');await writeFile(join(dir,'.gitignore'),'/.amaleh/\n');
  git(dir,'add','.');git(dir,'commit','-qm','base');
- const log=join(outside,'calls.jsonl'),script=join(outside,'findings.json'),entry=join(outside,'fake-pi.ts');
+ const log=join(outside,callsFile),script=join(outside,findingsFile);
  await writeFile(join(outside,'models.json'),JSON.stringify(models));
- await writeFile(entry,`import {readFileSync,appendFileSync,existsSync} from 'node:fs';
+ const entry=await writeFakePi(outside,`import {readFileSync,appendFileSync,existsSync} from 'node:fs';
 import {dirname,join} from 'node:path';
-const argv=process.argv,prompt=argv.at(-1),model=argv[argv.indexOf('--model')+1],sessionDir=argv[argv.indexOf('--session-dir')+1];
-const calls=existsSync(${JSON.stringify(log)})?readFileSync(${JSON.stringify(log)},'utf8').split('\\n').filter(Boolean).length:0;
-appendFileSync(${JSON.stringify(log)},JSON.stringify({model,continued:argv.includes('--continue'),sessionDir,prompt,thinking:argv.includes('--thinking')?argv[argv.indexOf('--thinking')+1]:undefined})+'\\n');
+${definesSibling}const argv=process.argv,prompt=argv.at(-1),model=argv[argv.indexOf('--model')+1],sessionDir=argv[argv.indexOf('--session-dir')+1];
+const log=sibling('${callsFile}');
+const calls=existsSync(log)?readFileSync(log,'utf8').split('\\n').filter(Boolean).length:0;
+appendFileSync(log,JSON.stringify({model,continued:argv.includes('--continue'),sessionDir,prompt,thinking:argv.includes('--thinking')?argv[argv.indexOf('--thinking')+1]:undefined})+'\\n');
 const handoff=prompt.match(/"([^"]*\\.md)"/)[1];
 const packet=JSON.parse(readFileSync(join(dirname(handoff),'review-packet.md'),'utf8').match(/\`\`\`json\\n([\\s\\S]*?)\\n\`\`\`/)[1]);
-const script=JSON.parse(readFileSync(${JSON.stringify(script)},'utf8'));
+const script=JSON.parse(readFileSync(sibling('${findingsFile}'),'utf8'));
 const findings=script[Math.min(calls,script.length-1)];
 console.log(JSON.stringify({type:'message_end',message:{role:'assistant',model,content:[{type:'text',text:JSON.stringify({report:'Synthetic reviewer fixture',coverage:packet.obligations.map((o:any)=>({id:o.id,status:'covered',evidence:'Synthetic protocol fixture only'})),findings})}],stopReason:'stop'}}));
 console.log(JSON.stringify({type:'agent_end'}));`);

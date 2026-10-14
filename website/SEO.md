@@ -75,9 +75,14 @@ rendering.
 ## Structured data
 
 `website/src/components/StructuredData.tsx` is the only JSON-LD renderer. It
-takes a `Graph` typed with `schema-dts` and serialises it with every `<`
-escaped as the JSON escape `\u003c`, so page copy can never close the script element. The
-builders live in `website/src/lib/seo.ts`:
+takes a `Graph` typed with `schema-dts` and serialises it with `scriptJson`
+from `website/src/lib/script-json.ts`, which writes every `<` as the JSON
+escape `\u003c`, so page copy can never close the script element, and every U+2028 and
+U+2029 separator as its own JSON escape, because engines older than ES2019 end
+a string literal at either one. Each escape parses back to the same value. The
+consent defaults script in
+`website/src/lib/consent.ts` writes its values through the same `scriptJson`.
+The builders live in `website/src/lib/seo.ts`:
 
 - `homeGraph(description)` returns one `@graph` with a `WebSite` named Amaleh
   at `SITE_URL`, a free `SoftwareSourceCode` whose `codeRepository` is the

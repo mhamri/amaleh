@@ -10,6 +10,7 @@ import {catalogCost,priceBook} from '../scripts/pricing.ts';
 import {processHealth} from '../scripts/host-diagnostics.ts';
 import * as c from '../scripts/core.ts';
 import {clearCut} from './execution-fixture.ts';
+import {jsonl,printsStdout,stdoutFile,writeFakePi} from './fake-pi-fixture.ts';
 
 async function temp(t:any,prefix:string){const dir=await mkdtemp(join(tmpdir(),prefix));t.after(()=>rm(dir,{recursive:true,force:true}));return dir;}
 const git=(cwd:string,...args:string[])=>execFileSync('git',['-c','user.email=fixture@example.invalid','-c','user.name=fixture',...args],{cwd,encoding:'utf8'});
@@ -39,17 +40,17 @@ test('a workspace outside Git yields no diff rather than a misleading one',async
 
 const turn=(stopReason:string,text='working')=>({type:'message_end',message:{role:'assistant',model:'test/model',content:[{type:'text',text}],stopReason,usage:{input:10,output:3,cacheRead:100,cost:{total:.001}}}});
 test('a call that keeps using tools past its turn limit is stopped with the reason',async t=>{
- const dir=await temp(t,'amaleh-turns-'),entry=join(dir,'fake-pi.ts');
- const lines=Array.from({length:8},()=>JSON.stringify(turn('toolUse'))).join('\n');
- await writeFile(entry,`process.stdout.write(${JSON.stringify(lines+'\n')});setTimeout(()=>{},20000);`);
+ const dir=await temp(t,'amaleh-turns-');
+ const entry=await writeFakePi(dir,`${printsStdout}setTimeout(()=>{},20000);`,{[stdoutFile]:jsonl(Array.from({length:8},()=>turn('toolUse')))+'\n'});
  const old={key:process.env.OPENROUTER_API_KEY,pi:process.env.AMALEH_PI_ENTRY,node:process.env.AMALEH_NODE};
  process.env.OPENROUTER_API_KEY='sk-or-fake-turn-limit-secret-123';process.env.AMALEH_PI_ENTRY=entry;process.env.AMALEH_NODE=process.execPath;
  t.after(()=>{for(const [name,value] of [['OPENROUTER_API_KEY',old.key],['AMALEH_PI_ENTRY',old.pi],['AMALEH_NODE',old.node]] as const)if(value===undefined)delete process.env[name];else process.env[name]=value;});
- const started=Date.now();
  await assert.rejects(()=>piRun({workspace:dir,model:'test/model',prompt:'fixture',sessionDir:join(dir,'.sessions'),diagnosticRoot:join(dir,'.diagnostics'),maxTurns:5,attempts:1}),/Stopped after 5 turns, the limit for this call/);
- assert.ok(Date.now()-started<15000,'the process tree is killed instead of waiting for it');
- const report=await diagnostics(join(dir,'.diagnostics'));
- assert.ok(report.operations[0].events.some(e=>e.stage==='turn-limit'));
+ const {events}=(await diagnostics(join(dir,'.diagnostics'))).operations[0];
+ const stopped=events.find(e=>e.stage==='turn-limit'),exit=events.find(e=>e.stage==='process-exit');
+ assert.ok(stopped&&exit);
+ assert.ok(stopped.elapsedMs<15000,'the limit stops the call as soon as it is reached');
+ assert.notEqual(exit.data.code,0,'the process tree is killed instead of waiting for it');
 });
 
 test('spend splits estimated cost and cached tokens by model, role and task',async t=>{

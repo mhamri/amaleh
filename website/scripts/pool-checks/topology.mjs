@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { family } from '../../../amaleh/scripts/family.ts';
 import { MODELS } from '../../src/lib/models.ts';
 import { topologyPoolBox } from '../../src/lib/topology-layout.ts';
+import { decodeEntities, visibleText, withoutTags } from '../html-text.mjs';
 
 const here = fileURLToPath(new URL('../../../', import.meta.url));
 const routes = ['', 'docs'];
@@ -14,36 +15,16 @@ const SANS_ADVANCE = 0.62;
 const MAX_POOL = 6;
 const LONGEST_NAME = 10;
 
-function decode(text) {
-  return text
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#x27;|&#39;/g, "'")
-    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)));
-}
-
-function visibleText(html) {
-  const withoutCode = html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<!--[\s\S]*?-->/g, ' ');
-  const attributes = [...withoutCode.matchAll(/\s(?:aria-label|title|alt|content)="([^"]*)"/g)].map((m) => m[1]);
-  return decode(`${withoutCode.replace(/<[^>]+>/g, ' ')} ${attributes.join(' ')}`).replace(/\s+/g, ' ');
-}
-
 function segments(html, tag) {
   return [...html.matchAll(new RegExp(`<${tag}\\b[\\s\\S]*?<\\/${tag}>`, 'g'))].map((m) => m[0]);
 }
 
 function svgTexts(svg) {
-  return [...svg.matchAll(/<text\b[^>]*>([\s\S]*?)<\/text>/g)].map((m) => decode(m[1].replace(/<[^>]+>/g, '')).trim());
+  return [...svg.matchAll(/<text\b[^>]*>([\s\S]*?)<\/text>/g)].map((m) => decodeEntities(withoutTags(m[1], '')).trim());
 }
 
 function ariaLabel(svg) {
-  return decode(/aria-label="([^"]*)"/.exec(svg)?.[1] ?? '');
+  return decodeEntities(/aria-label="([^"]*)"/.exec(svg)?.[1] ?? '');
 }
 
 function wordPattern(name) {

@@ -6,6 +6,7 @@ import { BRAND_IMAGES, BRAND_MASTER_SOURCE_PATH } from '../src/lib/brand.ts';
 import { consentRegions } from '../src/lib/consent.ts';
 import { REPOSITORY_URL, SPONSOR_URL } from '../src/lib/links.ts';
 import { gtmNoscriptIframe, trackingHeadScripts } from '../src/lib/tracking.ts';
+import { decodeEntities, withoutComments, withoutScriptsAndStyles, withoutTags } from './html-text.mjs';
 
 const publicDir = fileURLToPath(new URL('../.output/public/', import.meta.url));
 const poolChecksDir = fileURLToPath(new URL('./pool-checks/', import.meta.url));
@@ -103,13 +104,18 @@ function softBadgeFill(hueHex, baseHex, weight) {
   return '#' + oklabToRgb(...mixed).map(v => v.toString(16).padStart(2, '0')).join('');
 }
 
+const SCHEMES_LEAVING_THE_SITE = new Set(['http:', 'https:', 'mailto:', 'tel:']);
+
 function resolveLinkTarget(link, pageDir, basePath) {
-  if (/^(https?:|mailto:|data:|tel:)/i.test(link) || link.startsWith('#') || link.startsWith('javascript:')) {
-    return null;
-  }
-  const decoded = decodeURIComponent(link.replaceAll('&amp;', '&'));
+  const target = decodeEntities(link);
+  if (URL.canParse(target)) return { scheme: new URL(target).protocol };
   const pageBase = `https://site.test${basePath}${pageDir}`;
-  return { url: new URL(decoded, pageBase) };
+  return { url: new URL(decodeURIComponent(target), pageBase) };
+}
+
+function namesHost(html, host) {
+  const hostNames = decodeEntities(html).toLowerCase().match(/[a-z0-9-]+(?:\.[a-z0-9-]+)+/g) ?? [];
+  return hostNames.some((name) => name === host || name.endsWith(`.${host}`));
 }
 
 function assertTracking(html, where) {
@@ -117,7 +123,7 @@ function assertTracking(html, where) {
   const head = html.slice(html.search(/<head\b/i), html.indexOf('</head>'));
   const bodyTag = html.search(/<body\b/i);
   const afterBody = html.slice(html.indexOf('>', bodyTag) + 1);
-  const headScripts = [...head.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1]);
+  const headScripts = [...head.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\b[^>]*>/gi)].map((m) => m[1]);
 
   assert.equal(headScripts[0], trackingHeadScripts[0],
     `${where} must set the Consent Mode defaults from src/lib/consent.ts in the first <head> script`);
@@ -132,7 +138,7 @@ function assertTracking(html, where) {
     `${where} must put the GTM noscript iframe as the first thing after <body>`);
   assert.equal(occurrences('ns.html?id=GTM-T8QCHM2H'), 1,
     `${where} must carry the GTM noscript iframe exactly once`);
-  assert.ok(!html.includes('ads-twitter.com') && !/twq\(/.test(html),
+  assert.ok(!namesHost(html, 'ads-twitter.com') && !/twq\(/.test(html),
     `${where} must not load the X base code; GTM container tag 4 loads it`);
 }
 
@@ -197,7 +203,11 @@ async function checkPage({ file, page, label }) {
       continue;
     }
     const resolved = resolveLinkTarget(raw, pageDir, base);
-    if (resolved === null) continue;
+    if (resolved.scheme !== undefined) {
+      assert.ok(SCHEMES_LEAVING_THE_SITE.has(resolved.scheme),
+        `${label}: ${file} link ${raw} uses the ${resolved.scheme} scheme; only ${[...SCHEMES_LEAVING_THE_SITE].join(', ')} links may leave the site`);
+      continue;
+    }
 
   assert.ok(resolved.url.pathname.startsWith(base),
       `${label}: ${file} link ${raw} escapes the Pages base ${base}`);
@@ -232,14 +242,11 @@ const VOID_ELEMENTS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img'
 const TAG = /<(\/?)([a-zA-Z][a-zA-Z0-9:-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>/g;
 
 function stripNonMarkup(html) {
-  return html
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
-    // A comment is not content: removing it must not glue the text around it
-    // together and must not split a token either. The renderer emits its
-    // hydration markers as comments between expressions, so a chip rendering
-    // `{topic}.md` must still read as one typable string.
-    .replace(/<!--[\s\S]*?-->/g, '');
+  // A comment is not content: removing it must not glue the text around it
+  // together and must not split a token either. The renderer emits its
+  // hydration markers as comments between expressions, so a chip rendering
+  // `{topic}.md` must still read as one typable string.
+  return withoutComments(withoutScriptsAndStyles(html, ' '), '');
 }
 
 function classTokens(attrs) {
@@ -313,7 +320,7 @@ function parseTree(html) {
 }
 
 function nodeText(node, source) {
-  return source.slice(node.openEnd, node.end).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  return withoutTags(source.slice(node.openEnd, node.end), ' ').replace(/\s+/g, ' ').trim();
 }
 
 /*
@@ -340,7 +347,7 @@ function ownText(node, source) {
     text += source.slice(cursor, child.openEnd);
     cursor = child.end;
   }
-  return (text + source.slice(cursor, node.end)).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  return withoutTags(text + source.slice(cursor, node.end), ' ').replace(/\s+/g, ' ').trim();
 }
 
 /*
@@ -351,7 +358,7 @@ function ownText(node, source) {
  * spans.
  */
 function chipText(node, source) {
-  return source.slice(node.openEnd, node.end).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+  return withoutTags(source.slice(node.openEnd, node.end), '').replace(/\s+/g, ' ').trim();
 }
 
 /*
@@ -907,7 +914,7 @@ function anchorBlocks(html) {
 }
 
 function anchorText(inner) {
-  return inner.replace(/<svg\b[\s\S]*?<\/svg>/gi, ' ').replace(/<[^>]+>/gi, ' ').replace(/\s+/g, ' ').trim();
+  return withoutTags(inner.replace(/<svg\b[\s\S]*?<\/svg\b[^>]*>/gi, ' '), ' ').replace(/\s+/g, ' ').trim();
 }
 
 function iconBeforeLabel(inner, label) {

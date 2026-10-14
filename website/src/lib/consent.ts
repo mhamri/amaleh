@@ -1,3 +1,5 @@
+import { scriptJson } from './script-json.ts';
+
 export const consentRegions = [
   'AT', 'BE', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR', 'DE', 'GR', 'HU', 'IE',
   'IT', 'LV', 'LT', 'LU', 'MT', 'NL', 'PL', 'PT', 'RO', 'SK', 'SI', 'ES', 'SE',
@@ -117,7 +119,7 @@ const storedChoiceUpdate = consentSignals.map((signal) => `${signal}:choice`).jo
 
 export const consentDefaultsScript = [
   'window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}',
-  `gtag('consent','default',${JSON.stringify({ ...consentSignalsSetTo('denied'), wait_for_update: 500, region: consentRegions })});`,
-  `gtag('consent','default',${JSON.stringify(consentSignalsSetTo('granted'))});`,
-  `(function(){try{var choice=localStorage.getItem(${JSON.stringify(consentStorageKey)});if(choice==='granted'||choice==='denied')gtag('consent','update',{${storedChoiceUpdate}});}catch(e){}})();`,
+  `gtag('consent','default',${scriptJson({ ...consentSignalsSetTo('denied'), wait_for_update: 500, region: consentRegions })});`,
+  `gtag('consent','default',${scriptJson(consentSignalsSetTo('granted'))});`,
+  `(function(){try{var choice=localStorage.getItem(${scriptJson(consentStorageKey)});if(choice==='granted'||choice==='denied')gtag('consent','update',{${storedChoiceUpdate}});}catch(e){}})();`,
 ].join('\n');
