@@ -93,7 +93,7 @@ test('widening the resources after a scope question re-verifies the same output 
  assert.equal(c.taskOf(await store.load(),'a').cycles,0);
 });
 
-test('a path already asked about is not asked again: a repair that keeps it is a failed repair, and only a new path is a new question',{timeout:120000},async t=>{
+test('a path already asked about is not asked again: a repair that keeps it is a failed repair, and only a new path is a new question',async t=>{
  const {workspace,store}=await scopeFixture(t,['src/**']);
  await mkdir(join(workspace,'src'),{recursive:true});
  let call=0;
@@ -165,7 +165,7 @@ test('a workspace outside Git records that the scope check could not run instead
  assert.equal(out.trail.filter(x=>x.stage==='scope').length,1);
 });
 
-test('untracked files are scope-checked like tracked changes, and an exact-path resource rejects sibling paths',{timeout:30000},async t=>{
+test('untracked files are scope-checked like tracked changes, and an exact-path resource rejects sibling paths',async t=>{
  const {workspace,store}=await scopeFixture(t,['src/keep.ts']);
  const inner=async(store:any,id:string,input:any)=>{
   await mkdir(join(workspace,'src'),{recursive:true});

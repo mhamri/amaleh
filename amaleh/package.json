@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "bun test --timeout 30000 tests/",
+    "test": "bun scripts/test-bun.mjs",
     "check": "tsc",
     "test:node": "node scripts/test.mjs"
   },

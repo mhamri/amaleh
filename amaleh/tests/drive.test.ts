@@ -46,11 +46,11 @@ const reviewer=(script:Record<string,unknown[]>={},before?:(id:string)=>void)=>a
  return {findings};
 };
 
-test('drive creates the worktrees, runs every chunk, merges each accepted chunk and starts its dependents',{timeout:180000},async t=>{
+test('drive creates the worktrees, runs every chunk, merges each accepted chunk and starts its dependents',async t=>{
  const {workspace,store}=await fixture(t,[task('a'),task('b',['a']),task('c')]);
  const seen:Record<string,string[]>={};
  const out=await drive(store,{},{runWorker:worker(seen) as any,runReviewer:reviewer() as any,fetcher:jevGate()});
- assert.equal(out.outcome,'ready-to-verify');
+ assert.equal(out.outcome,'ready-to-verify',JSON.stringify(out));
  assert.deepEqual(out.handedBack,[]);
  assert.deepEqual([...out.integrated].sort(),['a','b','c']);
  assert.equal(out.next.action,'verify-feature');
@@ -64,7 +64,7 @@ test('drive creates the worktrees, runs every chunk, merges each accepted chunk 
  assert.ok(events.some(e=>e.type==='drive-finished'));
 });
 
-test('drive hands a merge conflict back and leaves the run checkout as it was',{timeout:180000},async t=>{
+test('drive hands a merge conflict back and leaves the run checkout as it was',async t=>{
  const {workspace,store}=await fixture(t,[task('a')]);
  const collide=()=>{write(join(workspace,'src','a.txt'),'written by someone else\n');git(workspace,'add','.');git(workspace,'commit','-q','-m','collide');};
  const out=await drive(store,{},{runWorker:worker() as any,runReviewer:reviewer({},collide) as any,fetcher:jevGate()});
@@ -76,7 +76,7 @@ test('drive hands a merge conflict back and leaves the run checkout as it was',{
  assert.equal(out.next.action,'integrate');
 });
 
-test('wait until drive returns the report of a finished drive, and a second live drive is refused',{timeout:180000},async t=>{
+test('wait until drive returns the report of a finished drive, and a second live drive is refused',async t=>{
  const {store}=await fixture(t,[task('a')]);
  const cursor=(await store.load()).events.length;
  let second:unknown;
@@ -91,7 +91,7 @@ test('wait until drive returns the report of a finished drive, and a second live
  assert.equal(waited.next.action,'verify-feature');
 });
 
-test('a drive whose process died is reported as interrupted and closed by resume',{timeout:180000},async t=>{
+test('a drive whose process died is reported as interrupted and closed by resume',async t=>{
  const {store}=await fixture(t,[task('a')]);
  const cursor=(await store.load()).events.length;
  const dead=spawnSync(process.execPath,['-e','0']).pid;
@@ -100,10 +100,10 @@ test('a drive whose process died is reported as interrupted and closed by resume
  await c.resume(store,{kind:'codex',model:'fixture-host'});
  assert.deepEqual((await store.load()).events.findLast(e=>e.type==='drive-finished')?.detail,{outcome:'interrupted'});
  const out=await drive(store,{},{runWorker:worker() as any,runReviewer:reviewer() as any,fetcher:jevGate()});
- assert.equal(out.outcome,'ready-to-verify');
+ assert.equal(out.outcome,'ready-to-verify',JSON.stringify(out));
 });
 
-test('the drive command starts a detached process and returns a cursor at once',{timeout:180000},async t=>{
+test('the drive command starts a detached process and returns a cursor at once',async t=>{
  const {workspace,store}=await fixture(t,[]);
  const launched=await main(['drive',workspace,'drive']) as {launched:boolean;cursor:number;pid:number};
  assert.equal(launched.launched,true);
@@ -115,7 +115,7 @@ test('the drive command starts a detached process and returns a cursor at once',
  assert.deepEqual([waited.drive.outcome,waited.drive.integrated,waited.drive.handedBack],['host-needed',[],[]],'a run with no planned task has nothing to drive');
 });
 
-test('drive hands an escalated chunk back and still finishes the chunks beside it',{timeout:180000},async t=>{
+test('drive hands an escalated chunk back and still finishes the chunks beside it',async t=>{
  const {store}=await fixture(t,[task('a'),task('b')]);
  await store.transaction(s=>{s.config.flashRepairCycles=0;s.config.deepRepairCycles=0;});
  const out=await drive(store,{},{runWorker:worker() as any,runReviewer:reviewer({b:blocking}) as any,fetcher:jevGate()});

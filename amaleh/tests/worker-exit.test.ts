@@ -73,7 +73,7 @@ test('an aborted run stays a provider error and is not continued',async t=>{
  assert.equal(await readFile(join(dir,launchCount),'utf8'),'1');
 });
 
-test('a command that waits for a debugger stops the call at once instead of idling until the timeout',{timeout:60000},async t=>{
+test('a command that waits for a debugger stops the call at once instead of idling until the timeout',async t=>{
  const debuggerWaits={type:'tool_execution_start',toolName:'bash',args:{command:`NODE_OPTIONS='--inspect-brk=9229' node -e "console.log(1)"`}};
  const {input}=await piFixture(t,printsStdoutAndStaysAlive,{[stdoutFile]:jsonl([debuggerWaits])+'\n'});
  await assert.rejects(()=>piRun({...input,idleTimeoutMs:600000}),/ran a command with --inspect-brk, which waits for a debugger/);
@@ -95,7 +95,7 @@ test('only a JavaScript runtime started with a debugger-wait flag counts as a de
  assert.equal(debuggerWait(undefined),undefined);
 });
 
-test('the first reason a call is stopped is the one reported, and the tree is killed once',{timeout:60000},async t=>{
+test('the first reason a call is stopped is the one reported, and the tree is killed once',async t=>{
  const debuggerWaits={type:'tool_execution_start',toolName:'bash',args:{command:'node --inspect-brk app.js'}};
  const turn={...assistant,message:{...assistant.message,stopReason:'toolUse'}};
  const {input}=await piFixture(t,printsStdoutAndStaysAlive,{[stdoutFile]:jsonl([debuggerWaits,turn])+'\n'});

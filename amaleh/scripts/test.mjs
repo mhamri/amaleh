@@ -3,6 +3,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { availableParallelism } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import '../tests/isolated-host.ts';
+import { testTimeLimitMs } from '../tests/time-limit.ts';
 
 const skillDir = fileURLToPath(new URL('../', import.meta.url));
 const testDir = new URL('../tests/', import.meta.url);
@@ -26,7 +27,7 @@ const run = (concurrency, batch) =>
   batch.length === 0
     ? 0
     : new Promise((done, fail) => {
-        const child = spawn(process.execPath, ['--test', `--test-concurrency=${concurrency}`, ...batch], {
+        const child = spawn(process.execPath, ['--test', `--test-concurrency=${concurrency}`, `--test-timeout=${testTimeLimitMs}`, ...batch], {
           cwd: skillDir,
           stdio: 'inherit',
           shell: false,
